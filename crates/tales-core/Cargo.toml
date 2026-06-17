@@ -1,0 +1,19 @@
+[package]
+name = "tales-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "UI-agnostic orchestration core for Tales — multi-agent AI coding orchestrator."
+
+[dependencies]
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true }
+uuid = { workspace = true }

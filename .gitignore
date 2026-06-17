@@ -1,0 +1,9 @@
+/target
+**/*.rs.bk
+Cargo.lock.bak
+.tales/
+
+# Harness/session noise — keep only .claude/commands in the repo
+.claude/scheduled_tasks.lock
+.claude/settings.local.json
+.DS_Store

@@ -1,0 +1,19 @@
+[package]
+name = "tales-tui"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Ratatui terminal frontend for the Tales orchestration core."
+
+[[bin]]
+name = "tales-tui"
+path = "src/main.rs"
+
+[dependencies]
+tales-core = { path = "../tales-core" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+clap = { version = "4", features = ["derive"] }
+futures = "0.3"
+uuid = { version = "1", features = ["v4"] }

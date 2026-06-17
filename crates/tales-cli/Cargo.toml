@@ -1,0 +1,18 @@
+[package]
+name = "tales-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Tales command-line frontend — drives the orchestration core headlessly."
+
+[[bin]]
+name = "tales"
+path = "src/main.rs"
+
+[dependencies]
+tales-core = { path = "../tales-core" }
+tokio = { workspace = true }
+clap = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

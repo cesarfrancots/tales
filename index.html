@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tales — AI pair programming, with you in control</title>
+  <meta name="description" content="Tales lets Claude Code and Codex collaborate on your coding task in a live chat. The AIs discuss a plan, recommend who executes, and you confirm before anything runs." />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<!-- ── Nav ──────────────────────────────────────────────── -->
+<nav>
+  <div class="container nav-inner">
+    <a href="#" class="nav-logo">Tales<span>.</span></a>
+    <ul class="nav-links">
+      <li><a href="#how-it-works">How it works</a></li>
+      <li><a href="#features">Features</a></li>
+      <li><a href="#quickstart">Quickstart</a></li>
+      <li>
+        <a href="https://github.com/cesarfrancots/tales" target="_blank" rel="noopener" class="btn btn-ghost" style="padding:6px 14px;font-size:.82rem;">
+          <svg class="icon-github" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61-.546-1.385-1.335-1.755-1.335-1.755-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23a11.5 11.5 0 0 1 3-.405c1.02.005 2.045.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
+          GitHub
+        </a>
+      </li>
+    </ul>
+  </div>
+</nav>
+
+<!-- ── Hero ─────────────────────────────────────────────── -->
+<section id="hero">
+  <div class="container">
+    <div class="hero-inner">
+
+      <div class="hero-copy">
+        <div class="hero-eyebrow">
+          <span class="dot"></span>
+          Open Source · MIT License
+        </div>
+        <h1>Two AIs plan.<br/><span class="highlight">You decide</span><br/>what runs.</h1>
+        <p class="hero-sub">
+          Tales orchestrates a live chat between Claude Code and Codex. They discuss your task, draft a plan, and recommend who should execute — but nothing happens until you say so.
+        </p>
+        <div class="hero-ctas">
+          <a href="https://github.com/cesarfrancots/tales" target="_blank" rel="noopener" class="btn btn-primary">
+            <svg class="icon-github" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61-.546-1.385-1.335-1.755-1.335-1.755-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23a11.5 11.5 0 0 1 3-.405c1.02.005 2.045.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
+            View on GitHub
+          </a>
+          <a href="#how-it-works" class="btn btn-ghost">See how it works</a>
+        </div>
+      </div>
+
+      <div class="hero-visual">
+        <div class="terminal">
+          <div class="terminal-bar">
+            <span class="terminal-dot dot-red"></span>
+            <span class="terminal-dot dot-yellow"></span>
+            <span class="terminal-dot dot-green"></span>
+            <span class="terminal-title">tales — task: add OAuth login</span>
+          </div>
+          <div class="terminal-body">
+
+            <div class="chat-msg">
+              <div class="chat-avatar avatar-claude">CC</div>
+              <div class="chat-bubble">
+                <div class="chat-name name-claude">Claude Code</div>
+                <div class="chat-text">I'd approach this with a middleware layer — add <code style="color:var(--accent-cyan)">passport.js</code>, configure the Google strategy, and hook it into the existing session store. Fairly isolated change.</div>
+              </div>
+            </div>
+
+            <div class="chat-msg">
+              <div class="chat-avatar avatar-codex">CX</div>
+              <div class="chat-bubble">
+                <div class="chat-name name-codex">Codex</div>
+                <div class="chat-text">Agreed on the architecture. I'd recommend Claude executes — it has better context on the existing auth flow. I can review the diff after.</div>
+              </div>
+            </div>
+
+            <div class="chat-msg">
+              <div class="chat-avatar avatar-you">You</div>
+              <div class="chat-bubble">
+                <div class="chat-name name-you">You</div>
+                <div class="chat-text">Sounds good. Go ahead.</div>
+                <div class="approval-badge">Approved — Claude Code executing</div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ── How it works ──────────────────────────────────────── -->
+<section id="how-it-works">
+  <div class="container">
+    <p class="section-label">How it works</p>
+    <h2>Four steps, one rule:<br/>you always confirm.</h2>
+    <p class="section-lead">Tales keeps you in the loop at every stage. The AIs do the thinking; you do the deciding.</p>
+
+    <div class="steps">
+
+      <div class="step">
+        <div class="step-num">1</div>
+        <div class="step-title">Discuss</div>
+        <div class="step-desc">Claude Code and Codex read your task and debate the best approach in a shared chat thread — surfacing trade-offs before a single line is written.</div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">2</div>
+        <div class="step-title">Recommend</div>
+        <div class="step-desc">The agents reach consensus and nominate which one should execute, with a rationale. No hidden decisions.</div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">3</div>
+        <div class="step-title">You decide</div>
+        <div class="step-desc">You review the plan and the recommendation. Approve, redirect, or cancel — nothing runs without your explicit go-ahead.</div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">4</div>
+        <div class="step-title">Execute</div>
+        <div class="step-desc">The chosen agent carries out the work in a sandboxed git worktree. The other agent reviews the output. You get a clean diff.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ── Features ──────────────────────────────────────────── -->
+<section id="features">
+  <div class="container">
+    <p class="section-label">Features</p>
+    <h2>Built for trust,<br/>not speed-running.</h2>
+    <p class="section-lead">Every design decision in Tales is oriented around keeping humans meaningfully in control of agentic AI.</p>
+
+    <div class="features-grid">
+
+      <div class="feature-card">
+        <div class="feature-icon">🤝</div>
+        <div class="feature-title">Multi-agent collaboration</div>
+        <div class="feature-desc">Claude Code and Codex work together as a team — each with different strengths, cross-checking each other's reasoning before making any recommendation.</div>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">⚡</div>
+        <div class="feature-title">Real-time streaming</div>
+        <div class="feature-desc">Watch the discussion unfold live. Streamed token-by-token so you can follow the agents' thinking as it happens, not after the fact.</div>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">🔒</div>
+        <div class="feature-title">Human-in-the-loop gate</div>
+        <div class="feature-desc">A hard confirmation step before any code runs. No opt-out, no auto-approve mode. You remain the final authority on every action.</div>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">🌿</div>
+        <div class="feature-title">Git-worktree isolation</div>
+        <div class="feature-desc">Execution happens in a fresh git worktree — your working directory is never touched speculatively. Inspect the diff before merging anything.</div>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">🔌</div>
+        <div class="feature-title">Pluggable adapters</div>
+        <div class="feature-desc">Swap in different models or AI providers without changing the orchestration logic. The adapter interface is small and well-defined.</div>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">📖</div>
+        <div class="feature-title">Open source, MIT</div>
+        <div class="feature-desc">Fully auditable. No telemetry, no cloud dependency, no black boxes. Read the code, fork it, extend it — it's yours.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ── Quickstart ────────────────────────────────────────── -->
+<section id="quickstart">
+  <div class="container">
+    <div class="qs-inner">
+
+      <div>
+        <p class="section-label">Quickstart</p>
+        <h2>Up and running<br/>in two minutes.</h2>
+        <p class="section-lead">Tales runs locally. No accounts, no API keys beyond your own Claude and OpenAI credentials.</p>
+
+        <ul class="qs-steps">
+          <li class="qs-step-item">
+            <span class="qs-n">1</span>
+            <p><strong>Clone and install</strong> — grab the repo and install dependencies with npm.</p>
+          </li>
+          <li class="qs-step-item">
+            <span class="qs-n">2</span>
+            <p><strong>Set your keys</strong> — drop your <code style="color:var(--accent-cyan);font-family:var(--font-mono);font-size:.85em">ANTHROPIC_API_KEY</code> and <code style="color:var(--accent-cyan);font-family:var(--font-mono);font-size:.85em">OPENAI_API_KEY</code> into <code style="color:var(--accent-cyan);font-family:var(--font-mono);font-size:.85em">.env</code>.</p>
+          </li>
+          <li class="qs-step-item">
+            <span class="qs-n">3</span>
+            <p><strong>Describe your task</strong> — run <code style="color:var(--accent-cyan);font-family:var(--font-mono);font-size:.85em">tales</code> and type what you want built. The agents take it from there.</p>
+          </li>
+          <li class="qs-step-item">
+            <span class="qs-n">4</span>
+            <p><strong>Approve and execute</strong> — review the plan, confirm, and watch it run in isolation.</p>
+          </li>
+        </ul>
+      </div>
+
+      <div class="code-block">
+        <div class="code-header">
+          <span class="code-lang">shell</span>
+        </div>
+        <div class="code-body">
+          <pre><span class="c"># 1. Clone</span>
+<span class="p">git</span> clone https://github.com/cesarfrancots/tales
+<span class="p">cd</span> tales
+
+<span class="c"># 2. Install</span>
+<span class="p">npm</span> install
+
+<span class="c"># 3. Configure</span>
+<span class="p">cp</span> .env.example .env
+<span class="c"># → Add ANTHROPIC_API_KEY and OPENAI_API_KEY</span>
+
+<span class="c"># 4. Run</span>
+<span class="p">npm</span> run tales
+
+<span class="c"># You'll see:</span>
+<span class="v">Tales</span> <span class="s">›</span> What do you want to build?
+<span class="s">›</span> _</pre>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ── Footer ────────────────────────────────────────────── -->
+<footer>
+  <div class="container footer-inner">
+    <a href="#" class="footer-brand">Tales<span>.</span></a>
+    <div class="footer-meta">
+      <a href="https://github.com/cesarfrancots/tales" target="_blank" rel="noopener">
+        <svg class="icon-github" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61-.546-1.385-1.335-1.755-1.335-1.755-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23a11.5 11.5 0 0 1 3-.405c1.02.005 2.045.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
+        cesarfrancots/tales
+      </a>
+      <span class="badge-mit">MIT License</span>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

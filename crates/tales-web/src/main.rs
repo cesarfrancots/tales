@@ -59,6 +59,20 @@ struct Args {
     /// Port to serve on.
     #[arg(long, default_value_t = 7878)]
     port: u16,
+    /// Don't auto-open the browser.
+    #[arg(long)]
+    no_open: bool,
+}
+
+/// Open a URL in the default browser (best-effort, non-blocking).
+fn open_browser(url: &str) {
+    #[cfg(target_os = "macos")]
+    let cmd = ("open", vec![url]);
+    #[cfg(target_os = "linux")]
+    let cmd = ("xdg-open", vec![url]);
+    #[cfg(target_os = "windows")]
+    let cmd = ("cmd", vec!["/C", "start", url]);
+    let _ = std::process::Command::new(cmd.0).args(cmd.1).spawn();
 }
 
 #[tokio::main]
@@ -73,7 +87,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let addr = SocketAddr::from(([127, 0, 0, 1], args.port));
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    println!("\n  Tales web UI → http://{addr}\n  task: {}\n", args.task);
+    let url = format!("http://{addr}");
+    println!("\n  ❯ tales  ·  {url}\n    task: {}\n", args.task);
+    if !args.no_open {
+        let url = url.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+            open_browser(&url);
+        });
+    }
     axum::serve(listener, app).await?;
     Ok(())
 }

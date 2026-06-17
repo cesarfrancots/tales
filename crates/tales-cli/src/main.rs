@@ -19,7 +19,7 @@ use uuid::Uuid;
 
 use tales_core::agent::claude::ClaudeAdapter;
 use tales_core::agent::codex::CodexAdapter;
-use tales_core::agent::{AgentAdapter, AgentCommand, AgentEvent, SpawnCtx};
+use tales_core::agent::{AgentAdapter, AgentCommand, AgentEvent, Attachment, SpawnCtx};
 use tales_core::bus::EventBus;
 use tales_core::conductor::Role;
 use tales_core::event::{OrchestratorEvent, UserCommand};
@@ -51,6 +51,9 @@ enum Command {
         /// Codex sandbox policy.
         #[arg(long, default_value = "workspace-write")]
         sandbox: String,
+        /// Attach an image/PDF (repeatable): --image a.png --image b.pdf
+        #[arg(long)]
+        image: Vec<String>,
     },
     /// Full pipeline, non-interactive: discuss → recommend → auto-confirm the
     /// chosen executor → execute. The scriptable counterpart to the live TUI.
@@ -133,7 +136,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             model,
             cwd,
             sandbox,
-        } => run_solo(prompt, agent, model, cwd, sandbox).await,
+            image,
+        } => run_solo(prompt, agent, model, cwd, sandbox, image).await,
         Command::Run {
             prompt,
             drafter,
@@ -183,6 +187,7 @@ async fn run_solo(
     model: Option<String>,
     cwd: Option<String>,
     sandbox: String,
+    images: Vec<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let cwd = cwd.map(PathBuf::from).unwrap_or(std::env::current_dir()?);
     let agent = Uuid::new_v4();
@@ -205,8 +210,9 @@ async fn run_solo(
         }
     };
     let cmd_tx = adapter.spawn(ctx, events_tx).await?;
+    let attachments: Vec<Attachment> = images.iter().map(Attachment::new).collect();
     cmd_tx
-        .send(AgentCommand::StartTurn { prompt, attachments: Vec::new() })
+        .send(AgentCommand::StartTurn { prompt, attachments })
         .await?;
 
     let mut streaming = false;

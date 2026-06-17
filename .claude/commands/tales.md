@@ -1,20 +1,20 @@
 ---
-description: Launch a Tales multi-agent collaboration (Claude + Codex) on a task
-argument-hint: <task description> [--drafter claude|codex] [--critic claude|codex]
-allowed-tools: Bash(tales:*), Bash(tales-tui:*)
+description: Launch the Tales live supervisor (Claude Code + Codex) in your browser
+argument-hint: <task> [--drafter claude|codex] [--critic claude|codex]
+allowed-tools: Bash(tales-web:*), Bash(tales:*), Bash(pkill:*)
 ---
 
-Start a Tales multi-agent session on this task: **$ARGUMENTS**
+Start the Tales browser supervisor for this task: **$ARGUMENTS**
 
-Run the headless discussion (Claude drafts, Codex critiques) and stream the
-result here:
+Launch it detached — it serves a live chat and auto-opens your browser at
+http://127.0.0.1:7878:
 
-!`tales discuss "$ARGUMENTS" --drafter claude --critic codex --turns 4 --sandbox read-only`
+!`tales-web "$ARGUMENTS" --drafter claude --critic codex >/tmp/tales-web.log 2>&1 & sleep 1; echo "Tales supervisor → http://127.0.0.1:7878 (log: /tmp/tales-web.log)"`
 
-Then summarize the agreed plan and the recommended executor. Tell me that for the
-**interactive live chat** — where I can talk to them and confirm the executor
-myself — I should run this in my own terminal:
+Then tell me, briefly:
+- It's running in my browser; I can watch Claude Code and Codex discuss live,
+  type to interject (I'm in the loop), and **approve the executor** at the gate.
+- To stop it: `pkill -f tales-web`.
 
-```
-tales-tui "$ARGUMENTS" --drafter claude --critic codex
-```
+If the `tales-web` binary isn't found, tell me to build it from the Tales repo
+with `cargo build --release` and put `target/release` on PATH.

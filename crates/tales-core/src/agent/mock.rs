@@ -55,7 +55,9 @@ impl AgentAdapter for MockAdapter {
                 match command {
                     AgentCommand::StartTurn { .. } | AgentCommand::InjectMessage { .. } => {
                         turn += 1;
-                        let _ = events_tx.send(AgentEvent::TurnStarted { agent, turn }).await;
+                        let _ = events_tx
+                            .send(AgentEvent::TurnStarted { agent, turn })
+                            .await;
 
                         let reply = responses
                             .next()

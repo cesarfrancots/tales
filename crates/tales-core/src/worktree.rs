@@ -183,8 +183,16 @@ impl WorktreeManager {
         }
 
         let names = git(&wt.path, &["diff", "--cached", "--name-only", "HEAD"]).await?;
-        let files_changed = names.stdout.lines().filter(|l| !l.trim().is_empty()).count();
-        let stat = git(&wt.path, &["--no-pager", "diff", "--cached", "--stat", "HEAD"]).await?;
+        let files_changed = names
+            .stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .count();
+        let stat = git(
+            &wt.path,
+            &["--no-pager", "diff", "--cached", "--stat", "HEAD"],
+        )
+        .await?;
         let patch = git(&wt.path, &["--no-pager", "diff", "--cached", "HEAD"]).await?;
 
         Ok(DiffSummary {
@@ -289,7 +297,11 @@ impl WorktreeManager {
 
         let br = git(&self.base, &["branch", "-D", &wt.branch]).await?;
         if !br.ok {
-            tracing::warn!("failed to delete branch {}: {}", wt.branch, br.stderr.trim());
+            tracing::warn!(
+                "failed to delete branch {}: {}",
+                wt.branch,
+                br.stderr.trim()
+            );
         }
         // Only drop the registration once the worktree is actually gone.
         self.trees.remove(&agent);

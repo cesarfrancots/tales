@@ -58,8 +58,14 @@ async fn drafter_critic_relay_builds_transcript() {
 
     // All three turns landed, in order, on the blackboard.
     assert!(transcript.contains("draft-one"), "transcript: {transcript}");
-    assert!(transcript.contains("critique-two"), "transcript: {transcript}");
-    assert!(transcript.contains("revised-three"), "transcript: {transcript}");
+    assert!(
+        transcript.contains("critique-two"),
+        "transcript: {transcript}"
+    );
+    assert!(
+        transcript.contains("revised-three"),
+        "transcript: {transcript}"
+    );
 
     let bb = orch.blackboard();
     assert_eq!(bb.transcript.len(), 3);

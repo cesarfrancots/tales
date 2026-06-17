@@ -105,7 +105,11 @@ impl Orchestrator {
             .unwrap_or_default();
         let n = skills.len();
         let preview: Vec<String> = skills.iter().take(14).cloned().collect();
-        let more = if n > 14 { format!(" +{} more", n - 14) } else { String::new() };
+        let more = if n > 14 {
+            format!(" +{} more", n - 14)
+        } else {
+            String::new()
+        };
         self.bus.emit(OrchestratorEvent::Log {
             level: "skills".to_string(),
             msg: format!("{label} has {n} skills: {}{more}", preview.join(", ")),
@@ -150,7 +154,9 @@ impl Orchestrator {
         role: Role,
     ) -> Result<AgentId> {
         if ctx.label.trim().is_empty() {
-            return Err(TalesError::Other("agent label must be non-empty".to_string()));
+            return Err(TalesError::Other(
+                "agent label must be non-empty".to_string(),
+            ));
         }
         let agent = ctx.agent;
         let label = ctx.label.clone();
@@ -188,13 +194,15 @@ impl Orchestrator {
                 msg: format!("→ {} speaking as {:?}", plan.label, plan.role),
             });
 
-            let tx = self
-                .cmd_txs
-                .get(&plan.agent)
-                .ok_or_else(|| TalesError::Other(format!("no command channel for {}", plan.agent)))?;
-            tx.send(AgentCommand::StartTurn { prompt, attachments: Vec::new() })
-                .await
-                .map_err(|e| TalesError::Other(format!("send to agent failed: {e}")))?;
+            let tx = self.cmd_txs.get(&plan.agent).ok_or_else(|| {
+                TalesError::Other(format!("no command channel for {}", plan.agent))
+            })?;
+            tx.send(AgentCommand::StartTurn {
+                prompt,
+                attachments: Vec::new(),
+            })
+            .await
+            .map_err(|e| TalesError::Other(format!("send to agent failed: {e}")))?;
 
             let text = self.collect_turn(plan.agent).await?;
             self.blackboard.record(plan.label.clone(), plan.role, text);
@@ -266,7 +274,8 @@ impl Orchestrator {
                     }
                 }
                 AgentEvent::Exited { agent: a, code } if a == agent => {
-                    self.bus.emit(OrchestratorEvent::AgentExited { agent, code });
+                    self.bus
+                        .emit(OrchestratorEvent::AgentExited { agent, code });
                     return Ok(final_text);
                 }
                 // Skill discovery can arrive for any agent (at startup).
@@ -291,13 +300,15 @@ impl Orchestrator {
 
         for entry in &roster {
             let prompt = compose_vote_prompt(&self.blackboard.task, &candidates);
-            let tx = self
-                .cmd_txs
-                .get(&entry.agent)
-                .ok_or_else(|| TalesError::Other(format!("no command channel for {}", entry.agent)))?;
-            tx.send(AgentCommand::StartTurn { prompt, attachments: Vec::new() })
-                .await
-                .map_err(|e| TalesError::Other(format!("send to agent failed: {e}")))?;
+            let tx = self.cmd_txs.get(&entry.agent).ok_or_else(|| {
+                TalesError::Other(format!("no command channel for {}", entry.agent))
+            })?;
+            tx.send(AgentCommand::StartTurn {
+                prompt,
+                attachments: Vec::new(),
+            })
+            .await
+            .map_err(|e| TalesError::Other(format!("send to agent failed: {e}")))?;
             let text = self.collect_turn(entry.agent).await?;
 
             match parse_vote(&text) {
@@ -407,11 +418,15 @@ impl Orchestrator {
                 .cmd_txs
                 .get(&entry.agent)
                 .ok_or_else(|| TalesError::Other(format!("no channel for {}", entry.agent)))?;
-            tx.send(AgentCommand::StartTurn { prompt, attachments })
-                .await
-                .map_err(|e| TalesError::Other(format!("send failed: {e}")))?;
+            tx.send(AgentCommand::StartTurn {
+                prompt,
+                attachments,
+            })
+            .await
+            .map_err(|e| TalesError::Other(format!("send failed: {e}")))?;
             let text = self.collect_turn(entry.agent).await?;
-            self.blackboard.record(entry.label.clone(), entry.role, text);
+            self.blackboard
+                .record(entry.label.clone(), entry.role, text);
             turn_idx += 1;
         }
 
@@ -450,9 +465,9 @@ impl Orchestrator {
                     self.reject()?;
                     return Ok(RunOutcome::Rejected);
                 }
-                UserCommand::InjectNote { text, attachments, .. } => {
-                    self.record_human(text, attachments)
-                }
+                UserCommand::InjectNote {
+                    text, attachments, ..
+                } => self.record_human(text, attachments),
                 UserCommand::StartTurn { .. } => {}
                 UserCommand::Shutdown => return Ok(RunOutcome::Aborted),
             }
@@ -464,9 +479,9 @@ impl Orchestrator {
     fn drain_user_notes(&mut self, commands: &mut mpsc::Receiver<UserCommand>) -> bool {
         loop {
             match commands.try_recv() {
-                Ok(UserCommand::InjectNote { text, attachments, .. }) => {
-                    self.record_human(text, attachments)
-                }
+                Ok(UserCommand::InjectNote {
+                    text, attachments, ..
+                }) => self.record_human(text, attachments),
                 Ok(UserCommand::Shutdown) => return true,
                 // Remember an early decision for the gate instead of dropping it.
                 Ok(cmd @ (UserCommand::ConfirmExecution { .. } | UserCommand::Reject)) => {
@@ -485,7 +500,12 @@ impl Orchestrator {
         if !attachments.is_empty() {
             let names: Vec<String> = attachments
                 .iter()
-                .map(|p| p.file_name().and_then(|n| n.to_str()).unwrap_or("file").to_string())
+                .map(|p| {
+                    p.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("file")
+                        .to_string()
+                })
                 .collect();
             if !text.is_empty() {
                 text.push('\n');
@@ -508,7 +528,9 @@ impl Orchestrator {
             .iter()
             .find(|r| r.label == executor_label)
             .cloned()
-            .ok_or_else(|| TalesError::Other(format!("executor '{executor_label}' not in roster")))?;
+            .ok_or_else(|| {
+                TalesError::Other(format!("executor '{executor_label}' not in roster"))
+            })?;
         let plan = self.blackboard.transcript_text();
         let prompt = format!(
             "You are now EXECUTING the plan the team agreed on.\n\
@@ -532,9 +554,12 @@ impl Orchestrator {
             .cmd_txs
             .get(&entry.agent)
             .ok_or_else(|| TalesError::Other(format!("no channel for {}", entry.agent)))?;
-        tx.send(AgentCommand::StartTurn { prompt, attachments })
-            .await
-            .map_err(|e| TalesError::Other(format!("send failed: {e}")))?;
+        tx.send(AgentCommand::StartTurn {
+            prompt,
+            attachments,
+        })
+        .await
+        .map_err(|e| TalesError::Other(format!("send failed: {e}")))?;
         let output = self.collect_turn(entry.agent).await?;
         self.set_phase(Phase::Done);
         Ok(output)

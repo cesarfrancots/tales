@@ -58,7 +58,11 @@ pub fn parse_vote(text: &str) -> Option<(String, f32, String)> {
     let slice = first_json_object(text)?;
     let raw: RawVote = serde_json::from_str(slice).ok()?;
     let conf = raw.confidence.clamp(0.0, 1.0);
-    Some((raw.recommended_executor.trim().to_string(), conf, raw.rationale))
+    Some((
+        raw.recommended_executor.trim().to_string(),
+        conf,
+        raw.rationale,
+    ))
 }
 
 /// Return the substring of the first balanced `{...}` object, tracking string
@@ -120,7 +124,10 @@ pub fn aggregate(votes: Vec<ExecutionVote>, candidates: &[String]) -> Option<Rec
     // Highest score first; stable so ties keep candidate order (roster order).
     scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-    let top = scores.first().cloned().unwrap_or((candidates[0].clone(), 0.0));
+    let top = scores
+        .first()
+        .cloned()
+        .unwrap_or((candidates[0].clone(), 0.0));
     let confident = top.1 > 0.0;
     // When no vote scored a candidate, fall back to the first candidate but flag
     // it as not-confident so callers/UI don't present it as a real consensus.

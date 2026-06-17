@@ -8,14 +8,14 @@
 mod app;
 
 use std::io::Stdout;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::Parser;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use crossterm::execute;
 use futures::StreamExt;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Layout};
@@ -39,7 +39,10 @@ use tales_core::orchestrator::Orchestrator;
 use crate::app::App;
 
 #[derive(Parser, Debug, Clone)]
-#[command(name = "tales-tui", about = "Live chat: watch & steer Claude and Codex collaborate")]
+#[command(
+    name = "tales-tui",
+    about = "Live chat: watch & steer Claude and Codex collaborate"
+)]
 struct Args {
     /// The task the agents discuss (and, on your confirmation, execute).
     task: String,
@@ -207,9 +210,15 @@ fn draw(f: &mut Frame, app: &App) {
     f.render_widget(Paragraph::new(lines), body);
 
     // Input line (with a 📎N indicator when media is queued).
-    let mut input_spans = vec![Span::styled("❯ ", Style::default().fg(ACCENT).add_modifier(bold))];
+    let mut input_spans = vec![Span::styled(
+        "❯ ",
+        Style::default().fg(ACCENT).add_modifier(bold),
+    )];
     if app.pending_count() > 0 {
-        input_spans.push(Span::styled(format!("📎{} ", app.pending_count()), Style::default().fg(ACCENT)));
+        input_spans.push(Span::styled(
+            format!("📎{} ", app.pending_count()),
+            Style::default().fg(ACCENT),
+        ));
     }
     input_spans.push(Span::styled(app.input.clone(), Style::default().fg(TEXT)));
     f.render_widget(Paragraph::new(Line::from(input_spans)), chunks[2]);
@@ -276,11 +285,11 @@ async fn run_session(bus: EventBus, mut commands_rx: mpsc::Receiver<UserCommand>
     orch.shutdown().await;
 }
 
-fn ctx(agent: Uuid, label: &str, cwd: &PathBuf, model: Option<String>, sandbox: &str) -> SpawnCtx {
+fn ctx(agent: Uuid, label: &str, cwd: &Path, model: Option<String>, sandbox: &str) -> SpawnCtx {
     SpawnCtx {
         agent,
         label: label.to_string(),
-        cwd: cwd.clone(),
+        cwd: cwd.to_path_buf(),
         model,
         permission_mode: "acceptEdits".to_string(),
         sandbox: sandbox.to_string(),
@@ -292,7 +301,9 @@ fn make_adapter(name: &str) -> Result<Box<dyn AgentAdapter>, String> {
     match name {
         "codex" => Ok(Box::new(CodexAdapter::new())),
         "claude" => Ok(Box::new(ClaudeAdapter::new())),
-        other => Err(format!("unknown agent '{other}' (expected: claude | codex)")),
+        other => Err(format!(
+            "unknown agent '{other}' (expected: claude | codex)"
+        )),
     }
 }
 
@@ -309,13 +320,36 @@ mod render_tests {
         let mut app = App::new("Design a rate limiter for a public API".into());
         let c = Uuid::new_v4();
         let x = Uuid::new_v4();
-        app.apply(OrchestratorEvent::AgentSpawned { agent: c, label: "claude".into(), session_id: String::new() });
-        app.apply(OrchestratorEvent::AgentSpawned { agent: x, label: "codex".into(), session_id: String::new() });
-        app.apply(OrchestratorEvent::TurnStarted { agent: c, role: "Drafter".into() });
-        app.apply(OrchestratorEvent::Message { agent: c, text: "Draft plan:\n- token-bucket per API key\n- 429 + Retry-After header".into() });
-        app.apply(OrchestratorEvent::TurnStarted { agent: x, role: "Critic".into() });
-        app.apply(OrchestratorEvent::Message { agent: x, text: "Which algorithm — token-bucket or fixed-window? And the burst size?".into() });
-        app.apply(OrchestratorEvent::RecommendationReady { executor: "claude".into(), rationale: "best at writing the code".into() });
+        app.apply(OrchestratorEvent::AgentSpawned {
+            agent: c,
+            label: "claude".into(),
+            session_id: String::new(),
+        });
+        app.apply(OrchestratorEvent::AgentSpawned {
+            agent: x,
+            label: "codex".into(),
+            session_id: String::new(),
+        });
+        app.apply(OrchestratorEvent::TurnStarted {
+            agent: c,
+            role: "Drafter".into(),
+        });
+        app.apply(OrchestratorEvent::Message {
+            agent: c,
+            text: "Draft plan:\n- token-bucket per API key\n- 429 + Retry-After header".into(),
+        });
+        app.apply(OrchestratorEvent::TurnStarted {
+            agent: x,
+            role: "Critic".into(),
+        });
+        app.apply(OrchestratorEvent::Message {
+            agent: x,
+            text: "Which algorithm — token-bucket or fixed-window? And the burst size?".into(),
+        });
+        app.apply(OrchestratorEvent::RecommendationReady {
+            executor: "claude".into(),
+            rationale: "best at writing the code".into(),
+        });
         app.phase = "awaitingconfirmation".into();
         app.input = "focus on abuse cases".into();
 

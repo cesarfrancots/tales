@@ -36,7 +36,10 @@ use tales_core::orchestrator::Orchestrator;
 const INDEX_HTML: &str = include_str!("index.html");
 
 #[derive(Parser, Debug, Clone)]
-#[command(name = "tales-web", about = "Browser UI to watch & steer Claude and Codex")]
+#[command(
+    name = "tales-web",
+    about = "Browser UI to watch & steer Claude and Codex"
+)]
 struct Args {
     /// The task the agents discuss (and, on your confirmation, execute).
     task: String,
@@ -207,13 +210,18 @@ fn event_to_json(ev: &OrchestratorEvent) -> Value {
             json!({ "kind": "exited", "agent": agent.to_string(), "code": code })
         }
         OrchestratorEvent::PhaseChanged { phase } => json!({ "kind": "phase", "phase": phase }),
-        OrchestratorEvent::RecommendationReady { executor, rationale } => {
+        OrchestratorEvent::RecommendationReady {
+            executor,
+            rationale,
+        } => {
             json!({ "kind": "recommendation", "executor": executor, "rationale": rationale })
         }
         OrchestratorEvent::AwaitingConfirmation { prompt } => {
             json!({ "kind": "awaiting", "prompt": prompt })
         }
-        OrchestratorEvent::Log { level, msg } => json!({ "kind": "log", "level": level, "msg": msg }),
+        OrchestratorEvent::Log { level, msg } => {
+            json!({ "kind": "log", "level": level, "msg": msg })
+        }
         OrchestratorEvent::Fatal { msg } => json!({ "kind": "fatal", "msg": msg }),
     }
 }
@@ -223,11 +231,19 @@ fn parse_command(text: &str) -> Option<UserCommand> {
     match v.get("kind").and_then(Value::as_str)? {
         "say" => Some(UserCommand::InjectNote {
             agent: Uuid::nil(),
-            text: v.get("text").and_then(Value::as_str).unwrap_or("").to_string(),
+            text: v
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
             attachments: Vec::new(),
         }),
         "confirm" => Some(UserCommand::ConfirmExecution {
-            executor: v.get("executor").and_then(Value::as_str).unwrap_or("").to_string(),
+            executor: v
+                .get("executor")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
         }),
         "reject" => Some(UserCommand::Reject),
         "shutdown" => Some(UserCommand::Shutdown),
@@ -245,9 +261,20 @@ fn make_adapter(name: &str) -> Result<Box<dyn AgentAdapter>, String> {
 
 /// Claude is restricted to file tools so that, if chosen as executor, it can't
 /// stall on an unapproved Bash call in headless mode.
-fn ctx(agent: Uuid, label: &str, cwd: &std::path::Path, model: Option<String>, sandbox: &str) -> SpawnCtx {
+fn ctx(
+    agent: Uuid,
+    label: &str,
+    cwd: &std::path::Path,
+    model: Option<String>,
+    sandbox: &str,
+) -> SpawnCtx {
     let allowed_tools = if label.eq_ignore_ascii_case("claude") {
-        Some(vec!["Write".into(), "Edit".into(), "MultiEdit".into(), "Read".into()])
+        Some(vec![
+            "Write".into(),
+            "Edit".into(),
+            "MultiEdit".into(),
+            "Read".into(),
+        ])
     } else {
         None
     };

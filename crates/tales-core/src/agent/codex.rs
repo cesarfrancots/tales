@@ -103,7 +103,10 @@ impl Manager {
         let mut last_code: Option<i32> = Some(0);
         while let Some(command) = cmd_rx.recv().await {
             match command {
-                AgentCommand::StartTurn { prompt, attachments } => {
+                AgentCommand::StartTurn {
+                    prompt,
+                    attachments,
+                } => {
                     let full = self.fold_prompt(prompt);
                     last_code = self.run_turn(full, &attachments).await;
                 }

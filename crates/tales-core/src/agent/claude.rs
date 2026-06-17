@@ -178,7 +178,10 @@ async fn writer_task(
 ) {
     while let Some(command) = cmd_rx.recv().await {
         let line = match command {
-            AgentCommand::StartTurn { prompt, attachments } => user_message_line(&prompt, &attachments),
+            AgentCommand::StartTurn {
+                prompt,
+                attachments,
+            } => user_message_line(&prompt, &attachments),
             AgentCommand::InjectMessage { text } => user_message_line(&text, &[]),
             AgentCommand::Shutdown => break,
         };
@@ -206,7 +209,7 @@ async fn reader_task(
     loop {
         let line = match lines.next_line().await {
             Ok(Some(line)) => line,
-            Ok(None) => break,      // EOF
+            Ok(None) => break, // EOF
             Err(_) => break,
         };
         if line.trim().is_empty() {
@@ -218,24 +221,27 @@ async fn reader_task(
         };
 
         match v.get("type").and_then(Value::as_str) {
-            Some("system") => {
-                if v.get("subtype").and_then(Value::as_str) == Some("init") {
-                    if let Some(sid) = v.get("session_id").and_then(Value::as_str) {
+            Some("system") if v.get("subtype").and_then(Value::as_str) == Some("init") => {
+                if let Some(sid) = v.get("session_id").and_then(Value::as_str) {
+                    let _ = events_tx
+                        .send(AgentEvent::SessionReady {
+                            agent,
+                            native_session_id: sid.to_string(),
+                        })
+                        .await;
+                }
+                if let Some(skills) = v.get("skills").and_then(Value::as_array) {
+                    let list: Vec<String> = skills
+                        .iter()
+                        .filter_map(|s| s.as_str().map(String::from))
+                        .collect();
+                    if !list.is_empty() {
                         let _ = events_tx
-                            .send(AgentEvent::SessionReady {
+                            .send(AgentEvent::Skills {
                                 agent,
-                                native_session_id: sid.to_string(),
+                                skills: list,
                             })
                             .await;
-                    }
-                    if let Some(skills) = v.get("skills").and_then(Value::as_array) {
-                        let list: Vec<String> = skills
-                            .iter()
-                            .filter_map(|s| s.as_str().map(String::from))
-                            .collect();
-                        if !list.is_empty() {
-                            let _ = events_tx.send(AgentEvent::Skills { agent, skills: list }).await;
-                        }
                     }
                 }
             }
@@ -249,8 +255,7 @@ async fn reader_task(
                                 .await;
                         }
                         Some("content_block_delta") => {
-                            if let Some(text) =
-                                event.pointer("/delta/text").and_then(Value::as_str)
+                            if let Some(text) = event.pointer("/delta/text").and_then(Value::as_str)
                             {
                                 let _ = events_tx
                                     .send(AgentEvent::TokenDelta {
@@ -266,9 +271,7 @@ async fn reader_task(
                 }
             }
             Some("assistant") => {
-                if let Some(content) =
-                    v.pointer("/message/content").and_then(Value::as_array)
-                {
+                if let Some(content) = v.pointer("/message/content").and_then(Value::as_array) {
                     let mut text = String::new();
                     for block in content {
                         match block.get("type").and_then(Value::as_str) {

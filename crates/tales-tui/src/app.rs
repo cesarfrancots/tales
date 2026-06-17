@@ -83,7 +83,10 @@ impl App {
     }
 
     fn label_of(&self, agent: &Uuid) -> String {
-        self.labels.get(agent).cloned().unwrap_or_else(|| "?".to_string())
+        self.labels
+            .get(agent)
+            .cloned()
+            .unwrap_or_else(|| "?".to_string())
     }
 
     /// Fold a bus event into the chat state.
@@ -116,7 +119,10 @@ impl App {
             OrchestratorEvent::TurnComplete { agent, cost_usd } => {
                 self.partial.remove(&agent);
                 if let Some(c) = cost_usd {
-                    self.sys(format!("{} · ${c:.4}", pretty(&self.label_of(&agent))), SysKind::Note);
+                    self.sys(
+                        format!("{} · ${c:.4}", pretty(&self.label_of(&agent))),
+                        SysKind::Note,
+                    );
                 }
             }
             OrchestratorEvent::PhaseChanged { phase } => {
@@ -125,7 +131,10 @@ impl App {
                 }
                 self.phase = phase;
             }
-            OrchestratorEvent::RecommendationReady { executor, rationale } => {
+            OrchestratorEvent::RecommendationReady {
+                executor,
+                rationale,
+            } => {
                 self.recommended = Some(executor.clone());
                 self.sys(
                     format!("recommend {}\n{}", pretty(&executor), rationale.trim()),
@@ -136,13 +145,20 @@ impl App {
                 self.awaiting = true;
             }
             OrchestratorEvent::AgentExited { agent, code } => {
-                self.sys(format!("{} exited ({code:?})", pretty(&self.label_of(&agent))), SysKind::Note);
+                self.sys(
+                    format!("{} exited ({code:?})", pretty(&self.label_of(&agent))),
+                    SysKind::Note,
+                );
             }
             OrchestratorEvent::Log { level, msg } => {
                 if msg.contains(" speaking as ") {
                     return; // shown as the thinking block instead
                 }
-                let kind = if level == "error" { SysKind::Err } else { SysKind::Note };
+                let kind = if level == "error" {
+                    SysKind::Err
+                } else {
+                    SysKind::Note
+                };
                 self.sys(msg, kind);
             }
             OrchestratorEvent::Fatal { msg } => self.sys(format!("✗ {msg}"), SysKind::Err),
@@ -161,9 +177,16 @@ impl App {
             } else {
                 let p = expand_path(raw);
                 if p.is_file() {
-                    let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("file").to_string();
+                    let name = p
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("file")
+                        .to_string();
                     self.pending_attachments.push(p);
-                    self.sys(format!("📎 {name} — sent with your next message"), SysKind::Note);
+                    self.sys(
+                        format!("📎 {name} — sent with your next message"),
+                        SysKind::Note,
+                    );
                 } else {
                     self.sys(format!("not found: {raw}"), SysKind::Err);
                 }
@@ -206,7 +229,14 @@ impl App {
         for b in &self.blocks {
             match b {
                 Block::Agent { label, role, text } => {
-                    agent_block(&mut out, color_for(label), &pretty(label), role.as_deref(), text, width);
+                    agent_block(
+                        &mut out,
+                        color_for(label),
+                        &pretty(label),
+                        role.as_deref(),
+                        text,
+                        width,
+                    );
                 }
                 Block::You(text) => agent_block(&mut out, YOU, "You", None, text, width),
                 Block::Sys(text, kind) => sys_block(&mut out, text, *kind, width),
@@ -235,7 +265,10 @@ impl App {
 fn header(out: &mut Vec<Line<'static>>, color: Color, name: &str, role: Option<&str>) {
     let mut spans = vec![
         Span::styled("▌ ", Style::default().fg(color)),
-        Span::styled(name.to_string(), Style::default().fg(color).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            name.to_string(),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ),
     ];
     if let Some(r) = role {
         spans.push(Span::raw("  "));
@@ -245,7 +278,10 @@ fn header(out: &mut Vec<Line<'static>>, color: Color, name: &str, role: Option<&
 }
 
 fn indent_line(s: &str, color: Color) -> Line<'static> {
-    Line::from(vec![Span::raw("  "), Span::styled(s.to_string(), Style::default().fg(color))])
+    Line::from(vec![
+        Span::raw("  "),
+        Span::styled(s.to_string(), Style::default().fg(color)),
+    ])
 }
 
 fn body(out: &mut Vec<Line<'static>>, text: &str, width: usize) {
@@ -262,7 +298,14 @@ fn body(out: &mut Vec<Line<'static>>, text: &str, width: usize) {
     }
 }
 
-fn agent_block(out: &mut Vec<Line<'static>>, color: Color, name: &str, role: Option<&str>, text: &str, width: usize) {
+fn agent_block(
+    out: &mut Vec<Line<'static>>,
+    color: Color,
+    name: &str,
+    role: Option<&str>,
+    text: &str,
+    width: usize,
+) {
     header(out, color, name, role);
     body(out, text, width);
     out.push(Line::from(""));
@@ -329,7 +372,12 @@ mod tests {
     fn text_of(lines: &[Line<'static>]) -> String {
         lines
             .iter()
-            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -338,14 +386,27 @@ mod tests {
     fn renders_streamed_then_finalized_messages() {
         let agent = Uuid::new_v4();
         let mut app = App::new("build a thing".into());
-        app.apply(OrchestratorEvent::AgentSpawned { agent, label: "claude".into(), session_id: String::new() });
-        app.apply(OrchestratorEvent::Token { agent, text: "hello ".into() });
-        app.apply(OrchestratorEvent::Token { agent, text: "world".into() });
+        app.apply(OrchestratorEvent::AgentSpawned {
+            agent,
+            label: "claude".into(),
+            session_id: String::new(),
+        });
+        app.apply(OrchestratorEvent::Token {
+            agent,
+            text: "hello ".into(),
+        });
+        app.apply(OrchestratorEvent::Token {
+            agent,
+            text: "world".into(),
+        });
         let mid = text_of(&app.render_lines(80));
         assert!(mid.contains("Claude Code"));
         assert!(mid.contains("hello world"));
 
-        app.apply(OrchestratorEvent::Message { agent, text: "hello world, done".into() });
+        app.apply(OrchestratorEvent::Message {
+            agent,
+            text: "hello world, done".into(),
+        });
         let done = text_of(&app.render_lines(80));
         assert!(done.contains("hello world, done"));
     }
@@ -354,9 +415,19 @@ mod tests {
     fn role_badge_from_turn_started() {
         let agent = Uuid::new_v4();
         let mut app = App::new("t".into());
-        app.apply(OrchestratorEvent::AgentSpawned { agent, label: "codex".into(), session_id: String::new() });
-        app.apply(OrchestratorEvent::TurnStarted { agent, role: "Critic".into() });
-        app.apply(OrchestratorEvent::Message { agent, text: "a critique".into() });
+        app.apply(OrchestratorEvent::AgentSpawned {
+            agent,
+            label: "codex".into(),
+            session_id: String::new(),
+        });
+        app.apply(OrchestratorEvent::TurnStarted {
+            agent,
+            role: "Critic".into(),
+        });
+        app.apply(OrchestratorEvent::Message {
+            agent,
+            text: "a critique".into(),
+        });
         let r = text_of(&app.render_lines(80));
         assert!(r.contains("Codex"));
         assert!(r.contains("CRITIC"));

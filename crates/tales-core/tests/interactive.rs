@@ -40,9 +40,13 @@ async fn interactive_run_folds_human_note_then_executes_on_confirm() {
     let critic = MockAdapter::new(vec!["a critique".into(), vote.into()]);
 
     let mut orch = Orchestrator::new(bus.clone());
-    orch.add_agent(Box::new(drafter), ctx(Uuid::new_v4(), "claude"), Role::Drafter)
-        .await
-        .unwrap();
+    orch.add_agent(
+        Box::new(drafter),
+        ctx(Uuid::new_v4(), "claude"),
+        Role::Drafter,
+    )
+    .await
+    .unwrap();
     orch.add_agent(Box::new(critic), ctx(Uuid::new_v4(), "codex"), Role::Critic)
         .await
         .unwrap();
@@ -83,8 +87,14 @@ async fn interactive_run_folds_human_note_then_executes_on_confirm() {
 
     // The human's note must have been recorded in the transcript so agents saw it.
     let transcript = orch.blackboard().transcript_text();
-    assert!(transcript.contains("rate limits"), "transcript: {transcript}");
-    assert!(transcript.contains("you — Human"), "transcript: {transcript}");
+    assert!(
+        transcript.contains("rate limits"),
+        "transcript: {transcript}"
+    );
+    assert!(
+        transcript.contains("you — Human"),
+        "transcript: {transcript}"
+    );
 
     orch.shutdown().await;
 
@@ -110,9 +120,13 @@ async fn interactive_run_rejected_does_not_execute() {
     let critic = MockAdapter::new(vec!["critique".into(), vote.into()]);
 
     let mut orch = Orchestrator::new(bus.clone());
-    orch.add_agent(Box::new(drafter), ctx(Uuid::new_v4(), "claude"), Role::Drafter)
-        .await
-        .unwrap();
+    orch.add_agent(
+        Box::new(drafter),
+        ctx(Uuid::new_v4(), "claude"),
+        Role::Drafter,
+    )
+    .await
+    .unwrap();
     orch.add_agent(Box::new(critic), ctx(Uuid::new_v4(), "codex"), Role::Critic)
         .await
         .unwrap();

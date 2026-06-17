@@ -1,12 +1,13 @@
 //! `tales` — command-line frontend over the orchestration core.
 //!
-//! Two subcommands:
-//!   * `solo`    — drive a single agent for one turn (claude or codex).
-//!   * `discuss` — run a live drafter/critic discussion between two agents,
-//!                 streaming the conversation to the console.
+//! Subcommands:
+//! - `solo` — drive a single agent for one turn (claude or codex).
+//! - `discuss` — a live drafter/critic discussion between two agents.
+//! - `run` — the full pipeline (discuss → recommend → execute), scriptable.
 //!
-//! This is a thin frontend: it only subscribes to `OrchestratorEvent`s and
-//! sends commands. The ratatui TUI (M7) is a second frontend over the same bus.
+//! A thin frontend: it subscribes to `OrchestratorEvent`s and sends commands.
+//! `tales-tui` (terminal) and `tales-web` (browser) are richer frontends over
+//! the same bus.
 
 use std::collections::HashMap;
 use std::io::Write as _;
@@ -116,7 +117,9 @@ fn make_adapter(name: &str) -> Result<Box<dyn AgentAdapter>, String> {
     match name {
         "codex" => Ok(Box::new(CodexAdapter::new())),
         "claude" => Ok(Box::new(ClaudeAdapter::new())),
-        other => Err(format!("unknown agent '{other}' (expected: claude | codex)")),
+        other => Err(format!(
+            "unknown agent '{other}' (expected: claude | codex)"
+        )),
     }
 }
 
@@ -151,7 +154,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             worktree,
         } => {
             run_pipeline(
-                prompt, drafter, critic, execute, drafter_model, critic_model, turns, cwd, sandbox,
+                prompt,
+                drafter,
+                critic,
+                execute,
+                drafter_model,
+                critic_model,
+                turns,
+                cwd,
+                sandbox,
                 worktree,
             )
             .await
@@ -212,7 +223,10 @@ async fn run_solo(
     let cmd_tx = adapter.spawn(ctx, events_tx).await?;
     let attachments: Vec<Attachment> = images.iter().map(Attachment::new).collect();
     cmd_tx
-        .send(AgentCommand::StartTurn { prompt, attachments })
+        .send(AgentCommand::StartTurn {
+            prompt,
+            attachments,
+        })
         .await?;
 
     let mut streaming = false;
@@ -248,7 +262,10 @@ async fn run_solo(
                 let _ = cmd_tx.send(AgentCommand::Shutdown).await;
             }
             AgentEvent::Error { message, fatal, .. } => {
-                eprintln!("\n✗ error{}: {message}", if fatal { " (fatal)" } else { "" });
+                eprintln!(
+                    "\n✗ error{}: {message}",
+                    if fatal { " (fatal)" } else { "" }
+                );
             }
             AgentEvent::Exited { code, .. } => {
                 println!("● agent exited ({code:?})");
@@ -275,40 +292,7 @@ async fn run_discuss(
     let (bus, _commands_rx) = EventBus::new(1024, 64);
 
     // Console frontend: render the conversation as it streams onto the bus.
-    let mut events = bus.subscribe();
-    let printer = tokio::spawn(async move {
-        let mut labels: HashMap<Uuid, String> = HashMap::new();
-        loop {
-            match events.recv().await {
-                Ok(event) => match event {
-                    OrchestratorEvent::AgentSpawned { agent, label, .. } => {
-                        println!("● enrolled {label}");
-                        labels.insert(agent, label);
-                    }
-                    OrchestratorEvent::Log { msg, .. } => {
-                        println!("\n──────── {msg} ────────");
-                    }
-                    OrchestratorEvent::Message { agent, text } => {
-                        let who = labels.get(&agent).cloned().unwrap_or_else(|| "?".into());
-                        println!("\n{who}:\n{text}");
-                    }
-                    OrchestratorEvent::ToolActivity { agent, summary } => {
-                        let who = labels.get(&agent).cloned().unwrap_or_else(|| "?".into());
-                        println!("  ⚙ {who}: {summary}");
-                    }
-                    OrchestratorEvent::TurnComplete { cost_usd, .. } => {
-                        if let Some(c) = cost_usd {
-                            println!("  (turn cost ${c:.4})");
-                        }
-                    }
-                    OrchestratorEvent::Fatal { msg } => println!("✗ fatal: {msg}"),
-                    _ => {}
-                },
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(_) => break, // bus closed
-            }
-        }
-    });
+    let printer = spawn_printer(&bus);
 
     let mut orch = Orchestrator::new(bus.clone());
 
@@ -352,6 +336,50 @@ async fn run_discuss(
 
 fn flush() {
     let _ = std::io::stdout().flush();
+}
+
+/// Spawn a console printer that renders orchestration events as they stream onto
+/// the bus. Shared by `discuss` and `run`.
+fn spawn_printer(bus: &EventBus) -> tokio::task::JoinHandle<()> {
+    let mut events = bus.subscribe();
+    tokio::spawn(async move {
+        let mut labels: HashMap<Uuid, String> = HashMap::new();
+        loop {
+            match events.recv().await {
+                Ok(ev) => match ev {
+                    OrchestratorEvent::AgentSpawned { agent, label, .. } => {
+                        println!("● enrolled {label}");
+                        labels.insert(agent, label);
+                    }
+                    OrchestratorEvent::Log { msg, .. } => println!("\n──────── {msg} ────────"),
+                    OrchestratorEvent::Message { agent, text } => {
+                        let who = labels.get(&agent).cloned().unwrap_or_else(|| "?".into());
+                        println!("\n{who}:\n{text}");
+                    }
+                    OrchestratorEvent::UserMessage { text } => println!("\nyou:\n{text}"),
+                    OrchestratorEvent::ToolActivity { agent, summary } => {
+                        let who = labels.get(&agent).cloned().unwrap_or_else(|| "?".into());
+                        println!("  ⚙ {who}: {summary}");
+                    }
+                    OrchestratorEvent::RecommendationReady {
+                        executor,
+                        rationale,
+                    } => {
+                        println!("\n★ recommended executor: {executor}\n{rationale}");
+                    }
+                    OrchestratorEvent::TurnComplete {
+                        cost_usd: Some(c), ..
+                    } => {
+                        println!("  (turn cost ${c:.4})");
+                    }
+                    OrchestratorEvent::Fatal { msg } => println!("✗ fatal: {msg}"),
+                    _ => {}
+                },
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(_) => break,
+            }
+        }
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -402,42 +430,7 @@ async fn run_pipeline(
     let (bus, mut commands_rx) = EventBus::new(2048, 64);
     let commands_tx = bus.commands();
 
-    let mut events = bus.subscribe();
-    let printer = tokio::spawn(async move {
-        let mut labels: HashMap<Uuid, String> = HashMap::new();
-        loop {
-            match events.recv().await {
-                Ok(ev) => match ev {
-                    OrchestratorEvent::AgentSpawned { agent, label, .. } => {
-                        println!("● enrolled {label}");
-                        labels.insert(agent, label);
-                    }
-                    OrchestratorEvent::Log { msg, .. } => println!("\n──────── {msg} ────────"),
-                    OrchestratorEvent::Message { agent, text } => {
-                        let who = labels.get(&agent).cloned().unwrap_or_else(|| "?".into());
-                        println!("\n{who}:\n{text}");
-                    }
-                    OrchestratorEvent::UserMessage { text } => println!("\nyou:\n{text}"),
-                    OrchestratorEvent::ToolActivity { agent, summary } => {
-                        let who = labels.get(&agent).cloned().unwrap_or_else(|| "?".into());
-                        println!("  ⚙ {who}: {summary}");
-                    }
-                    OrchestratorEvent::RecommendationReady { executor, rationale } => {
-                        println!("\n★ recommended executor: {executor}\n{rationale}");
-                    }
-                    OrchestratorEvent::TurnComplete { cost_usd, .. } => {
-                        if let Some(c) = cost_usd {
-                            println!("  (turn cost ${c:.4})");
-                        }
-                    }
-                    OrchestratorEvent::Fatal { msg } => println!("✗ fatal: {msg}"),
-                    _ => {}
-                },
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(_) => break,
-            }
-        }
-    });
+    let printer = spawn_printer(&bus);
 
     // The executor must be one of the two participants.
     let exec_lc = execute.to_lowercase();
@@ -457,7 +450,12 @@ async fn run_pipeline(
     // shell mkdir is needed). Non-executors and Codex are unrestricted.
     let tools_for = |label: &str| -> Option<Vec<String>> {
         if label.to_lowercase() == exec_lc && label.to_lowercase() == "claude" {
-            Some(vec!["Write".into(), "Edit".into(), "MultiEdit".into(), "Read".into()])
+            Some(vec![
+                "Write".into(),
+                "Edit".into(),
+                "MultiEdit".into(),
+                "Read".into(),
+            ])
         } else {
             None
         }
@@ -465,7 +463,11 @@ async fn run_pipeline(
 
     let drafter_id = Uuid::new_v4();
     let critic_id = Uuid::new_v4();
-    let exec_id = if exec_is_drafter { drafter_id } else { critic_id };
+    let exec_id = if exec_is_drafter {
+        drafter_id
+    } else {
+        critic_id
+    };
 
     // Optional git-worktree isolation: the executor runs in its own worktree,
     // and the result is merged back after execution.
@@ -486,7 +488,11 @@ async fn run_pipeline(
     // The orchestrator executes the FIRST roster entry whose label matches, so
     // when both roles share a label the drafter is the executor. Give the
     // worktree cwd only to that one agent; the other stays on the base cwd.
-    let drafter_cwd = if exec_is_drafter { exec_cwd.clone() } else { cwd.clone() };
+    let drafter_cwd = if exec_is_drafter {
+        exec_cwd.clone()
+    } else {
+        cwd.clone()
+    };
     let critic_cwd = if exec_is_critic && !exec_is_drafter {
         exec_cwd.clone()
     } else {
@@ -499,13 +505,29 @@ async fn run_pipeline(
         let mut orch = Orchestrator::new(bus.clone());
         orch.add_agent(
             make_adapter(&drafter)?,
-            mk_ctx(drafter_id, &drafter, &drafter_cwd, drafter_model, &sandbox, "acceptEdits", tools_for(&drafter)),
+            mk_ctx(
+                drafter_id,
+                &drafter,
+                &drafter_cwd,
+                drafter_model,
+                &sandbox,
+                "acceptEdits",
+                tools_for(&drafter),
+            ),
             Role::Drafter,
         )
         .await?;
         orch.add_agent(
             make_adapter(&critic)?,
-            mk_ctx(critic_id, &critic, &critic_cwd, critic_model, &sandbox, "acceptEdits", tools_for(&critic)),
+            mk_ctx(
+                critic_id,
+                &critic,
+                &critic_cwd,
+                critic_model,
+                &sandbox,
+                "acceptEdits",
+                tools_for(&critic),
+            ),
             Role::Critic,
         )
         .await?;
@@ -513,11 +535,15 @@ async fn run_pipeline(
         // Auto-confirm the executor: queued before the run, it is remembered and
         // honored when the gate opens (non-interactive equivalent of /confirm).
         commands_tx
-            .send(UserCommand::ConfirmExecution { executor: execute.clone() })
+            .send(UserCommand::ConfirmExecution {
+                executor: execute.clone(),
+            })
             .await?;
 
         println!("\n=== run: {prompt}  (executor: {execute}) ===");
-        let outcome = orch.run_interactive(&prompt, turns, &mut commands_rx).await?;
+        let outcome = orch
+            .run_interactive(&prompt, turns, &mut commands_rx)
+            .await?;
         orch.shutdown().await;
         Ok(outcome)
     }

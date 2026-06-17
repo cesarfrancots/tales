@@ -12,7 +12,11 @@ use crate::AgentId;
 #[derive(Clone, Debug)]
 pub enum OrchestratorEvent {
     /// An agent process came up and is ready to take turns.
-    AgentSpawned { agent: AgentId, label: String, session_id: String },
+    AgentSpawned {
+        agent: AgentId,
+        label: String,
+        session_id: String,
+    },
     /// A streamed token chunk from an agent (the live "console" feed).
     Token { agent: AgentId, text: String },
     /// An agent's turn is starting (carries the agent id + its role). Frontends
@@ -26,7 +30,10 @@ pub enum OrchestratorEvent {
     /// An agent invoked a tool (edit, bash, …).
     ToolActivity { agent: AgentId, summary: String },
     /// An agent finished a turn; `cost_usd` is the cumulative reported cost.
-    TurnComplete { agent: AgentId, cost_usd: Option<f64> },
+    TurnComplete {
+        agent: AgentId,
+        cost_usd: Option<f64>,
+    },
     /// An agent process exited.
     AgentExited { agent: AgentId, code: Option<i32> },
     /// The discussion phase changed (planning → recommending → …).

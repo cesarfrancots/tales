@@ -1,33 +1,52 @@
-//! TUI application state: the chat transcript, streaming partials, and the
-//! mapping from user input to [`UserCommand`]s.
+//! TUI state + Warp-style block rendering.
+//!
+//! Each agent turn renders as a "block": a colored left bar + name + role badge
+//! header, then an indented body. Minimal chrome, restrained palette, monospace
+//! (a terminal is monospace by nature) — clean and lightweight.
 
 use std::collections::HashMap;
 
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 use tales_core::event::{OrchestratorEvent, UserCommand};
 use uuid::Uuid;
 
-/// Who said a line.
-pub enum Speaker {
-    Agent(String),
-    You,
-    System,
+// ── palette (truecolor; degrades gracefully) ─────────────────────────────────
+const TEXT: Color = Color::Rgb(0xd2, 0xd8, 0xe2);
+const DIM: Color = Color::Rgb(0x6b, 0x74, 0x83);
+const FAINT: Color = Color::Rgb(0x44, 0x4d, 0x5a);
+const CLAUDE: Color = Color::Rgb(0x5c, 0xb0, 0xff);
+const CODEX: Color = Color::Rgb(0xc0, 0x8c, 0xff);
+const YOU: Color = Color::Rgb(0x7e, 0xe0, 0xa3);
+const ACCENT: Color = Color::Rgb(0x2d, 0xd4, 0xbf);
+const ERRC: Color = Color::Rgb(0xff, 0x7a, 0x85);
+
+#[derive(Clone, Copy)]
+enum SysKind {
+    Note,
+    Rec,
+    Err,
 }
 
-pub struct ChatLine {
-    pub speaker: Speaker,
-    pub text: String,
+enum Block {
+    Agent {
+        label: String,
+        role: Option<String>,
+        text: String,
+    },
+    You(String),
+    Sys(String, SysKind),
 }
 
 /// All UI state.
 pub struct App {
     pub task: String,
     pub phase: String,
-    pub lines: Vec<ChatLine>,
-    /// In-progress streamed text per agent: agent -> (label, partial).
-    partial: HashMap<Uuid, (String, String)>,
+    blocks: Vec<Block>,
+    /// In-progress streamed text per agent (empty string = "thinking").
+    partial: HashMap<Uuid, String>,
     labels: HashMap<Uuid, String>,
+    roles: HashMap<Uuid, String>,
     pub input: String,
     pub recommended: Option<String>,
     pub awaiting: bool,
@@ -39,9 +58,10 @@ impl App {
         Self {
             task,
             phase: "idle".to_string(),
-            lines: Vec::new(),
+            blocks: Vec::new(),
             partial: HashMap::new(),
             labels: HashMap::new(),
+            roles: HashMap::new(),
             input: String::new(),
             recommended: None,
             awaiting: false,
@@ -49,11 +69,8 @@ impl App {
         }
     }
 
-    fn sys(&mut self, text: impl Into<String>) {
-        self.lines.push(ChatLine {
-            speaker: Speaker::System,
-            text: text.into(),
-        });
+    fn sys(&mut self, text: impl Into<String>, kind: SysKind) {
+        self.blocks.push(Block::Sys(text.into(), kind));
     }
 
     fn label_of(&self, agent: &Uuid) -> String {
@@ -65,77 +82,65 @@ impl App {
         match ev {
             OrchestratorEvent::AgentSpawned { agent, label, .. } => {
                 self.labels.insert(agent, label.clone());
-                self.sys(format!("● {label} joined the conversation"));
+                self.sys(format!("{} joined", pretty(&label)), SysKind::Note);
+            }
+            OrchestratorEvent::TurnStarted { agent, role } => {
+                self.roles.insert(agent, role);
+                self.partial.entry(agent).or_default(); // empty = thinking placeholder
             }
             OrchestratorEvent::Token { agent, text } => {
-                let label = self.label_of(&agent);
-                self.partial
-                    .entry(agent)
-                    .or_insert((label, String::new()))
-                    .1
-                    .push_str(&text);
+                self.partial.entry(agent).or_default().push_str(&text);
             }
             OrchestratorEvent::Message { agent, text } => {
-                let label = self.label_of(&agent);
                 self.partial.remove(&agent);
-                self.lines.push(ChatLine {
-                    speaker: Speaker::Agent(label),
-                    text,
-                });
+                let label = self.label_of(&agent);
+                let role = self.roles.get(&agent).cloned();
+                self.blocks.push(Block::Agent { label, role, text });
             }
             OrchestratorEvent::UserMessage { text } => {
-                self.lines.push(ChatLine {
-                    speaker: Speaker::You,
-                    text,
-                });
+                self.blocks.push(Block::You(text));
             }
-            // The TUI already shows the "speaking as" Log line; nothing to do.
-            OrchestratorEvent::TurnStarted { .. } => {}
             OrchestratorEvent::ToolActivity { agent, summary } => {
                 let label = self.label_of(&agent);
-                self.sys(format!("⚙ {label}: {summary}"));
+                self.sys(format!("⚙ {} · {summary}", pretty(&label)), SysKind::Note);
             }
             OrchestratorEvent::TurnComplete { agent, cost_usd } => {
                 self.partial.remove(&agent);
                 if let Some(c) = cost_usd {
-                    self.sys(format!("   (turn cost ${c:.4})"));
+                    self.sys(format!("{} · ${c:.4}", pretty(&self.label_of(&agent))), SysKind::Note);
                 }
             }
             OrchestratorEvent::PhaseChanged { phase } => {
-                self.phase = phase.clone();
-                self.sys(format!("— phase: {phase} —"));
                 if phase != "awaitingconfirmation" {
                     self.awaiting = false;
                 }
+                self.phase = phase;
             }
             OrchestratorEvent::RecommendationReady { executor, rationale } => {
                 self.recommended = Some(executor.clone());
-                self.lines.push(ChatLine {
-                    speaker: Speaker::System,
-                    text: format!("★ Recommended executor: {executor}\n{rationale}"),
-                });
+                self.sys(
+                    format!("recommend {}\n{}", pretty(&executor), rationale.trim()),
+                    SysKind::Rec,
+                );
             }
-            OrchestratorEvent::AwaitingConfirmation { prompt } => {
+            OrchestratorEvent::AwaitingConfirmation { .. } => {
                 self.awaiting = true;
-                self.sys(format!(
-                    "⏸ {prompt}\n   → /confirm  ·  /confirm <agent>  ·  /reject"
-                ));
             }
             OrchestratorEvent::AgentExited { agent, code } => {
-                let label = self.label_of(&agent);
-                self.sys(format!("● {label} exited ({code:?})"));
+                self.sys(format!("{} exited ({code:?})", pretty(&self.label_of(&agent))), SysKind::Note);
             }
             OrchestratorEvent::Log { level, msg } => {
-                self.sys(format!("[{level}] {msg}"));
+                if msg.contains(" speaking as ") {
+                    return; // shown as the thinking block instead
+                }
+                let kind = if level == "error" { SysKind::Err } else { SysKind::Note };
+                self.sys(msg, kind);
             }
-            OrchestratorEvent::Fatal { msg } => {
-                self.sys(format!("✗ fatal: {msg}"));
-            }
+            OrchestratorEvent::Fatal { msg } => self.sys(format!("✗ {msg}"), SysKind::Err),
         }
     }
 
-    /// Interpret the current input line on Enter and clear it. Returns the
-    /// command to send to the engine, if any.
+    /// Interpret the input line on Enter and clear it.
     pub fn submit_input(&mut self) -> Option<UserCommand> {
         let text = self.input.trim().to_string();
         self.input.clear();
@@ -149,57 +154,139 @@ impl App {
             } else {
                 arg.to_string()
             };
-            self.sys(format!("you → confirm executor: {executor}"));
             return Some(UserCommand::ConfirmExecution { executor });
         }
         if text == "/reject" {
-            self.sys("you → reject the plan");
             return Some(UserCommand::Reject);
         }
         if text == "/quit" {
             self.should_quit = true;
             return Some(UserCommand::Shutdown);
         }
-        // Plain text is a chat interjection. The engine echoes it back as a
-        // UserMessage, so we don't add the line here (avoids duplication).
         Some(UserCommand::InjectNote {
             agent: Uuid::nil(),
             text,
         })
     }
 
-    /// Build styled, width-wrapped render lines (transcript + live partials).
+    /// Build the Warp-style block render lines (transcript + live partials).
     pub fn render_lines(&self, width: usize) -> Vec<Line<'static>> {
-        let width = width.max(8);
+        let width = width.max(10);
         let mut out: Vec<Line<'static>> = Vec::new();
 
-        for cl in &self.lines {
-            let (prefix, style) = match &cl.speaker {
-                Speaker::Agent(l) => (format!("{l}: "), style_for(l)),
-                Speaker::You => (
-                    "you: ".to_string(),
-                    Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
-                ),
-                Speaker::System => (String::new(), Style::default().fg(Color::DarkGray)),
-            };
-            push_wrapped(&mut out, &prefix, &cl.text, style, width);
+        for b in &self.blocks {
+            match b {
+                Block::Agent { label, role, text } => {
+                    agent_block(&mut out, color_for(label), &pretty(label), role.as_deref(), text, width);
+                }
+                Block::You(text) => agent_block(&mut out, YOU, "You", None, text, width),
+                Block::Sys(text, kind) => sys_block(&mut out, text, *kind, width),
+            }
         }
 
-        // Live, still-streaming text.
-        for (label, text) in self.partial.values() {
+        // Live partials (one active at a time in the discussion).
+        for (agent, text) in &self.partial {
+            let label = self.label_of(agent);
+            let role = self.roles.get(agent).cloned();
+            let color = color_for(&label);
+            header(&mut out, color, &pretty(&label), role.as_deref());
             if text.is_empty() {
-                continue;
+                out.push(indent_line("thinking…", DIM));
+            } else {
+                body(&mut out, text, width);
             }
-            push_wrapped(&mut out, &format!("{label} …: "), text, style_for(label), width);
+            out.push(Line::from(""));
         }
         out
+    }
+}
+
+// ── rendering helpers ────────────────────────────────────────────────────────
+
+fn header(out: &mut Vec<Line<'static>>, color: Color, name: &str, role: Option<&str>) {
+    let mut spans = vec![
+        Span::styled("▌ ", Style::default().fg(color)),
+        Span::styled(name.to_string(), Style::default().fg(color).add_modifier(Modifier::BOLD)),
+    ];
+    if let Some(r) = role {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(r.to_uppercase(), Style::default().fg(FAINT)));
+    }
+    out.push(Line::from(spans));
+}
+
+fn indent_line(s: &str, color: Color) -> Line<'static> {
+    Line::from(vec![Span::raw("  "), Span::styled(s.to_string(), Style::default().fg(color))])
+}
+
+fn body(out: &mut Vec<Line<'static>>, text: &str, width: usize) {
+    let iw = width.saturating_sub(2).max(8);
+    for segment in text.split('\n') {
+        if segment.is_empty() {
+            out.push(Line::from(""));
+            continue;
+        }
+        let chars: Vec<char> = segment.chars().collect();
+        for chunk in chars.chunks(iw) {
+            out.push(indent_line(&chunk.iter().collect::<String>(), TEXT));
+        }
+    }
+}
+
+fn agent_block(out: &mut Vec<Line<'static>>, color: Color, name: &str, role: Option<&str>, text: &str, width: usize) {
+    header(out, color, name, role);
+    body(out, text, width);
+    out.push(Line::from(""));
+}
+
+fn sys_block(out: &mut Vec<Line<'static>>, text: &str, kind: SysKind, width: usize) {
+    let (color, bullet) = match kind {
+        SysKind::Note => (DIM, "· "),
+        SysKind::Rec => (ACCENT, "★ "),
+        SysKind::Err => (ERRC, "✗ "),
+    };
+    for (i, seg) in text.split('\n').enumerate() {
+        let prefix = if i == 0 { bullet } else { "  " };
+        let chars: Vec<char> = seg.chars().collect();
+        let iw = width.saturating_sub(2).max(8);
+        if chars.is_empty() {
+            continue;
+        }
+        for (j, chunk) in chars.chunks(iw).enumerate() {
+            let p = if i == 0 && j == 0 { prefix } else { "  " };
+            out.push(Line::from(vec![
+                Span::styled(p.to_string(), Style::default().fg(color)),
+                Span::styled(chunk.iter().collect::<String>(), Style::default().fg(color)),
+            ]));
+        }
+    }
+}
+
+fn pretty(label: &str) -> String {
+    match label.to_lowercase().as_str() {
+        "claude" => "Claude Code".to_string(),
+        "codex" => "Codex".to_string(),
+        other => {
+            let mut c = other.chars();
+            match c.next() {
+                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                None => other.to_string(),
+            }
+        }
+    }
+}
+
+fn color_for(label: &str) -> Color {
+    match label.to_lowercase().as_str() {
+        "claude" => CLAUDE,
+        "codex" => CODEX,
+        _ => Color::Rgb(0xff, 0xc7, 0x77),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tales_core::event::OrchestratorEvent;
 
     fn text_of(lines: &[Line<'static>]) -> String {
         lines
@@ -213,90 +300,48 @@ mod tests {
     fn renders_streamed_then_finalized_messages() {
         let agent = Uuid::new_v4();
         let mut app = App::new("build a thing".into());
-
-        app.apply(OrchestratorEvent::AgentSpawned {
-            agent,
-            label: "claude".into(),
-            session_id: String::new(),
-        });
-        // Streaming tokens show as a live partial...
+        app.apply(OrchestratorEvent::AgentSpawned { agent, label: "claude".into(), session_id: String::new() });
         app.apply(OrchestratorEvent::Token { agent, text: "hello ".into() });
         app.apply(OrchestratorEvent::Token { agent, text: "world".into() });
         let mid = text_of(&app.render_lines(80));
-        assert!(mid.contains("claude"));
+        assert!(mid.contains("Claude Code"));
         assert!(mid.contains("hello world"));
 
-        // ...then a final Message replaces the partial.
-        app.apply(OrchestratorEvent::Message {
-            agent,
-            text: "hello world, done".into(),
-        });
+        app.apply(OrchestratorEvent::Message { agent, text: "hello world, done".into() });
         let done = text_of(&app.render_lines(80));
         assert!(done.contains("hello world, done"));
     }
 
     #[test]
-    fn confirm_and_reject_map_to_commands() {
+    fn role_badge_from_turn_started() {
+        let agent = Uuid::new_v4();
+        let mut app = App::new("t".into());
+        app.apply(OrchestratorEvent::AgentSpawned { agent, label: "codex".into(), session_id: String::new() });
+        app.apply(OrchestratorEvent::TurnStarted { agent, role: "Critic".into() });
+        app.apply(OrchestratorEvent::Message { agent, text: "a critique".into() });
+        let r = text_of(&app.render_lines(80));
+        assert!(r.contains("Codex"));
+        assert!(r.contains("CRITIC"));
+    }
+
+    #[test]
+    fn commands_map_correctly() {
         let mut app = App::new("t".into());
         app.recommended = Some("claude".into());
-
         app.input = "/confirm".into();
         match app.submit_input() {
             Some(UserCommand::ConfirmExecution { executor }) => assert_eq!(executor, "claude"),
             other => panic!("expected confirm, got {other:?}"),
         }
-
         app.input = "/reject".into();
         assert!(matches!(app.submit_input(), Some(UserCommand::Reject)));
-
         app.input = "please add tests".into();
         match app.submit_input() {
             Some(UserCommand::InjectNote { text, .. }) => assert_eq!(text, "please add tests"),
             other => panic!("expected inject note, got {other:?}"),
         }
-
         app.input = "/quit".into();
         assert!(matches!(app.submit_input(), Some(UserCommand::Shutdown)));
         assert!(app.should_quit);
-    }
-
-    #[test]
-    fn shows_recommendation_and_user_message() {
-        let mut app = App::new("t".into());
-        app.apply(OrchestratorEvent::RecommendationReady {
-            executor: "codex".into(),
-            rationale: "codex is better here".into(),
-        });
-        app.apply(OrchestratorEvent::UserMessage { text: "go with codex".into() });
-        let rendered = text_of(&app.render_lines(80));
-        assert!(rendered.contains("Recommended executor: codex"));
-        assert!(rendered.contains("you: go with codex"));
-        assert_eq!(app.recommended.as_deref(), Some("codex"));
-    }
-}
-
-fn style_for(label: &str) -> Style {
-    let color = match label.to_lowercase().as_str() {
-        "claude" => Color::Cyan,
-        "codex" => Color::Magenta,
-        _ => Color::Yellow,
-    };
-    Style::default().fg(color)
-}
-
-/// Append `prefix + text` to `out` as width-wrapped, uniformly-styled lines,
-/// honoring embedded newlines.
-fn push_wrapped(out: &mut Vec<Line<'static>>, prefix: &str, text: &str, style: Style, width: usize) {
-    let full = format!("{prefix}{text}");
-    for segment in full.split('\n') {
-        if segment.is_empty() {
-            out.push(Line::from(""));
-            continue;
-        }
-        let chars: Vec<char> = segment.chars().collect();
-        for chunk in chars.chunks(width) {
-            let s: String = chunk.iter().collect();
-            out.push(Line::styled(s, style));
-        }
     }
 }

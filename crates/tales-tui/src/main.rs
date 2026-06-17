@@ -18,9 +18,10 @@ use crossterm::terminal::{
 use crossterm::execute;
 use futures::StreamExt;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Layout};
-use ratatui::style::{Modifier, Style};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::layout::{Alignment, Constraint, Layout};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::Paragraph;
 use ratatui::{Frame, Terminal};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
@@ -163,38 +164,64 @@ async fn run_ui(
 }
 
 fn draw(f: &mut Frame, app: &App) {
+    const ACCENT: Color = Color::Rgb(0x2d, 0xd4, 0xbf);
+    const DIM: Color = Color::Rgb(0x6b, 0x74, 0x83);
+    const FAINT: Color = Color::Rgb(0x44, 0x4d, 0x5a);
+    const TEXT: Color = Color::Rgb(0xd2, 0xd8, 0xe2);
+    let bold = Modifier::BOLD;
+
     let chunks = Layout::vertical([
-        Constraint::Length(2),
-        Constraint::Min(3),
-        Constraint::Length(3),
+        Constraint::Length(1), // header
+        Constraint::Min(1),    // transcript
+        Constraint::Length(1), // input
+        Constraint::Length(1), // hint
     ])
     .split(f.area());
 
-    // Header.
-    let header = Paragraph::new(format!(
-        "Tales · task: {}   ·   phase: {}",
-        app.task, app.phase
-    ))
-    .style(Style::default().add_modifier(Modifier::BOLD));
-    f.render_widget(header, chunks[0]);
+    // Header: "❯ tales · <task>" left, "[phase]" right — same row.
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("❯", Style::default().fg(ACCENT).add_modifier(bold)),
+            Span::styled(" tales ", Style::default().fg(TEXT).add_modifier(bold)),
+            Span::styled(format!("· {}", app.task), Style::default().fg(DIM)),
+        ])),
+        chunks[0],
+    );
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("[{}] ", app.phase),
+            Style::default().fg(ACCENT),
+        )))
+        .alignment(Alignment::Right),
+        chunks[0],
+    );
 
-    // Conversation (auto-tailed to the bottom).
+    // Transcript, auto-tailed to the bottom (borderless).
     let body = chunks[1];
-    let inner_w = body.width.saturating_sub(2) as usize;
-    let inner_h = body.height.saturating_sub(2) as usize;
+    let inner_w = body.width as usize;
+    let inner_h = body.height as usize;
     let mut lines = app.render_lines(inner_w);
     if lines.len() > inner_h {
         lines = lines.split_off(lines.len() - inner_h);
     }
-    let convo = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL).title("conversation"));
-    f.render_widget(convo, body);
+    f.render_widget(Paragraph::new(lines), body);
 
-    // Input.
-    let title = "you — type to talk · /confirm [agent] · /reject · /quit · Ctrl-C";
-    let input = Paragraph::new(format!("> {}", app.input))
-        .block(Block::default().borders(Borders::ALL).title(title));
-    f.render_widget(input, chunks[2]);
+    // Input line.
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("❯ ", Style::default().fg(ACCENT).add_modifier(bold)),
+            Span::styled(app.input.clone(), Style::default().fg(TEXT)),
+        ])),
+        chunks[2],
+    );
+    // Hint.
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "type to talk · /confirm [agent] · /reject · /quit · Ctrl-C",
+            Style::default().fg(FAINT),
+        ))),
+        chunks[3],
+    );
 }
 
 async fn run_session(bus: EventBus, mut commands_rx: mpsc::Receiver<UserCommand>, args: Args) {
@@ -266,5 +293,46 @@ fn make_adapter(name: &str) -> Result<Box<dyn AgentAdapter>, String> {
         "codex" => Ok(Box::new(CodexAdapter::new())),
         "claude" => Ok(Box::new(ClaudeAdapter::new())),
         other => Err(format!("unknown agent '{other}' (expected: claude | codex)")),
+    }
+}
+
+#[cfg(test)]
+mod render_tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use uuid::Uuid;
+
+    /// Render a representative frame to a text grid so the Warp-style layout can
+    /// be eyeballed (`cargo test -p tales-tui -- --nocapture snapshot`).
+    #[test]
+    fn snapshot() {
+        let mut app = App::new("Design a rate limiter for a public API".into());
+        let c = Uuid::new_v4();
+        let x = Uuid::new_v4();
+        app.apply(OrchestratorEvent::AgentSpawned { agent: c, label: "claude".into(), session_id: String::new() });
+        app.apply(OrchestratorEvent::AgentSpawned { agent: x, label: "codex".into(), session_id: String::new() });
+        app.apply(OrchestratorEvent::TurnStarted { agent: c, role: "Drafter".into() });
+        app.apply(OrchestratorEvent::Message { agent: c, text: "Draft plan:\n- token-bucket per API key\n- 429 + Retry-After header".into() });
+        app.apply(OrchestratorEvent::TurnStarted { agent: x, role: "Critic".into() });
+        app.apply(OrchestratorEvent::Message { agent: x, text: "Which algorithm — token-bucket or fixed-window? And the burst size?".into() });
+        app.apply(OrchestratorEvent::RecommendationReady { executor: "claude".into(), rationale: "best at writing the code".into() });
+        app.phase = "awaitingconfirmation".into();
+        app.input = "focus on abuse cases".into();
+
+        let mut term = ratatui::Terminal::new(TestBackend::new(74, 22)).unwrap();
+        term.draw(|f| draw(f, &app)).unwrap();
+        let buf = term.backend().buffer().clone();
+        let mut s = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                s.push_str(buf[(x, y)].symbol());
+            }
+            s.push('\n');
+        }
+        eprintln!("\n{s}");
+        assert!(s.contains("Claude Code"), "{s}");
+        assert!(s.contains("Codex"));
+        assert!(s.contains("DRAFTER"));
+        assert!(s.contains("recommend"));
     }
 }

@@ -5,6 +5,18 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Tales — AI pair programming, with you in control</title>
   <meta name="description" content="Tales lets Claude Code and Codex collaborate on your coding task in a live chat. The AIs discuss a plan, recommend who executes, and you confirm before anything runs." />
+
+  <!-- Open Graph -->
+  <meta property="og:type"        content="website" />
+  <meta property="og:url"         content="https://cesarfrancots.github.io/tales/" />
+  <meta property="og:title"       content="Tales — AI pair programming, with you in control" />
+  <meta property="og:description" content="Claude Code and Codex collaborate on your task in a live chat. They debate, draft a plan, recommend who executes — nothing runs until you approve." />
+
+  <!-- Twitter / X -->
+  <meta name="twitter:card"        content="summary_large_image" />
+  <meta name="twitter:title"       content="Tales — AI pair programming, with you in control" />
+  <meta name="twitter:description" content="Claude Code and Codex collaborate on your task in a live chat. They debate, draft a plan, recommend who executes — nothing runs until you approve." />
+
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -39,7 +51,10 @@
         </div>
         <h1>Two AIs plan.<br/><span class="highlight">You decide</span><br/>what runs.</h1>
         <p class="hero-sub">
-          Tales orchestrates a live chat between Claude Code and Codex. They discuss your task, draft a plan, and recommend who should execute — but nothing happens until you say so.
+          Tales puts Claude Code and Codex in a shared chat on your task. They debate, draft a plan, and recommend which agent should run — nothing executes until you approve.
+        </p>
+        <p class="hero-sub-note">
+          Attach images or PDFs to your task. Tales surfaces each agent's available skills so both sides know what the other can do.
         </p>
         <div class="hero-ctas">
           <a href="https://github.com/cesarfrancots/tales" target="_blank" rel="noopener" class="btn btn-primary">
@@ -187,24 +202,24 @@
       <div>
         <p class="section-label">Quickstart</p>
         <h2>Up and running<br/>in two minutes.</h2>
-        <p class="section-lead">Tales runs locally. No accounts, no API keys beyond your own Claude and OpenAI credentials.</p>
+        <p class="section-lead">Tales runs locally. No accounts — just your own Anthropic and OpenAI API keys.</p>
 
         <ul class="qs-steps">
           <li class="qs-step-item">
             <span class="qs-n">1</span>
-            <p><strong>Clone and install</strong> — grab the repo and install dependencies with npm.</p>
+            <p><strong>Clone</strong> — grab the repo with <code style="color:var(--accent-cyan);font-family:var(--font-mono);font-size:.85em">git clone</code>.</p>
           </li>
           <li class="qs-step-item">
             <span class="qs-n">2</span>
-            <p><strong>Set your keys</strong> — drop your <code style="color:var(--accent-cyan);font-family:var(--font-mono);font-size:.85em">ANTHROPIC_API_KEY</code> and <code style="color:var(--accent-cyan);font-family:var(--font-mono);font-size:.85em">OPENAI_API_KEY</code> into <code style="color:var(--accent-cyan);font-family:var(--font-mono);font-size:.85em">.env</code>.</p>
+            <p><strong>Build</strong> — compile the release binary with <code style="color:var(--accent-cyan);font-family:var(--font-mono);font-size:.85em">cargo build --release</code>.</p>
           </li>
           <li class="qs-step-item">
             <span class="qs-n">3</span>
-            <p><strong>Describe your task</strong> — run <code style="color:var(--accent-cyan);font-family:var(--font-mono);font-size:.85em">tales</code> and type what you want built. The agents take it from there.</p>
+            <p><strong>Set your keys</strong> — export <code style="color:var(--accent-cyan);font-family:var(--font-mono);font-size:.85em">ANTHROPIC_API_KEY</code> and <code style="color:var(--accent-cyan);font-family:var(--font-mono);font-size:.85em">OPENAI_API_KEY</code>.</p>
           </li>
           <li class="qs-step-item">
             <span class="qs-n">4</span>
-            <p><strong>Approve and execute</strong> — review the plan, confirm, and watch it run in isolation.</p>
+            <p><strong>Run</strong> — pass your task as an argument and approve the plan when ready.</p>
           </li>
         </ul>
       </div>
@@ -214,23 +229,19 @@
           <span class="code-lang">shell</span>
         </div>
         <div class="code-body">
-          <pre><span class="c"># 1. Clone</span>
+          <pre><span class="c"># Clone and enter the repo</span>
 <span class="p">git</span> clone https://github.com/cesarfrancots/tales
 <span class="p">cd</span> tales
 
-<span class="c"># 2. Install</span>
-<span class="p">npm</span> install
+<span class="c"># Build the release binary</span>
+<span class="p">cargo</span> build --release
 
-<span class="c"># 3. Configure</span>
-<span class="p">cp</span> .env.example .env
-<span class="c"># → Add ANTHROPIC_API_KEY and OPENAI_API_KEY</span>
+<span class="c"># Export your API keys</span>
+<span class="k">export</span> <span class="v">ANTHROPIC_API_KEY</span>=sk-ant-...
+<span class="k">export</span> <span class="v">OPENAI_API_KEY</span>=sk-...
 
-<span class="c"># 4. Run</span>
-<span class="p">npm</span> run tales
-
-<span class="c"># You'll see:</span>
-<span class="v">Tales</span> <span class="s">›</span> What do you want to build?
-<span class="s">›</span> _</pre>
+<span class="c"># Run with your task</span>
+<span class="p">./target/release/tales-tui</span> <span class="s">"add OAuth login"</span></pre>
         </div>
       </div>
 

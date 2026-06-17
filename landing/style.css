@@ -206,8 +206,17 @@ h1 .highlight { color: var(--accent-cyan); }
   font-size: 1.1rem;
   color: var(--text-secondary);
   max-width: 480px;
-  margin-bottom: 36px;
+  margin-bottom: 10px;
   line-height: 1.7;
+}
+
+.hero-sub-note {
+  font-size: .875rem;
+  color: var(--text-muted);
+  max-width: 480px;
+  margin-bottom: 36px;
+  line-height: 1.6;
+  padding-top: 2px;
 }
 
 .hero-ctas {

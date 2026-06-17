@@ -83,11 +83,48 @@ pub enum AgentEvent {
     Exited { agent: AgentId, code: Option<i32> },
 }
 
+/// A media file (image or PDF) to attach to a turn so the agent can see it.
+#[derive(Clone, Debug)]
+pub struct Attachment {
+    pub path: PathBuf,
+}
+
+impl Attachment {
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+    /// Lowercased file extension (no dot), if any.
+    pub fn ext(&self) -> String {
+        self.path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase()
+    }
+    pub fn is_image(&self) -> bool {
+        matches!(self.ext().as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp")
+    }
+    pub fn is_pdf(&self) -> bool {
+        self.ext() == "pdf"
+    }
+    /// File name for display.
+    pub fn name(&self) -> String {
+        self.path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("file")
+            .to_string()
+    }
+}
+
 /// Normalized outbound commands: orchestrator → agent.
 #[derive(Clone, Debug)]
 pub enum AgentCommand {
-    /// Begin a new turn with `prompt`.
-    StartTurn { prompt: String },
+    /// Begin a new turn with `prompt` and any media attachments to share.
+    StartTurn {
+        prompt: String,
+        attachments: Vec<Attachment>,
+    },
     /// Inject a message. Honored live only if [`AgentCaps::midturn_injection`];
     /// otherwise the adapter queues it for the next turn.
     InjectMessage { text: String },

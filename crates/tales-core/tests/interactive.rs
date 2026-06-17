@@ -54,6 +54,7 @@ async fn interactive_run_folds_human_note_then_executes_on_confirm() {
         .send(UserCommand::InjectNote {
             agent: Uuid::nil(),
             text: "please consider rate limits".into(),
+            attachments: Vec::new(),
         })
         .await
         .unwrap();

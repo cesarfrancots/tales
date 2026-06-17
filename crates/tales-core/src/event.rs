@@ -47,8 +47,13 @@ pub enum UserCommand {
     /// Start a fresh turn for `agent` with `prompt`.
     StartTurn { agent: AgentId, prompt: String },
     /// User joins the discussion — routed live (Claude) or at the next turn
-    /// boundary (Codex), depending on the agent's capabilities.
-    InjectNote { agent: AgentId, text: String },
+    /// boundary (Codex), depending on the agent's capabilities. `attachments`
+    /// are media file paths to share with every connected agent.
+    InjectNote {
+        agent: AgentId,
+        text: String,
+        attachments: Vec<std::path::PathBuf>,
+    },
     /// Release the execution gate: run the plan with the chosen executor. This
     /// is the ONLY way the engine may enter the executing phase.
     ConfirmExecution { executor: String },

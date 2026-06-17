@@ -206,18 +206,18 @@ fn draw(f: &mut Frame, app: &App) {
     }
     f.render_widget(Paragraph::new(lines), body);
 
-    // Input line.
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("❯ ", Style::default().fg(ACCENT).add_modifier(bold)),
-            Span::styled(app.input.clone(), Style::default().fg(TEXT)),
-        ])),
-        chunks[2],
-    );
+    // Input line (with a 📎N indicator when media is queued).
+    let mut input_spans = vec![Span::styled("❯ ", Style::default().fg(ACCENT).add_modifier(bold))];
+    if app.pending_count() > 0 {
+        input_spans.push(Span::styled(format!("📎{} ", app.pending_count()), Style::default().fg(ACCENT)));
+    }
+    input_spans.push(Span::styled(app.input.clone(), Style::default().fg(TEXT)));
+    f.render_widget(Paragraph::new(Line::from(input_spans)), chunks[2]);
+
     // Hint.
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            "type to talk · /confirm [agent] · /reject · /quit · Ctrl-C",
+            "type to talk · /attach <file> · /confirm [agent] · /reject · /quit",
             Style::default().fg(FAINT),
         ))),
         chunks[3],

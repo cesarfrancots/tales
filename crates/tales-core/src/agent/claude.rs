@@ -24,7 +24,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::{mpsc, oneshot};
 
-use super::{AgentAdapter, AgentCaps, AgentCommand, AgentEvent, SpawnCtx, TurnId};
+use base64::Engine as _;
+
+use super::{AgentAdapter, AgentCaps, AgentCommand, AgentEvent, Attachment, SpawnCtx, TurnId};
 use crate::{AgentId, Result, TalesError};
 
 /// Adapter for the `claude` CLI.
@@ -129,15 +131,44 @@ impl AgentAdapter for ClaudeAdapter {
 }
 
 /// One JSON line per user message, matching the `stream-json` input schema.
-fn user_message_line(text: &str) -> String {
-    let v = serde_json::json!({
-        "type": "user",
-        "message": {
-            "role": "user",
-            "content": [ { "type": "text", "text": text } ]
+/// Image/PDF attachments are encoded as base64 content blocks so Claude sees them.
+fn user_message_line(text: &str, attachments: &[Attachment]) -> String {
+    let mut content = vec![serde_json::json!({ "type": "text", "text": text })];
+    for a in attachments {
+        if let Some(block) = attachment_block(a) {
+            content.push(block);
         }
-    });
-    v.to_string()
+    }
+    serde_json::json!({
+        "type": "user",
+        "message": { "role": "user", "content": content }
+    })
+    .to_string()
+}
+
+/// Encode an attachment as a Claude content block (image or document).
+fn attachment_block(a: &Attachment) -> Option<Value> {
+    let bytes = std::fs::read(&a.path).ok()?;
+    let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    if a.is_image() {
+        let media_type = match a.ext().as_str() {
+            "jpg" | "jpeg" => "image/jpeg",
+            "gif" => "image/gif",
+            "webp" => "image/webp",
+            _ => "image/png",
+        };
+        Some(serde_json::json!({
+            "type": "image",
+            "source": { "type": "base64", "media_type": media_type, "data": data }
+        }))
+    } else if a.is_pdf() {
+        Some(serde_json::json!({
+            "type": "document",
+            "source": { "type": "base64", "media_type": "application/pdf", "data": data }
+        }))
+    } else {
+        None
+    }
 }
 
 async fn writer_task(
@@ -146,17 +177,16 @@ async fn writer_task(
     kill_tx: oneshot::Sender<()>,
 ) {
     while let Some(command) = cmd_rx.recv().await {
-        match command {
-            AgentCommand::StartTurn { prompt } | AgentCommand::InjectMessage { text: prompt } => {
-                let line = user_message_line(&prompt);
-                if stdin.write_all(line.as_bytes()).await.is_err()
-                    || stdin.write_all(b"\n").await.is_err()
-                    || stdin.flush().await.is_err()
-                {
-                    break;
-                }
-            }
+        let line = match command {
+            AgentCommand::StartTurn { prompt, attachments } => user_message_line(&prompt, &attachments),
+            AgentCommand::InjectMessage { text } => user_message_line(&text, &[]),
             AgentCommand::Shutdown => break,
+        };
+        if stdin.write_all(line.as_bytes()).await.is_err()
+            || stdin.write_all(b"\n").await.is_err()
+            || stdin.flush().await.is_err()
+        {
+            break;
         }
     }
     // Close the pipe → claude sees EOF and exits gracefully, then tell the

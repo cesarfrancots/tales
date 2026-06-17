@@ -5,6 +5,7 @@
 //! (a terminal is monospace by nature) — clean and lightweight.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -51,6 +52,8 @@ pub struct App {
     pub recommended: Option<String>,
     pub awaiting: bool,
     pub should_quit: bool,
+    /// Media queued via /attach, sent with the next message.
+    pending_attachments: Vec<PathBuf>,
 }
 
 impl App {
@@ -66,7 +69,13 @@ impl App {
             recommended: None,
             awaiting: false,
             should_quit: false,
+            pending_attachments: Vec::new(),
         }
+    }
+
+    /// Number of files queued to send with the next message.
+    pub fn pending_count(&self) -> usize {
+        self.pending_attachments.len()
     }
 
     fn sys(&mut self, text: impl Into<String>, kind: SysKind) {
@@ -144,7 +153,21 @@ impl App {
     pub fn submit_input(&mut self) -> Option<UserCommand> {
         let text = self.input.trim().to_string();
         self.input.clear();
-        if text.is_empty() {
+
+        if let Some(rest) = text.strip_prefix("/attach") {
+            let raw = rest.trim();
+            if raw.is_empty() {
+                self.sys("usage: /attach <path-to-image-or-pdf>", SysKind::Note);
+            } else {
+                let p = expand_path(raw);
+                if p.is_file() {
+                    let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("file").to_string();
+                    self.pending_attachments.push(p);
+                    self.sys(format!("📎 {name} — sent with your next message"), SysKind::Note);
+                } else {
+                    self.sys(format!("not found: {raw}"), SysKind::Err);
+                }
+            }
             return None;
         }
         if let Some(rest) = text.strip_prefix("/confirm") {
@@ -163,9 +186,15 @@ impl App {
             self.should_quit = true;
             return Some(UserCommand::Shutdown);
         }
+        // A normal message — or attachments on their own.
+        if text.is_empty() && self.pending_attachments.is_empty() {
+            return None;
+        }
+        let attachments = std::mem::take(&mut self.pending_attachments);
         Some(UserCommand::InjectNote {
             agent: Uuid::nil(),
             text,
+            attachments,
         })
     }
 
@@ -260,6 +289,15 @@ fn sys_block(out: &mut Vec<Line<'static>>, text: &str, kind: SysKind, width: usi
             ]));
         }
     }
+}
+
+fn expand_path(raw: &str) -> PathBuf {
+    if let Some(rest) = raw.strip_prefix("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(home).join(rest);
+        }
+    }
+    PathBuf::from(raw)
 }
 
 fn pretty(label: &str) -> String {

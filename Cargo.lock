@@ -1216,6 +1216,7 @@ name = "tales-core"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64",
  "serde",
  "serde_json",
  "thiserror",

@@ -11,11 +11,12 @@
 //! gated execution + merge (M6) build on this same engine.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use tokio::sync::mpsc;
 
-use crate::agent::{AgentAdapter, AgentCommand, AgentEvent, SpawnCtx};
+use crate::agent::{AgentAdapter, AgentCommand, AgentEvent, Attachment, SpawnCtx};
 use crate::blackboard::Blackboard;
 use crate::bus::EventBus;
 use crate::conductor::{Conductor, Role, RosterEntry, RuleConductor};
@@ -62,6 +63,11 @@ pub struct Orchestrator {
     /// A Confirm/Reject received before the gate opened, remembered so an early
     /// decision is honored rather than discarded.
     pending_decision: Option<UserCommand>,
+    /// Media the human attached, shared with every agent. `media_delivered`
+    /// tracks how many of these each agent has already received, so each file
+    /// is sent to each agent exactly once (on its next turn).
+    pending_media: Vec<Attachment>,
+    media_delivered: HashMap<AgentId, usize>,
 }
 
 impl Orchestrator {
@@ -77,7 +83,20 @@ impl Orchestrator {
             phase: Phase::Idle,
             turn_timeout: Duration::from_secs(300),
             pending_decision: None,
+            pending_media: Vec::new(),
+            media_delivered: HashMap::new(),
         }
+    }
+
+    /// Attachments this agent hasn't yet received (marks them delivered).
+    fn media_for(&mut self, agent: AgentId) -> Vec<Attachment> {
+        let delivered = self.media_delivered.entry(agent).or_insert(0);
+        if *delivered >= self.pending_media.len() {
+            return Vec::new();
+        }
+        let out = self.pending_media[*delivered..].to_vec();
+        *delivered = self.pending_media.len();
+        out
     }
 
     /// Override the per-turn timeout (default 300s).
@@ -148,7 +167,7 @@ impl Orchestrator {
                 .cmd_txs
                 .get(&plan.agent)
                 .ok_or_else(|| TalesError::Other(format!("no command channel for {}", plan.agent)))?;
-            tx.send(AgentCommand::StartTurn { prompt })
+            tx.send(AgentCommand::StartTurn { prompt, attachments: Vec::new() })
                 .await
                 .map_err(|e| TalesError::Other(format!("send to agent failed: {e}")))?;
 
@@ -249,7 +268,7 @@ impl Orchestrator {
                 .cmd_txs
                 .get(&entry.agent)
                 .ok_or_else(|| TalesError::Other(format!("no command channel for {}", entry.agent)))?;
-            tx.send(AgentCommand::StartTurn { prompt })
+            tx.send(AgentCommand::StartTurn { prompt, attachments: Vec::new() })
                 .await
                 .map_err(|e| TalesError::Other(format!("send to agent failed: {e}")))?;
             let text = self.collect_turn(entry.agent).await?;
@@ -356,11 +375,12 @@ impl Orchestrator {
                 level: "info".to_string(),
                 msg: format!("{} speaking as {:?}", entry.label, entry.role),
             });
+            let attachments = self.media_for(entry.agent);
             let tx = self
                 .cmd_txs
                 .get(&entry.agent)
                 .ok_or_else(|| TalesError::Other(format!("no channel for {}", entry.agent)))?;
-            tx.send(AgentCommand::StartTurn { prompt })
+            tx.send(AgentCommand::StartTurn { prompt, attachments })
                 .await
                 .map_err(|e| TalesError::Other(format!("send failed: {e}")))?;
             let text = self.collect_turn(entry.agent).await?;
@@ -403,7 +423,9 @@ impl Orchestrator {
                     self.reject()?;
                     return Ok(RunOutcome::Rejected);
                 }
-                UserCommand::InjectNote { text, .. } => self.record_human(text),
+                UserCommand::InjectNote { text, attachments, .. } => {
+                    self.record_human(text, attachments)
+                }
                 UserCommand::StartTurn { .. } => {}
                 UserCommand::Shutdown => return Ok(RunOutcome::Aborted),
             }
@@ -415,7 +437,9 @@ impl Orchestrator {
     fn drain_user_notes(&mut self, commands: &mut mpsc::Receiver<UserCommand>) -> bool {
         loop {
             match commands.try_recv() {
-                Ok(UserCommand::InjectNote { text, .. }) => self.record_human(text),
+                Ok(UserCommand::InjectNote { text, attachments, .. }) => {
+                    self.record_human(text, attachments)
+                }
                 Ok(UserCommand::Shutdown) => return true,
                 // Remember an early decision for the gate instead of dropping it.
                 Ok(cmd @ (UserCommand::ConfirmExecution { .. } | UserCommand::Reject)) => {
@@ -428,9 +452,22 @@ impl Orchestrator {
         }
     }
 
-    /// Record a human interjection so agents see it in the transcript, and echo
-    /// it onto the bus for the chat view.
-    fn record_human(&mut self, text: String) {
+    /// Record a human interjection so agents see it in the transcript, echo it
+    /// onto the bus, and queue any attached media to share with the agents.
+    fn record_human(&mut self, mut text: String, attachments: Vec<PathBuf>) {
+        if !attachments.is_empty() {
+            let names: Vec<String> = attachments
+                .iter()
+                .map(|p| p.file_name().and_then(|n| n.to_str()).unwrap_or("file").to_string())
+                .collect();
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(&format!("[attached: {}]", names.join(", ")));
+            for p in attachments {
+                self.pending_media.push(Attachment::new(p));
+            }
+        }
         self.bus
             .emit(OrchestratorEvent::UserMessage { text: text.clone() });
         self.blackboard.record("you".to_string(), Role::Human, text);
@@ -463,11 +500,12 @@ impl Orchestrator {
             level: "info".to_string(),
             msg: format!("executing with {executor_label}"),
         });
+        let attachments = self.media_for(entry.agent);
         let tx = self
             .cmd_txs
             .get(&entry.agent)
             .ok_or_else(|| TalesError::Other(format!("no channel for {}", entry.agent)))?;
-        tx.send(AgentCommand::StartTurn { prompt })
+        tx.send(AgentCommand::StartTurn { prompt, attachments })
             .await
             .map_err(|e| TalesError::Other(format!("send failed: {e}")))?;
         let output = self.collect_turn(entry.agent).await?;

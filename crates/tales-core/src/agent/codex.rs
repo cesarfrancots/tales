@@ -29,7 +29,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
-use super::{AgentAdapter, AgentCaps, AgentCommand, AgentEvent, SpawnCtx, TurnId};
+use super::{AgentAdapter, AgentCaps, AgentCommand, AgentEvent, Attachment, SpawnCtx, TurnId};
 use crate::{AgentId, Result};
 
 /// Adapter for the `codex` CLI.
@@ -103,9 +103,9 @@ impl Manager {
         let mut last_code: Option<i32> = Some(0);
         while let Some(command) = cmd_rx.recv().await {
             match command {
-                AgentCommand::StartTurn { prompt } => {
+                AgentCommand::StartTurn { prompt, attachments } => {
                     let full = self.fold_prompt(prompt);
-                    last_code = self.run_turn(full).await;
+                    last_code = self.run_turn(full, &attachments).await;
                 }
                 AgentCommand::InjectMessage { text } => {
                     // Turn-based: cannot interrupt; defer to the next turn.
@@ -139,7 +139,7 @@ impl Manager {
     }
 
     /// Build args for one turn (fresh session vs resume).
-    fn build_args(&self, prompt: &str) -> Vec<String> {
+    fn build_args(&self, prompt: &str, attachments: &[Attachment]) -> Vec<String> {
         let mut args: Vec<String> = vec![
             "exec".into(),
             "--json".into(),
@@ -150,6 +150,14 @@ impl Manager {
         if let Some(model) = &self.ctx.model {
             args.push("-m".into());
             args.push(model.clone());
+        }
+        // Images are attached with -i; Codex doesn't take PDFs this way, but the
+        // prompt text already names every attachment.
+        for a in attachments {
+            if a.is_image() {
+                args.push("-i".into());
+                args.push(a.path.to_string_lossy().into_owned());
+            }
         }
         match &self.thread_id {
             Some(tid) => {
@@ -168,11 +176,11 @@ impl Manager {
     }
 
     /// Spawn one `codex` child, parse its events to completion, reap it.
-    async fn run_turn(&mut self, prompt: String) -> Option<i32> {
+    async fn run_turn(&mut self, prompt: String, attachments: &[Attachment]) -> Option<i32> {
         let agent = self.ctx.agent;
         self.turn += 1;
         let turn = self.turn;
-        let args = self.build_args(&prompt);
+        let args = self.build_args(&prompt, attachments);
 
         let mut child = match Command::new(&self.bin)
             .args(&args)

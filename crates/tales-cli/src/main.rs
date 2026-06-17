@@ -205,7 +205,9 @@ async fn run_solo(
         }
     };
     let cmd_tx = adapter.spawn(ctx, events_tx).await?;
-    cmd_tx.send(AgentCommand::StartTurn { prompt }).await?;
+    cmd_tx
+        .send(AgentCommand::StartTurn { prompt, attachments: Vec::new() })
+        .await?;
 
     let mut streaming = false;
     while let Some(event) = events_rx.recv().await {

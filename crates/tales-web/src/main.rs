@@ -224,6 +224,7 @@ fn parse_command(text: &str) -> Option<UserCommand> {
         "say" => Some(UserCommand::InjectNote {
             agent: Uuid::nil(),
             text: v.get("text").and_then(Value::as_str).unwrap_or("").to_string(),
+            attachments: Vec::new(),
         }),
         "confirm" => Some(UserCommand::ConfirmExecution {
             executor: v.get("executor").and_then(Value::as_str).unwrap_or("").to_string(),

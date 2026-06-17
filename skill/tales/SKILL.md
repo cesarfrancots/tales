@@ -39,20 +39,22 @@ length), `--sandbox read-only|workspace-write` (Codex write policy), `--cwd PATH
 
 ## Start the live chat
 
-**Browser (easiest to watch):**
+**Terminal (default — the headline experience):**
+
+```bash
+# Binaries are on PATH after `cargo build --release` + symlink to ~/.local/bin.
+tales-tui "Design and implement a rate limiter for our API" \
+  --drafter claude --critic codex --turns 4
+```
+
+`/tales <task>` inside Claude Code or Codex opens this terminal UI in a new
+window. Double-click `scripts/tales.command` for the same.
+
+**Browser (alternative):**
 
 ```bash
 tales-web "Design and implement a rate limiter for our API"
-# then open http://127.0.0.1:7878 — watch the chat, type to interject,
-# click "Approve & run" at the gate. Add --demo for a no-API tour.
-```
-
-**Terminal:**
-
-```bash
-# From the Tales repo (or anywhere the binaries are on PATH):
-tales-tui "Design and implement a rate limiter for our API" \
-  --drafter claude --critic codex --turns 4
+# auto-opens http://127.0.0.1:7878. Add --demo for a no-API tour.
 ```
 
 You'll see Claude and Codex discuss in real time. **Type in the box to talk to

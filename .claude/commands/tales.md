@@ -1,20 +1,21 @@
 ---
-description: Launch the Tales live supervisor (Claude Code + Codex) in your browser
-argument-hint: <task> [--drafter claude|codex] [--critic claude|codex]
-allowed-tools: Bash(tales-web:*), Bash(tales:*), Bash(pkill:*)
+description: Launch Tales (Claude Code + Codex) live in your terminal
+argument-hint: <task description>
+allowed-tools: Bash(printf:*), Bash(chmod:*), Bash(open:*), Bash(tales-web:*)
 ---
 
-Start the Tales browser supervisor for this task: **$ARGUMENTS**
+Launch the Tales **terminal** supervisor for this task: **$ARGUMENTS**
 
-Launch it detached — it serves a live chat and auto-opens your browser at
-http://127.0.0.1:7878:
+The terminal UI needs a real TTY, so open it in a new Terminal window (running in
+this project's directory):
 
-!`tales-web "$ARGUMENTS" --drafter claude --critic codex >/tmp/tales-web.log 2>&1 & sleep 1; echo "Tales supervisor → http://127.0.0.1:7878 (log: /tmp/tales-web.log)"`
+!`printf '#!/bin/bash\ncd %q\nexec tales-tui %q\n' "$(pwd)" "$ARGUMENTS" > /tmp/tales-run.command && chmod +x /tmp/tales-run.command && open /tmp/tales-run.command && echo "Tales is launching in a new Terminal window."`
 
 Then tell me, briefly:
-- It's running in my browser; I can watch Claude Code and Codex discuss live,
-  type to interject (I'm in the loop), and **approve the executor** at the gate.
-- To stop it: `pkill -f tales-web`.
+- It opened in a new Terminal window — I can watch Claude Code and Codex discuss
+  live, type to interject (I'm in the loop), `/attach <file>` to share an image
+  or PDF, and approve the executor at the gate with `/confirm` (or `/reject`).
+- Prefer the browser instead? Run `tales-web "$ARGUMENTS"`.
 
-If the `tales-web` binary isn't found, tell me to build it from the Tales repo
-with `cargo build --release` and put `target/release` on PATH.
+If `tales-tui` isn't found, tell me to build it from the Tales repo
+(`cargo build --release`) and put `target/release` on PATH.

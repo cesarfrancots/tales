@@ -3,203 +3,302 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Tales — live supervision</title>
+<title>tales</title>
 <style>
   :root {
-    --bg: #0a0c0f; --panel: #11151b; --panel2: #161b22; --line: #232a33;
-    --text: #e6edf3; --dim: #8b949e; --cyan: #38d9ff; --magenta: #d98cff;
-    --green: #3fe08f; --amber: #ffcf6b;
+    --bg: #0b0d11;
+    --block: #111419;
+    --block-hover: #151921;
+    --border: #1b2029;
+    --text: #d2d8e2;
+    --dim: #6b7483;
+    --faint: #3c434f;
+    --claude: #5cb0ff;
+    --codex: #c08cff;
+    --you: #7ee0a3;
+    --accent: #2dd4bf;
+    --warn: #ffc777;
+    --err: #ff7a85;
+    --mono: "JetBrains Mono", "SF Mono", ui-monospace, "Menlo", "Consolas", monospace;
+    --r: 10px;
   }
   * { box-sizing: border-box; }
+  html, body { height: 100%; }
   body {
     margin: 0; background: var(--bg); color: var(--text);
-    font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-    height: 100vh; display: flex; flex-direction: column;
+    font: 13px/1.6 var(--mono);
+    display: flex; flex-direction: column;
+    -webkit-font-smoothing: antialiased;
   }
+  /* ── top bar ───────────────────────────────────────────── */
   header {
-    padding: 14px 20px; border-bottom: 1px solid var(--line);
-    display: flex; align-items: center; gap: 14px;
-    background: linear-gradient(180deg, #11151b, #0d1014);
+    display: flex; align-items: center; gap: 12px;
+    padding: 11px 18px; border-bottom: 1px solid var(--border);
+    background: var(--bg); user-select: none;
   }
-  header .brand { font-weight: 700; letter-spacing: .3px; }
-  header .brand b { color: var(--cyan); }
-  header .task { color: var(--dim); font-size: 13px; }
-  header .phase {
-    margin-left: auto; font-size: 12px; color: var(--amber);
-    border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px;
+  .logo { font-weight: 700; letter-spacing: .5px; color: var(--text); }
+  .logo .pin { color: var(--accent); }
+  .task { color: var(--dim); font-size: 12px; overflow: hidden;
+          text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+  .status { display: flex; align-items: center; gap: 7px; font-size: 11.5px;
+            color: var(--dim); text-transform: lowercase; }
+  .status .live { width: 7px; height: 7px; border-radius: 50%;
+                  background: var(--faint); transition: background .2s; }
+  .status.on .live { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+  /* ── stream ────────────────────────────────────────────── */
+  #stream {
+    flex: 1; overflow-y: auto; padding: 16px 18px;
+    display: flex; flex-direction: column; gap: 8px;
+    scrollbar-width: thin; scrollbar-color: var(--border) transparent;
   }
-  #log {
-    flex: 1; overflow-y: auto; padding: 18px 20px;
-    display: flex; flex-direction: column; gap: 12px;
+  #stream::-webkit-scrollbar { width: 9px; }
+  #stream::-webkit-scrollbar-thumb { background: var(--border); border-radius: 9px; }
+  .block {
+    border: 1px solid var(--border); background: var(--block);
+    border-radius: var(--r); padding: 9px 13px 11px; max-width: 820px;
+    border-left: 2px solid var(--faint);
+    transition: background .12s ease, border-color .12s ease;
   }
-  .msg { max-width: 760px; }
-  .msg .who { font: 600 12px ui-monospace, monospace; margin-bottom: 4px; }
-  .msg .body {
-    white-space: pre-wrap; background: var(--panel); border: 1px solid var(--line);
-    border-radius: 10px; padding: 10px 13px;
+  .block:hover { background: var(--block-hover); }
+  .block .head { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
+  .block .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
+  .block .name { font-weight: 600; font-size: 12px; letter-spacing: .2px; }
+  .block .role {
+    font-size: 9.5px; color: var(--dim); border: 1px solid var(--border);
+    border-radius: 4px; padding: 1px 5px; text-transform: uppercase; letter-spacing: .6px;
   }
-  .msg.claude .who { color: var(--cyan); }
-  .msg.claude .body { border-color: #1c3a44; }
-  .msg.codex .who { color: var(--magenta); }
-  .msg.codex .body { border-color: #382044; }
-  .msg.you { align-self: flex-end; }
-  .msg.you .who { color: var(--green); text-align: right; }
-  .msg.you .body { background: #10241a; border-color: #1d4231; }
-  .note { color: var(--dim); font-size: 12.5px; font-style: italic; }
-  .note.rec { color: var(--amber); font-style: normal; font-weight: 600; }
-  .note.fatal { color: #ff7b72; font-style: normal; }
-  .streaming .body::after { content: "▋"; color: var(--dim); }
+  .block .meta { margin-left: auto; font-size: 10.5px; color: var(--faint); }
+  .block .body { white-space: pre-wrap; color: var(--text); word-break: break-word; }
+  .block.claude { border-left-color: var(--claude); }
+  .block.claude .dot { background: var(--claude); } .block.claude .name { color: var(--claude); }
+  .block.codex { border-left-color: var(--codex); }
+  .block.codex .dot { background: var(--codex); } .block.codex .name { color: var(--codex); }
+  .block.you {
+    align-self: flex-end; border-left-color: var(--you);
+    background: #0e1813; border-color: #1c3527;
+  }
+  .block.you .dot { background: var(--you); } .block.you .name { color: var(--you); }
+  .block.streaming .body::after {
+    content: "▌"; color: var(--dim); animation: blink 1s steps(2) infinite; margin-left: 1px;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+  /* system lines — minimal, no card */
+  .sys { color: var(--dim); font-size: 11.5px; padding: 1px 4px; display: flex; gap: 7px; }
+  .sys .bullet { color: var(--faint); }
+  .sys.rec { color: var(--accent); }
+  .sys.warn { color: var(--warn); }
+  .sys.err { color: var(--err); }
+  .sys.vote { color: var(--dim); }
+  /* recommendation card */
+  .reco {
+    border: 1px solid #1f3b38; background: #0d1817; border-radius: var(--r);
+    padding: 9px 13px; max-width: 820px;
+  }
+  .reco .t { color: var(--accent); font-weight: 600; font-size: 12px; margin-bottom: 4px; }
+  .reco .why { color: var(--dim); font-size: 11.5px; white-space: pre-wrap; }
+  /* ── gate ──────────────────────────────────────────────── */
   #gate {
-    display: none; padding: 12px 20px; gap: 10px; align-items: center;
-    border-top: 1px solid var(--line); background: #0d1610;
+    display: none; align-items: center; gap: 10px;
+    padding: 10px 18px; border-top: 1px solid var(--border); background: #0c130f;
   }
   #gate.show { display: flex; }
-  #gate .label { color: var(--green); font-weight: 600; }
-  #gate select, #gate button { font: inherit; }
+  #gate .q { color: var(--you); font-size: 12px; }
   #gate select {
-    background: var(--panel2); color: var(--text); border: 1px solid var(--line);
-    border-radius: 8px; padding: 6px 10px;
+    background: var(--block); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 5px 9px; font: 12px var(--mono);
   }
-  button {
-    cursor: pointer; border-radius: 8px; padding: 7px 14px; font-weight: 600;
-    border: 1px solid var(--line); background: var(--panel2); color: var(--text);
+  .btn {
+    cursor: pointer; border-radius: 6px; padding: 6px 13px; font: 600 12px var(--mono);
+    border: 1px solid var(--border); background: var(--block); color: var(--text);
+    transition: background .12s, border-color .12s;
   }
-  button.go { background: #11351f; border-color: #1f6f3f; color: var(--green); }
-  button.no { background: #2a1414; border-color: #6f2f2f; color: #ff9b94; }
-  footer {
-    display: flex; gap: 10px; padding: 12px 20px; border-top: 1px solid var(--line);
-    background: #0d1014;
+  .btn:hover { border-color: var(--faint); }
+  .btn.go { color: var(--accent); border-color: #1f4f49; }
+  .btn.go:hover { background: #0e1f1d; }
+  .btn.no { color: var(--err); border-color: #4a2229; }
+  .btn.no:hover { background: #1a1012; }
+  /* ── input ─────────────────────────────────────────────── */
+  .prompt-bar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 18px; border-top: 1px solid var(--border); background: var(--bg);
   }
+  .prompt-bar .caret { color: var(--accent); font-weight: 700; }
   #input {
-    flex: 1; background: var(--panel2); color: var(--text); border: 1px solid var(--line);
-    border-radius: 10px; padding: 11px 14px; font: inherit; outline: none;
+    flex: 1; background: transparent; border: none; color: var(--text);
+    font: 13px var(--mono); outline: none; caret-color: var(--accent);
   }
-  #input:focus { border-color: var(--cyan); }
-  .hint { color: var(--dim); font-size: 12px; padding: 0 20px 10px; }
+  #input::placeholder { color: var(--faint); }
+  .hint { color: var(--faint); font-size: 11px; padding: 0 18px 9px; }
+  kbd { border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; font-size: 10px; color: var(--dim); }
 </style>
 </head>
 <body>
   <header>
-    <span class="brand"><b>Tales</b> · live supervision</span>
+    <span class="logo"><span class="pin">❯</span> tales</span>
     <span class="task" id="task"></span>
-    <span class="phase" id="phase">connecting…</span>
+    <span class="status" id="status"><span class="live"></span><span id="phase">connecting</span></span>
   </header>
 
-  <div id="log"></div>
+  <div id="stream"></div>
 
   <div id="gate">
-    <span class="label">⏸ Your call — who should execute?</span>
+    <span class="q">your call — who runs it?</span>
     <select id="executor"></select>
-    <button class="go" id="confirm">Approve &amp; run</button>
-    <button class="no" id="reject">Reject</button>
+    <button class="btn go" id="confirm">approve &amp; run</button>
+    <button class="btn no" id="reject">reject</button>
   </div>
 
-  <footer>
-    <input id="input" placeholder="Type to talk to them (you're in the loop)…  Enter to send" autofocus />
-    <button id="send">Send</button>
-  </footer>
-  <div class="hint">You're a participant: anything you type is folded into the conversation. At the gate, pick an executor and approve — nothing runs until you do.</div>
+  <div class="prompt-bar">
+    <span class="caret">❯</span>
+    <input id="input" placeholder="message the agents — you're in the loop" autofocus autocomplete="off" />
+  </div>
+  <div class="hint">type to join the conversation · <kbd>Enter</kbd> to send · at the gate, pick who executes — nothing runs until you approve</div>
 
 <script>
 (function () {
-  const log = document.getElementById('log');
-  const phaseEl = document.getElementById('phase');
-  const taskEl = document.getElementById('task');
-  const gate = document.getElementById('gate');
-  const execSel = document.getElementById('executor');
-  const input = document.getElementById('input');
+  const $ = (id) => document.getElementById(id);
+  const stream = $('stream'), statusEl = $('status'), phaseEl = $('phase');
+  const taskEl = $('task'), gate = $('gate'), execSel = $('executor'), input = $('input');
 
-  const labels = {};          // agentId -> label
-  const streaming = {};        // agentId -> bubble element being streamed
+  const names = {};       // agentId -> { label, display }
+  const roleByLabel = {}; // label -> "Drafter" | "Critic"
+  const streaming = {};   // agentId -> body text node being streamed
+  const seenCounts = {};  // base display name -> count (for duplicates)
+  const candidates = [];  // labels available to execute
   let recommended = null;
-  const candidates = new Set();
+
+  const PRETTY = { claude: 'Claude Code', codex: 'Codex' };
+  function prettyBase(label) { return PRETTY[(label || '').toLowerCase()] || label; }
 
   const ws = new WebSocket(`ws://${location.host}/ws`);
-  ws.onopen = () => (phaseEl.textContent = 'idle');
-  ws.onclose = () => (phaseEl.textContent = 'disconnected');
+  ws.onopen = () => { phaseEl.textContent = 'idle'; statusEl.classList.add('on'); };
+  ws.onclose = () => { phaseEl.textContent = 'disconnected'; statusEl.classList.remove('on'); };
 
-  function atBottom() { return log.scrollHeight - log.scrollTop - log.clientHeight < 80; }
-  function scroll() { log.scrollTop = log.scrollHeight; }
+  const nearBottom = () => stream.scrollHeight - stream.scrollTop - stream.clientHeight < 90;
+  const toBottom = () => { stream.scrollTop = stream.scrollHeight; };
+  function append(node) { const s = nearBottom(); stream.appendChild(node); if (s) toBottom(); }
 
-  function labelOf(id) { return labels[id] || '?'; }
-  function cls(label) {
+  function displayOf(id) { return (names[id] && names[id].display) || '?'; }
+  function classOf(label) {
     const l = (label || '').toLowerCase();
-    return l === 'claude' || l === 'codex' ? l : '';
+    return l === 'claude' ? 'claude' : l === 'codex' ? 'codex' : '';
   }
 
-  function bubble(label, text, who) {
-    const stick = atBottom();
+  function makeBlock(id, label, who) {
+    const cls = who || classOf(label);
     const el = document.createElement('div');
-    el.className = 'msg ' + (who || cls(label));
-    el.innerHTML = `<div class="who"></div><div class="body"></div>`;
-    el.querySelector('.who').textContent = who === 'you' ? 'you' : label;
-    el.querySelector('.body').textContent = text || '';
-    log.appendChild(el);
-    if (stick) scroll();
+    el.className = 'block ' + cls;
+    const display = who === 'you' ? 'You' : displayOf(id);
+    const role = roleByLabel[(label || '').toLowerCase()];
+    el.innerHTML =
+      '<div class="head"><span class="dot"></span>' +
+      '<span class="name"></span>' +
+      (role ? '<span class="role"></span>' : '') +
+      '<span class="meta"></span></div><div class="body"></div>';
+    el.querySelector('.name').textContent = display;
+    if (role) el.querySelector('.role').textContent = role;
     return el;
   }
-  function note(text, extra) {
-    const stick = atBottom();
+  function sys(text, extra) {
     const el = document.createElement('div');
-    el.className = 'note ' + (extra || '');
-    el.textContent = text;
-    log.appendChild(el);
-    if (stick) scroll();
+    el.className = 'sys ' + (extra || '');
+    el.innerHTML = '<span class="bullet">·</span><span></span>';
+    el.lastChild.textContent = text;
+    append(el);
   }
+  const isVote = (t) => /"recommended_executor"/.test(t);
 
   ws.onmessage = (ev) => {
     const m = JSON.parse(ev.data);
     switch (m.kind) {
-      case 'log':
-        if (m.level === 'task') { taskEl.textContent = m.msg; break; }
-        if (m.level === 'done') { note('run finished: ' + m.msg); break; }
-        note(m.msg);
+      case 'log': {
+        if (m.level === 'task') { taskEl.textContent = m.msg; document.title = 'tales · ' + m.msg; break; }
+        if (m.level === 'done') { sys('session finished'); break; }
+        const sp = /^(\S+) speaking as (\w+)/.exec(m.msg);
+        if (sp) { roleByLabel[sp[1].toLowerCase()] = sp[2]; break; }   // captured silently
+        if (/executing with/.test(m.msg)) { sys(m.msg, 'rec'); break; }
+        sys(m.msg, m.level === 'warn' ? 'warn' : '');
         break;
-      case 'agent':
-        labels[m.agent] = m.label; candidates.add(m.label);
-        note('● ' + m.label + ' joined');
+      }
+      case 'agent': {
+        const base = prettyBase(m.label);
+        const n = (seenCounts[base] = (seenCounts[base] || 0) + 1);
+        names[m.agent] = { label: m.label, display: n > 1 ? `${base} ${n}` : base };
+        if (!candidates.includes(m.label)) candidates.push(m.label);
+        sys(names[m.agent].display + ' joined');
         break;
+      }
       case 'phase':
         phaseEl.textContent = m.phase;
         if (m.phase !== 'awaitingconfirmation') gate.classList.remove('show');
         break;
       case 'token': {
-        let b = streaming[m.agent];
-        if (!b) { b = bubble(labelOf(m.agent), ''); b.classList.add('streaming'); streaming[m.agent] = b; }
-        const stick = atBottom();
-        b.querySelector('.body').textContent += m.text;
-        if (stick) scroll();
+        let body = streaming[m.agent];
+        if (!body) {
+          const el = makeBlock(m.agent, names[m.agent] && names[m.agent].label);
+          el.classList.add('streaming');
+          append(el);
+          body = el.querySelector('.body');
+          streaming[m.agent] = body;
+        }
+        const s = nearBottom();
+        body.textContent += m.text;
+        if (s) toBottom();
         break;
       }
       case 'message': {
-        const b = streaming[m.agent];
-        if (b) { b.classList.remove('streaming'); b.querySelector('.body').textContent = m.text; delete streaming[m.agent]; }
-        else bubble(labelOf(m.agent), m.text);
+        const body = streaming[m.agent];
+        const label = names[m.agent] && names[m.agent].label;
+        if (isVote(m.text)) {                       // hide raw vote JSON
+          if (body) { body.parentElement.remove(); delete streaming[m.agent]; }
+          sys(displayOf(m.agent) + ' cast its vote', 'vote');
+          break;
+        }
+        if (body) {
+          body.parentElement.classList.remove('streaming');
+          body.textContent = m.text;
+          delete streaming[m.agent];
+        } else {
+          const el = makeBlock(m.agent, label);
+          el.querySelector('.body').textContent = m.text;
+          append(el);
+        }
         break;
       }
-      case 'user': bubble('you', m.text, 'you'); break;
-      case 'tool': note('⚙ ' + labelOf(m.agent) + ': ' + m.summary); break;
+      case 'user': {
+        const el = makeBlock(null, null, 'you');
+        el.querySelector('.body').textContent = m.text;
+        append(el);
+        break;
+      }
+      case 'tool': sys('⚙ ' + displayOf(m.agent) + ' · ' + m.summary); break;
       case 'turn_done':
-        if (m.cost != null) note('   turn cost $' + Number(m.cost).toFixed(4));
-        if (streaming[m.agent]) { streaming[m.agent].classList.remove('streaming'); delete streaming[m.agent]; }
+        if (streaming[m.agent]) { streaming[m.agent].parentElement.classList.remove('streaming'); delete streaming[m.agent]; }
         break;
-      case 'recommendation':
+      case 'recommendation': {
         recommended = m.executor;
-        note('★ Recommended executor: ' + m.executor + '\n' + m.rationale, 'rec');
+        const disp = PRETTY[m.executor.toLowerCase()] || m.executor;
+        const el = document.createElement('div');
+        el.className = 'reco';
+        el.innerHTML = '<div class="t"></div><div class="why"></div>';
+        el.querySelector('.t').textContent = '★ recommend: ' + disp;
+        el.querySelector('.why').textContent = m.rationale.trim();
+        append(el);
         break;
-      case 'awaiting':
+      }
+      case 'awaiting': {
         execSel.innerHTML = '';
-        [...candidates].forEach((c) => {
+        candidates.forEach((c) => {
           const o = document.createElement('option');
-          o.value = c; o.textContent = c;
+          o.value = c; o.textContent = PRETTY[c.toLowerCase()] || c;
           if (c === recommended) o.selected = true;
           execSel.appendChild(o);
         });
-        gate.classList.add('show');
-        scroll();
+        gate.classList.add('show'); toBottom();
         break;
-      case 'exited': note('● ' + labelOf(m.agent) + ' exited'); break;
-      case 'fatal': note('✗ ' + m.msg, 'fatal'); break;
+      }
+      case 'exited': sys(displayOf(m.agent) + ' exited'); break;
+      case 'fatal': sys(m.msg, 'err'); break;
     }
   };
 
@@ -209,17 +308,9 @@
     ws.send(JSON.stringify({ kind: 'say', text }));
     input.value = '';
   }
-  document.getElementById('send').onclick = send;
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
-
-  document.getElementById('confirm').onclick = () => {
-    ws.send(JSON.stringify({ kind: 'confirm', executor: execSel.value || recommended }));
-    gate.classList.remove('show');
-  };
-  document.getElementById('reject').onclick = () => {
-    ws.send(JSON.stringify({ kind: 'reject' }));
-    gate.classList.remove('show');
-  };
+  $('confirm').onclick = () => { ws.send(JSON.stringify({ kind: 'confirm', executor: execSel.value || recommended })); gate.classList.remove('show'); };
+  $('reject').onclick = () => { ws.send(JSON.stringify({ kind: 'reject' })); gate.classList.remove('show'); };
 })();
 </script>
 </body>

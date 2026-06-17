@@ -10,6 +10,7 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -20,7 +21,7 @@ use axum::Router;
 use clap::Parser;
 use futures::{SinkExt, StreamExt};
 use serde_json::{json, Value};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 use uuid::Uuid;
 
 use tales_core::agent::claude::ClaudeAdapter;
@@ -75,15 +76,32 @@ fn open_browser(url: &str) {
     let _ = std::process::Command::new(cmd.0).args(cmd.1).spawn();
 }
 
+/// Shared across connections: ONE session per server run. The first WebSocket
+/// to connect starts it (taking the single command receiver); later tabs just
+/// subscribe to the same bus. When the last client disconnects, the session is
+/// told to shut down so no agent processes linger.
+struct AppState {
+    cfg: Arc<Args>,
+    bus: EventBus,
+    commands_rx: Mutex<Option<mpsc::Receiver<UserCommand>>>,
+    clients: AtomicUsize,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-    let cfg = Arc::new(args.clone());
+    let (bus, commands_rx) = EventBus::new(8192, 256);
+    let state = Arc::new(AppState {
+        cfg: Arc::new(args.clone()),
+        bus,
+        commands_rx: Mutex::new(Some(commands_rx)),
+        clients: AtomicUsize::new(0),
+    });
 
     let app = Router::new()
         .route("/", get(index))
         .route("/ws", get(ws_handler))
-        .with_state(cfg);
+        .with_state(state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], args.port));
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -104,30 +122,25 @@ async fn index() -> impl IntoResponse {
     Html(INDEX_HTML)
 }
 
-async fn ws_handler(ws: WebSocketUpgrade, State(cfg): State<Arc<Args>>) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, cfg))
+async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
 
-async fn handle_socket(socket: WebSocket, cfg: Arc<Args>) {
-    let (bus, commands_rx) = EventBus::new(4096, 256);
-    let commands_tx = bus.commands();
-    let mut events = bus.subscribe();
-
-    // Tell the page what task this session is about.
-    bus.emit(OrchestratorEvent::Log {
-        level: "task".to_string(),
-        msg: cfg.task.clone(),
-    });
-
-    // Run the orchestration session.
-    {
-        let bus = bus.clone();
-        let cfg = cfg.clone();
-        tokio::spawn(async move {
-            run_session(bus, commands_rx, cfg).await;
+async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
+    // The first connection starts the one-and-only session for this server run.
+    if let Some(commands_rx) = state.commands_rx.lock().await.take() {
+        let bus = state.bus.clone();
+        let cfg = state.cfg.clone();
+        bus.emit(OrchestratorEvent::Log {
+            level: "task".to_string(),
+            msg: cfg.task.clone(),
         });
+        tokio::spawn(async move { run_session(bus, commands_rx, cfg).await });
     }
 
+    state.clients.fetch_add(1, Ordering::SeqCst);
+    let commands_tx = state.bus.commands();
+    let mut events = state.bus.subscribe();
     let (mut ws_tx, mut ws_rx) = socket.split();
 
     // Bus events → browser.
@@ -155,6 +168,11 @@ async fn handle_socket(socket: WebSocket, cfg: Arc<Args>) {
         }
     }
     forwarder.abort();
+
+    // Last client out → shut the session down so no agent processes linger.
+    if state.clients.fetch_sub(1, Ordering::SeqCst) == 1 {
+        let _ = state.bus.commands().send(UserCommand::Shutdown).await;
+    }
 }
 
 fn event_to_json(ev: &OrchestratorEvent) -> Value {

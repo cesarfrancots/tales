@@ -221,6 +221,9 @@ async fn run_solo(
             AgentEvent::SessionReady {
                 native_session_id, ..
             } => println!("● session {native_session_id}"),
+            AgentEvent::Skills { skills, .. } => {
+                println!("● {} skills available", skills.len());
+            }
             AgentEvent::TurnStarted { turn, .. } => {
                 print!("\n[turn {turn}] ");
                 flush();

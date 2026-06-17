@@ -46,6 +46,8 @@ pub enum AgentEvent {
         agent: AgentId,
         native_session_id: String,
     },
+    /// The skills / slash-commands this tool exposes (discovered at startup).
+    Skills { agent: AgentId, skills: Vec<String> },
     /// A new turn began.
     TurnStarted { agent: AgentId, turn: TurnId },
     /// A streamed token chunk.

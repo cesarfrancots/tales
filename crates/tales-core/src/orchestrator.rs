@@ -68,6 +68,8 @@ pub struct Orchestrator {
     /// is sent to each agent exactly once (on its next turn).
     pending_media: Vec<Attachment>,
     media_delivered: HashMap<AgentId, usize>,
+    /// Skills each connected tool exposes (discovered at startup).
+    skills: HashMap<AgentId, Vec<String>>,
 }
 
 impl Orchestrator {
@@ -85,7 +87,30 @@ impl Orchestrator {
             pending_decision: None,
             pending_media: Vec::new(),
             media_delivered: HashMap::new(),
+            skills: HashMap::new(),
         }
+    }
+
+    /// Skills discovered for each connected tool.
+    pub fn skills(&self) -> &HashMap<AgentId, Vec<String>> {
+        &self.skills
+    }
+
+    fn record_skills(&mut self, agent: AgentId, skills: Vec<String>) {
+        let label = self
+            .roster
+            .iter()
+            .find(|r| r.agent == agent)
+            .map(|r| r.label.clone())
+            .unwrap_or_default();
+        let n = skills.len();
+        let preview: Vec<String> = skills.iter().take(14).cloned().collect();
+        let more = if n > 14 { format!(" +{} more", n - 14) } else { String::new() };
+        self.bus.emit(OrchestratorEvent::Log {
+            level: "skills".to_string(),
+            msg: format!("{label} has {n} skills: {}{more}", preview.join(", ")),
+        });
+        self.skills.insert(agent, skills);
     }
 
     /// Attachments this agent hasn't yet received (marks them delivered).
@@ -244,6 +269,8 @@ impl Orchestrator {
                     self.bus.emit(OrchestratorEvent::AgentExited { agent, code });
                     return Ok(final_text);
                 }
+                // Skill discovery can arrive for any agent (at startup).
+                AgentEvent::Skills { agent: a, skills } => self.record_skills(a, skills),
                 // SessionReady, TurnStarted, and any event from another agent.
                 _ => {}
             }

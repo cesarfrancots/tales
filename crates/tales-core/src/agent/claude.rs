@@ -228,6 +228,15 @@ async fn reader_task(
                             })
                             .await;
                     }
+                    if let Some(skills) = v.get("skills").and_then(Value::as_array) {
+                        let list: Vec<String> = skills
+                            .iter()
+                            .filter_map(|s| s.as_str().map(String::from))
+                            .collect();
+                        if !list.is_empty() {
+                            let _ = events_tx.send(AgentEvent::Skills { agent, skills: list }).await;
+                        }
+                    }
                 }
             }
             Some("stream_event") => {

@@ -7,6 +7,13 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 
+# Lightweight release builds: optimize for size, strip symbols, fat LTO.
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+
 [workspace.dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "sync", "time", "signal"] }
 serde = { version = "1", features = ["derive"] }

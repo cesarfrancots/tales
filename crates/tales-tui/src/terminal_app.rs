@@ -1,0 +1,1247 @@
+//! Warp-style terminal workspace for Tales.
+//!
+//! This is the default no-argument surface: an in-process Tales orchestrator
+//! pane plus sibling terminal panes for shells and agent CLIs. The pane/session
+//! model is intentionally isolated here so a later `portable-pty` + full VTE
+//! grid can replace the native PTY/line renderer without touching the planner.
+
+use std::collections::VecDeque;
+use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use futures::StreamExt;
+use ratatui::backend::CrosstermBackend;
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block as RBlock, Borders, List, ListItem, Paragraph};
+use ratatui::{Frame, Terminal};
+use tales_core::agent::{tool_info, validate_roster};
+use tales_core::bus::EventBus;
+use tales_core::conductor::Role;
+use tales_core::event::{OrchestratorEvent, UserCommand};
+use tokio::sync::broadcast::error::TryRecvError;
+use tokio::sync::mpsc;
+use tokio::time::{self, Duration};
+
+use crate::app::App;
+use crate::theme::{color_for, ACCENT, DIM, ERRC, FAINT, TEXT};
+use crate::{run_session, Args, Connection};
+
+const MAX_SCROLLBACK: usize = 2_000;
+
+type PaneId = u64;
+
+pub(crate) async fn run_terminal_workspace(
+    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    keys: &mut EventStream,
+    args: &Args,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let cwd = args
+        .cwd
+        .clone()
+        .map(PathBuf::from)
+        .unwrap_or(std::env::current_dir()?);
+    let cfg = WorkspaceConfig {
+        connect: args.connect.clone(),
+        prefill: args.prefill.clone(),
+        cwd,
+        sandbox: args.sandbox.clone(),
+        turns: args.turns,
+    };
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut workspace = Workspace::new(cfg, tx);
+    let mut tick = time::interval(Duration::from_millis(80));
+
+    loop {
+        workspace.poll_tales_events();
+        workspace.poll_children();
+        terminal.draw(|f| workspace.draw(f))?;
+        if workspace.should_quit {
+            break;
+        }
+
+        tokio::select! {
+            maybe_key = keys.next() => {
+                if maybe_key.is_none() {
+                    break;
+                }
+                if let Some(Ok(Event::Key(key))) = maybe_key {
+                    workspace.handle_key(key).await;
+                }
+            }
+            maybe_ev = rx.recv() => {
+                if let Some(ev) = maybe_ev {
+                    workspace.apply_terminal_event(ev);
+                }
+            }
+            _ = tick.tick() => {}
+        }
+    }
+
+    workspace.shutdown();
+    Ok(())
+}
+
+#[derive(Clone)]
+struct WorkspaceConfig {
+    connect: Vec<String>,
+    prefill: Option<String>,
+    cwd: PathBuf,
+    sandbox: String,
+    turns: usize,
+}
+
+struct Workspace {
+    cfg: WorkspaceConfig,
+    panes: Vec<Pane>,
+    active: usize,
+    next_id: PaneId,
+    tx: mpsc::UnboundedSender<TerminalEvent>,
+    should_quit: bool,
+    notice: String,
+}
+
+impl Workspace {
+    fn new(cfg: WorkspaceConfig, tx: mpsc::UnboundedSender<TerminalEvent>) -> Self {
+        let mut tales = TalesPane::new(1, cfg.clone());
+        if let Some(prefill) = &cfg.prefill {
+            tales.app.input = prefill.clone();
+        }
+        Self {
+            cfg,
+            panes: vec![Pane::Tales(tales)],
+            active: 0,
+            next_id: 2,
+            tx,
+            should_quit: false,
+            notice: "Tales terminal ready".to_string(),
+        }
+    }
+
+    async fn handle_key(&mut self, key: KeyEvent) {
+        if key.kind == KeyEventKind::Release {
+            return;
+        }
+
+        match (key.code, key.modifiers) {
+            (KeyCode::Char('q'), KeyModifiers::CONTROL) => {
+                self.should_quit = true;
+                return;
+            }
+            (KeyCode::Tab, _) => {
+                self.next_pane();
+                return;
+            }
+            (KeyCode::BackTab, _) => {
+                self.prev_pane();
+                return;
+            }
+            (KeyCode::Char('t'), KeyModifiers::CONTROL) => {
+                self.active = 0;
+                self.notice = "focused Tales orchestrator".to_string();
+                return;
+            }
+            (KeyCode::Char('n'), KeyModifiers::CONTROL) => {
+                self.spawn_shell();
+                return;
+            }
+            (KeyCode::Char('x'), KeyModifiers::CONTROL) => {
+                let _ = self.spawn_agent("codex");
+                return;
+            }
+            (KeyCode::Char('l'), KeyModifiers::CONTROL) => {
+                let _ = self.spawn_agent("claude");
+                return;
+            }
+            (KeyCode::Char('o'), KeyModifiers::CONTROL) => {
+                let _ = self.spawn_agent("opencode");
+                return;
+            }
+            (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
+                self.send_handoff_to_active();
+                return;
+            }
+            (KeyCode::Char('a'), KeyModifiers::CONTROL) => {
+                self.approve_active();
+                return;
+            }
+            _ => {}
+        }
+
+        let tales_action = match self.panes.get_mut(self.active) {
+            Some(Pane::Tales(tales)) => {
+                let action = tales.handle_key(key).await;
+                self.notice = tales.notice.clone();
+                action
+            }
+            Some(Pane::Process(proc)) => {
+                if let Some(bytes) = key_to_bytes(key) {
+                    proc.write(&bytes);
+                }
+                None
+            }
+            None => None,
+        };
+
+        if let Some(action) = tales_action {
+            self.apply_tales_action(action);
+        }
+    }
+
+    fn next_pane(&mut self) {
+        if !self.panes.is_empty() {
+            self.active = (self.active + 1) % self.panes.len();
+        }
+    }
+
+    fn prev_pane(&mut self) {
+        if self.panes.is_empty() {
+            return;
+        }
+        self.active = if self.active == 0 {
+            self.panes.len() - 1
+        } else {
+            self.active - 1
+        };
+    }
+
+    fn spawn_shell(&mut self) {
+        let id = self.alloc_id();
+        let shell = default_shell();
+        let title = Path::new(&shell)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("shell")
+            .to_string();
+        let pane = ProcessPane::spawn(
+            id,
+            SessionKind::Shell,
+            title,
+            shell,
+            Vec::new(),
+            self.cfg.cwd.clone(),
+            self.tx.clone(),
+        );
+        self.panes.push(Pane::Process(pane));
+        self.active = self.panes.len() - 1;
+        self.notice = "opened shell pane".to_string();
+    }
+
+    fn spawn_agent(&mut self, key: &str) -> Option<usize> {
+        let id = self.alloc_id();
+        let Some(info) = tool_info(key) else {
+            self.notice = format!("unknown agent: {key}");
+            return None;
+        };
+        let pane = ProcessPane::spawn(
+            id,
+            SessionKind::Agent {
+                key: info.key.to_string(),
+            },
+            info.pretty.to_string(),
+            info.bin.to_string(),
+            Vec::new(),
+            self.cfg.cwd.clone(),
+            self.tx.clone(),
+        );
+        self.panes.push(Pane::Process(pane));
+        self.active = self.panes.len() - 1;
+        self.notice = format!("opened {} pane", info.pretty);
+        Some(self.active)
+    }
+
+    fn apply_tales_action(&mut self, action: TalesAction) {
+        match action {
+            TalesAction::LaunchExecutor { key, prompt } => {
+                let Some(index) = self.spawn_agent(&key) else {
+                    return;
+                };
+                if let Some(Pane::Process(proc)) = self.panes.get_mut(index) {
+                    proc.write(prompt.as_bytes());
+                    proc.write(b"\r");
+                    self.notice = format!("launched {} executor pane", proc.title);
+                }
+            }
+        }
+    }
+
+    fn send_handoff_to_active(&mut self) {
+        let prompt = self.tales().map(TalesPane::executor_prompt);
+        let Some(prompt) = prompt else {
+            self.notice = "no Tales pane found".to_string();
+            return;
+        };
+        match self.panes.get_mut(self.active) {
+            Some(Pane::Process(proc)) => {
+                proc.write(prompt.as_bytes());
+                proc.write(b"\r");
+                self.notice = format!("sent plan to {}", proc.title);
+            }
+            Some(Pane::Tales(_)) => {
+                self.notice = "focus an agent pane before sending the plan".to_string();
+            }
+            None => {}
+        }
+    }
+
+    fn approve_active(&mut self) {
+        match self.panes.get_mut(self.active) {
+            Some(Pane::Process(proc)) if proc.state == PaneState::AwaitingApproval => {
+                proc.write(b"y\r");
+                proc.state = PaneState::Running;
+                self.notice = format!("approved prompt in {}", proc.title);
+            }
+            Some(Pane::Process(proc)) => {
+                self.notice = format!("{} is not awaiting approval", proc.title);
+            }
+            Some(Pane::Tales(_)) => {
+                self.notice = "approval applies to a focused agent pane".to_string();
+            }
+            None => {}
+        }
+    }
+
+    fn alloc_id(&mut self) -> PaneId {
+        let id = self.next_id;
+        self.next_id += 1;
+        id
+    }
+
+    fn tales(&self) -> Option<&TalesPane> {
+        self.panes.iter().find_map(|pane| match pane {
+            Pane::Tales(tales) => Some(tales),
+            Pane::Process(_) => None,
+        })
+    }
+
+    fn poll_tales_events(&mut self) {
+        for pane in &mut self.panes {
+            if let Pane::Tales(tales) = pane {
+                tales.poll_events();
+            }
+        }
+    }
+
+    fn poll_children(&mut self) {
+        for pane in &mut self.panes {
+            if let Pane::Process(proc) = pane {
+                proc.poll_exit();
+            }
+        }
+    }
+
+    fn apply_terminal_event(&mut self, ev: TerminalEvent) {
+        match ev {
+            TerminalEvent::Output { pane_id, bytes } => {
+                if let Some(proc) = self.process_mut(pane_id) {
+                    proc.push_output(&bytes);
+                }
+            }
+            TerminalEvent::ReaderClosed { pane_id } => {
+                if let Some(proc) = self.process_mut(pane_id) {
+                    if proc.state != PaneState::Exited {
+                        proc.state = PaneState::WaitingForInput;
+                    }
+                }
+            }
+        }
+    }
+
+    fn process_mut(&mut self, id: PaneId) -> Option<&mut ProcessPane> {
+        self.panes.iter_mut().find_map(|pane| match pane {
+            Pane::Process(proc) if proc.id == id => Some(proc),
+            _ => None,
+        })
+    }
+
+    fn shutdown(&mut self) {
+        for pane in &mut self.panes {
+            if let Pane::Process(proc) = pane {
+                proc.shutdown();
+            }
+        }
+    }
+
+    fn draw(&self, f: &mut Frame) {
+        let chunks = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Min(3),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .split(f.area());
+
+        self.draw_header(f, chunks[0]);
+
+        let body = if chunks[1].width >= 96 {
+            Layout::horizontal([Constraint::Min(20), Constraint::Length(30)]).split(chunks[1])
+        } else {
+            Layout::vertical([Constraint::Min(8), Constraint::Length(7)]).split(chunks[1])
+        };
+        self.draw_active_pane(f, body[0]);
+        self.draw_status(f, body[1]);
+        self.draw_input(f, chunks[2]);
+        self.draw_footer(f, chunks[3]);
+    }
+
+    fn draw_header(&self, f: &mut Frame, area: Rect) {
+        let title = self
+            .panes
+            .get(self.active)
+            .map(Pane::title)
+            .unwrap_or("Tales");
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    "❯",
+                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    " tales ",
+                    Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("terminal ", Style::default().fg(DIM)),
+                Span::styled(format!("· {title}"), Style::default().fg(FAINT)),
+            ])),
+            area,
+        );
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!("{} panes ", self.panes.len()),
+                Style::default().fg(ACCENT),
+            )))
+            .alignment(Alignment::Right),
+            area,
+        );
+    }
+
+    fn draw_active_pane(&self, f: &mut Frame, area: Rect) {
+        let block = RBlock::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(FAINT))
+            .title(
+                self.panes
+                    .get(self.active)
+                    .map(Pane::title)
+                    .unwrap_or("Tales"),
+            );
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        match self.panes.get(self.active) {
+            Some(Pane::Tales(tales)) => tales.draw(f, inner),
+            Some(Pane::Process(proc)) => proc.draw(f, inner),
+            None => {}
+        }
+    }
+
+    fn draw_status(&self, f: &mut Frame, area: Rect) {
+        let items: Vec<ListItem> = self
+            .panes
+            .iter()
+            .enumerate()
+            .map(|(idx, pane)| {
+                let active = if idx == self.active { ">" } else { " " };
+                let state = pane.state();
+                let color = state.color();
+                ListItem::new(Line::from(vec![
+                    Span::styled(active, Style::default().fg(ACCENT)),
+                    Span::raw(" "),
+                    Span::styled(state.badge(), Style::default().fg(color)),
+                    Span::raw(" "),
+                    Span::styled(pane.title().to_string(), Style::default().fg(TEXT)),
+                ]))
+            })
+            .collect();
+        let block = RBlock::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(FAINT))
+            .title("sessions");
+        f.render_widget(List::new(items).block(block), area);
+    }
+
+    fn draw_input(&self, f: &mut Frame, area: Rect) {
+        let line = match self.panes.get(self.active) {
+            Some(Pane::Tales(tales)) => Line::from(vec![
+                Span::styled(
+                    "❯ ",
+                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(tales.app.input.clone(), Style::default().fg(TEXT)),
+            ]),
+            Some(Pane::Process(proc)) => Line::from(vec![
+                Span::styled("input → ", Style::default().fg(ACCENT)),
+                Span::styled(
+                    proc.title.clone(),
+                    Style::default().fg(color_for(proc.kind.label())),
+                ),
+                Span::styled(" · raw keys forwarded", Style::default().fg(FAINT)),
+            ]),
+            None => Line::from(""),
+        };
+        f.render_widget(Paragraph::new(line), area);
+    }
+
+    fn draw_footer(&self, f: &mut Frame, area: Rect) {
+        let help = "Tab switch · Ctrl-T Tales · Ctrl-N shell · Ctrl-X Codex · Ctrl-L Claude · Ctrl-S send plan · Ctrl-A approve · Ctrl-Q quit";
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(help, Style::default().fg(FAINT)),
+                Span::styled(format!(" · {}", self.notice), Style::default().fg(DIM)),
+            ])),
+            area,
+        );
+    }
+}
+
+enum Pane {
+    Tales(TalesPane),
+    Process(ProcessPane),
+}
+
+impl Pane {
+    fn title(&self) -> &str {
+        match self {
+            Pane::Tales(tales) => &tales.title,
+            Pane::Process(proc) => &proc.title,
+        }
+    }
+
+    fn state(&self) -> PaneState {
+        match self {
+            Pane::Tales(tales) => tales.state,
+            Pane::Process(proc) => proc.state,
+        }
+    }
+}
+
+struct TalesPane {
+    title: String,
+    state: PaneState,
+    app: App,
+    cfg: WorkspaceConfig,
+    bus: Option<EventBus>,
+    commands: Option<mpsc::Sender<UserCommand>>,
+    events: Option<tokio::sync::broadcast::Receiver<OrchestratorEvent>>,
+    started: bool,
+    notice: String,
+}
+
+enum TalesAction {
+    LaunchExecutor { key: String, prompt: String },
+}
+
+impl TalesPane {
+    fn new(_id: PaneId, cfg: WorkspaceConfig) -> Self {
+        Self {
+            title: "Tales orchestrator".to_string(),
+            state: PaneState::WaitingForInput,
+            app: App::new("new plan".to_string()),
+            cfg,
+            bus: None,
+            commands: None,
+            events: None,
+            started: false,
+            notice: "type a planning prompt in Tales".to_string(),
+        }
+    }
+
+    async fn handle_key(&mut self, key: KeyEvent) -> Option<TalesAction> {
+        match (key.code, key.modifiers) {
+            (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                if let Some(commands) = &self.commands {
+                    let _ = commands.send(UserCommand::Shutdown).await;
+                }
+                self.notice = "Tales run stopped".to_string();
+            }
+            (KeyCode::Enter, _) => {
+                if !self.started {
+                    let task = self.app.input.trim().to_string();
+                    if task.is_empty() {
+                        self.notice = "enter a planning prompt first".to_string();
+                    } else {
+                        self.start(task);
+                    }
+                } else if let Some(cmd) = self.app.submit_input() {
+                    if let Some(action) = self.handle_command(cmd).await {
+                        return Some(action);
+                    }
+                }
+            }
+            (KeyCode::Backspace, _) => {
+                self.app.input.pop();
+            }
+            (KeyCode::Esc, _) => {
+                self.app.input.clear();
+            }
+            (KeyCode::Char(c), _) => {
+                self.app.input.push(c);
+            }
+            _ => {}
+        }
+        None
+    }
+
+    async fn handle_command(&mut self, cmd: UserCommand) -> Option<TalesAction> {
+        match cmd {
+            UserCommand::ConfirmExecution { executor } if self.app.awaiting => {
+                if let Some(commands) = &self.commands {
+                    let _ = commands.send(UserCommand::Shutdown).await;
+                }
+                self.state = PaneState::WaitingForInput;
+                self.notice = format!("launching {executor} executor pane");
+                Some(TalesAction::LaunchExecutor {
+                    key: executor,
+                    prompt: self.executor_prompt(),
+                })
+            }
+            other => {
+                if let Some(commands) = &self.commands {
+                    let _ = commands.send(other).await;
+                }
+                None
+            }
+        }
+    }
+
+    fn start(&mut self, task: String) {
+        let roster_keys = if self.cfg.connect.is_empty() {
+            vec!["claude".to_string(), "codex".to_string()]
+        } else {
+            self.cfg.connect.clone()
+        };
+        let keys = if roster_keys.len() == 1 {
+            vec![roster_keys[0].clone(), roster_keys[0].clone()]
+        } else {
+            roster_keys.into_iter().take(2).collect::<Vec<_>>()
+        };
+        if let Err(e) = validate_roster(&keys) {
+            self.notice = e.to_string();
+            return;
+        }
+        let roster = keys
+            .iter()
+            .enumerate()
+            .map(|(i, key)| Connection {
+                tool: key.clone(),
+                role: if i == 0 { Role::Drafter } else { Role::Critic },
+                model: None,
+            })
+            .collect::<Vec<_>>();
+
+        let (bus, commands_rx) = EventBus::new(4096, 256);
+        let events = bus.subscribe();
+        let commands = bus.commands();
+        let cwd = self.cfg.cwd.clone();
+        let sandbox = self.cfg.sandbox.clone();
+        let turns = self.cfg.turns;
+        let task_for_engine = task.clone();
+        let candidates = keys.clone();
+        self.app = App::new(task.clone());
+        self.app.set_candidates(candidates);
+        self.app.input.clear();
+        self.state = PaneState::Running;
+        self.started = true;
+        self.notice = "planning started".to_string();
+
+        {
+            let bus = bus.clone();
+            tokio::spawn(async move {
+                run_session(
+                    bus,
+                    commands_rx,
+                    roster,
+                    task_for_engine,
+                    cwd,
+                    sandbox,
+                    turns,
+                    false,
+                )
+                .await;
+            });
+        }
+
+        self.bus = Some(bus);
+        self.commands = Some(commands);
+        self.events = Some(events);
+    }
+
+    fn poll_events(&mut self) {
+        let Some(events) = &mut self.events else {
+            return;
+        };
+        loop {
+            match events.try_recv() {
+                Ok(ev) => {
+                    if matches!(ev, OrchestratorEvent::AwaitingConfirmation { .. }) {
+                        self.state = PaneState::AwaitingApproval;
+                    } else if matches!(ev, OrchestratorEvent::AgentExited { .. }) {
+                        self.state = PaneState::WaitingForInput;
+                    } else if matches!(ev, OrchestratorEvent::PhaseChanged { ref phase } if phase == "done")
+                    {
+                        self.state = PaneState::WaitingForInput;
+                    } else if self.started {
+                        self.state = PaneState::Running;
+                    }
+                    self.app.apply(ev);
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Lagged(_)) => continue,
+                Err(TryRecvError::Closed) => {
+                    self.state = PaneState::Exited;
+                    break;
+                }
+            }
+        }
+    }
+
+    fn executor_prompt(&self) -> String {
+        self.app.executor_handoff_prompt()
+    }
+
+    fn draw(&self, f: &mut Frame, area: Rect) {
+        if !self.started {
+            let lines = vec![
+                Line::from(vec![
+                    Span::styled("Tales orchestrator pane", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+                ]),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "Type the planning prompt below, then press Enter.",
+                    Style::default().fg(TEXT),
+                )),
+                Line::from(Span::styled(
+                    "Sibling panes can run shells, Codex, Claude Code, or Open Code while Tales keeps the plan.",
+                    Style::default().fg(DIM),
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "Use Ctrl-X/Ctrl-L to open executor panes, then Ctrl-S to send the agreed plan.",
+                    Style::default().fg(FAINT),
+                )),
+            ];
+            f.render_widget(Paragraph::new(lines), area);
+            return;
+        }
+
+        let width = area.width as usize;
+        let height = area.height as usize;
+        let mut lines = self.app.render_lines(width);
+        if lines.len() > height {
+            lines = lines.split_off(lines.len() - height);
+        }
+        f.render_widget(Paragraph::new(lines), area);
+    }
+}
+
+#[derive(Clone)]
+enum SessionKind {
+    Shell,
+    Agent { key: String },
+}
+
+impl SessionKind {
+    fn label(&self) -> &str {
+        match self {
+            SessionKind::Shell => "shell",
+            SessionKind::Agent { key } => key,
+        }
+    }
+}
+
+struct ProcessPane {
+    id: PaneId,
+    kind: SessionKind,
+    title: String,
+    command: String,
+    cwd: PathBuf,
+    state: PaneState,
+    lines: VecDeque<String>,
+    pending: String,
+    writer: Option<Arc<Mutex<Box<dyn Write + Send>>>>,
+    child: Option<Child>,
+    last_output: Instant,
+}
+
+impl ProcessPane {
+    fn spawn(
+        id: PaneId,
+        kind: SessionKind,
+        title: String,
+        command: String,
+        args: Vec<String>,
+        cwd: PathBuf,
+        tx: mpsc::UnboundedSender<TerminalEvent>,
+    ) -> Self {
+        match spawn_child(id, &command, &args, &cwd, tx) {
+            Ok((child, writer)) => {
+                let mut pane = Self {
+                    id,
+                    kind,
+                    title,
+                    command,
+                    cwd,
+                    state: PaneState::Running,
+                    lines: VecDeque::new(),
+                    pending: String::new(),
+                    writer: Some(writer),
+                    child: Some(child),
+                    last_output: Instant::now(),
+                };
+                pane.push_line("session started");
+                pane
+            }
+            Err(e) => {
+                let mut pane = Self {
+                    id,
+                    kind,
+                    title,
+                    command,
+                    cwd,
+                    state: PaneState::Exited,
+                    lines: VecDeque::new(),
+                    pending: String::new(),
+                    writer: None,
+                    child: None,
+                    last_output: Instant::now(),
+                };
+                pane.push_line(format!("failed to start session: {e}"));
+                pane
+            }
+        }
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        let Some(writer) = &self.writer else {
+            return;
+        };
+        if let Ok(mut w) = writer.lock() {
+            let _ = w.write_all(bytes);
+            let _ = w.flush();
+        }
+    }
+
+    fn push_output(&mut self, bytes: &[u8]) {
+        let text = strip_ansi(&String::from_utf8_lossy(bytes));
+        for ch in text.chars() {
+            match ch {
+                '\r' => self.pending.clear(),
+                '\n' => {
+                    let line = std::mem::take(&mut self.pending);
+                    self.push_line(line);
+                }
+                '\u{0008}' | '\u{007f}' => {
+                    self.pending.pop();
+                }
+                '\t' => self.pending.push_str("    "),
+                c if c.is_control() => {}
+                c => self.pending.push(c),
+            }
+        }
+        self.last_output = Instant::now();
+        self.detect_state();
+    }
+
+    fn push_line(&mut self, line: impl Into<String>) {
+        self.lines.push_back(line.into());
+        while self.lines.len() > MAX_SCROLLBACK {
+            self.lines.pop_front();
+        }
+    }
+
+    fn detect_state(&mut self) {
+        if self.state == PaneState::Exited {
+            return;
+        }
+        let sample = format!(
+            "{}\n{}",
+            self.lines.back().cloned().unwrap_or_default(),
+            self.pending
+        );
+        let lower = sample.to_lowercase();
+        if lower.contains("approve")
+            || lower.contains("allow this")
+            || lower.contains("permission")
+            || lower.contains("[y/n]")
+            || lower.contains("(y/n)")
+            || lower.contains("yes/no")
+        {
+            self.state = PaneState::AwaitingApproval;
+        } else if sample.trim_end().ends_with('$')
+            || sample.trim_end().ends_with('%')
+            || sample.trim_end().ends_with('>')
+            || sample.trim_end().ends_with('?')
+        {
+            self.state = PaneState::WaitingForInput;
+        } else {
+            self.state = PaneState::Running;
+        }
+    }
+
+    fn poll_exit(&mut self) {
+        let Some(child) = &mut self.child else {
+            return;
+        };
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                self.state = PaneState::Exited;
+                self.push_line(format!("process exited: {status}"));
+                self.child = None;
+                self.writer = None;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                self.state = PaneState::Exited;
+                self.push_line(format!("process status error: {e}"));
+                self.child = None;
+                self.writer = None;
+            }
+        }
+    }
+
+    fn shutdown(&mut self) {
+        if let Some(child) = &mut self.child {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        self.child = None;
+        self.writer = None;
+    }
+
+    fn draw(&self, f: &mut Frame, area: Rect) {
+        let height = area.height as usize;
+        let mut lines = self
+            .lines
+            .iter()
+            .rev()
+            .take(height.saturating_sub(1))
+            .cloned()
+            .collect::<Vec<_>>();
+        lines.reverse();
+        if !self.pending.is_empty() && lines.len() < height {
+            lines.push(self.pending.clone());
+        }
+        if lines.is_empty() {
+            lines.push(format!(
+                "{} · {} · {}",
+                self.kind.label(),
+                self.command,
+                self.cwd.to_string_lossy()
+            ));
+        }
+        let rendered = lines
+            .into_iter()
+            .map(|line| Line::from(Span::raw(line)))
+            .collect::<Vec<_>>();
+        f.render_widget(Paragraph::new(rendered), area);
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PaneState {
+    Running,
+    WaitingForInput,
+    AwaitingApproval,
+    Exited,
+}
+
+impl PaneState {
+    fn badge(self) -> &'static str {
+        match self {
+            PaneState::Running => "run",
+            PaneState::WaitingForInput => "wait",
+            PaneState::AwaitingApproval => "ask",
+            PaneState::Exited => "exit",
+        }
+    }
+
+    fn color(self) -> Color {
+        match self {
+            PaneState::Running => ACCENT,
+            PaneState::WaitingForInput => TEXT,
+            PaneState::AwaitingApproval => ERRC,
+            PaneState::Exited => DIM,
+        }
+    }
+}
+
+enum TerminalEvent {
+    Output { pane_id: PaneId, bytes: Vec<u8> },
+    ReaderClosed { pane_id: PaneId },
+}
+
+fn default_shell() -> String {
+    std::env::var("SHELL").unwrap_or_else(|_| {
+        if cfg!(windows) {
+            "cmd".to_string()
+        } else {
+            "/bin/sh".to_string()
+        }
+    })
+}
+
+fn key_to_bytes(key: KeyEvent) -> Option<Vec<u8>> {
+    match (key.code, key.modifiers) {
+        (KeyCode::Char(c), KeyModifiers::CONTROL) if c.is_ascii_alphabetic() => {
+            Some(vec![(c.to_ascii_lowercase() as u8) - b'a' + 1])
+        }
+        (KeyCode::Char(c), _) => Some(c.to_string().into_bytes()),
+        (KeyCode::Enter, _) => Some(b"\r".to_vec()),
+        (KeyCode::Backspace, _) => Some(vec![0x7f]),
+        (KeyCode::Tab, _) => Some(b"\t".to_vec()),
+        (KeyCode::Esc, _) => Some(vec![0x1b]),
+        (KeyCode::Up, _) => Some(b"\x1b[A".to_vec()),
+        (KeyCode::Down, _) => Some(b"\x1b[B".to_vec()),
+        (KeyCode::Right, _) => Some(b"\x1b[C".to_vec()),
+        (KeyCode::Left, _) => Some(b"\x1b[D".to_vec()),
+        (KeyCode::Home, _) => Some(b"\x1b[H".to_vec()),
+        (KeyCode::End, _) => Some(b"\x1b[F".to_vec()),
+        (KeyCode::Delete, _) => Some(b"\x1b[3~".to_vec()),
+        _ => None,
+    }
+}
+
+fn spawn_child(
+    pane_id: PaneId,
+    command: &str,
+    args: &[String],
+    cwd: &Path,
+    tx: mpsc::UnboundedSender<TerminalEvent>,
+) -> io::Result<(Child, Arc<Mutex<Box<dyn Write + Send>>>)> {
+    #[cfg(unix)]
+    {
+        spawn_pty_child(pane_id, command, args, cwd, tx)
+    }
+    #[cfg(not(unix))]
+    {
+        spawn_piped_child(pane_id, command, args, cwd, tx)
+    }
+}
+
+#[cfg(unix)]
+fn spawn_pty_child(
+    pane_id: PaneId,
+    command: &str,
+    args: &[String],
+    cwd: &Path,
+    tx: mpsc::UnboundedSender<TerminalEvent>,
+) -> io::Result<(Child, Arc<Mutex<Box<dyn Write + Send>>>)> {
+    use std::fs::File;
+    use std::os::unix::io::{FromRawFd, RawFd};
+    use std::os::unix::process::CommandExt;
+
+    let mut master: RawFd = -1;
+    let mut slave: RawFd = -1;
+    let mut size = libc::winsize {
+        ws_row: 32,
+        ws_col: 120,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    let rc = unsafe {
+        libc::openpty(
+            &mut master,
+            &mut slave,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut size,
+        )
+    };
+    if rc == -1 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let dup_stdio = |fd| -> io::Result<Stdio> {
+        let duped = unsafe { libc::dup(fd) };
+        if duped == -1 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(unsafe { Stdio::from_raw_fd(duped) })
+        }
+    };
+
+    let slave_for_ctty = slave;
+    let mut cmd = Command::new(command);
+    cmd.args(args)
+        .current_dir(cwd)
+        .env("TERM", "xterm-256color")
+        .stdin(dup_stdio(slave)?)
+        .stdout(dup_stdio(slave)?)
+        .stderr(dup_stdio(slave)?);
+    unsafe {
+        cmd.pre_exec(move || {
+            if libc::setsid() == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            let _ = libc::ioctl(slave_for_ctty, libc::TIOCSCTTY.into(), 0);
+            Ok(())
+        });
+    }
+
+    let child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            unsafe {
+                libc::close(master);
+                libc::close(slave);
+            }
+            return Err(e);
+        }
+    };
+    unsafe {
+        libc::close(slave);
+    }
+
+    let mut reader = unsafe { File::from_raw_fd(master) };
+    let writer = reader.try_clone()?;
+    std::thread::spawn(move || {
+        let mut buf = [0_u8; 4096];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if tx
+                        .send(TerminalEvent::Output {
+                            pane_id,
+                            bytes: buf[..n].to_vec(),
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
+        }
+        let _ = tx.send(TerminalEvent::ReaderClosed { pane_id });
+    });
+
+    Ok((child, Arc::new(Mutex::new(Box::new(writer)))))
+}
+
+#[cfg(not(unix))]
+fn spawn_piped_child(
+    pane_id: PaneId,
+    command: &str,
+    args: &[String],
+    cwd: &Path,
+    tx: mpsc::UnboundedSender<TerminalEvent>,
+) -> io::Result<(Child, Arc<Mutex<Box<dyn Write + Send>>>)> {
+    let mut child = Command::new(command)
+        .args(args)
+        .current_dir(cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let stdin = child.stdin.take().expect("piped stdin");
+    if let Some(mut stdout) = child.stdout.take() {
+        let tx = tx.clone();
+        std::thread::spawn(move || pipe_reader(pane_id, &mut stdout, tx));
+    }
+    if let Some(mut stderr) = child.stderr.take() {
+        std::thread::spawn(move || pipe_reader(pane_id, &mut stderr, tx));
+    }
+    Ok((child, Arc::new(Mutex::new(Box::new(stdin)))))
+}
+
+#[cfg(not(unix))]
+fn pipe_reader<R: Read>(pane_id: PaneId, reader: &mut R, tx: mpsc::UnboundedSender<TerminalEvent>) {
+    let mut buf = [0_u8; 4096];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                if tx
+                    .send(TerminalEvent::Output {
+                        pane_id,
+                        bytes: buf[..n].to_vec(),
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+    let _ = tx.send(TerminalEvent::ReaderClosed { pane_id });
+}
+
+fn strip_ansi(input: &str) -> String {
+    #[derive(Clone, Copy)]
+    enum State {
+        Normal,
+        Esc,
+        Csi,
+        Osc,
+        OscEsc,
+    }
+
+    let mut out = String::new();
+    let mut state = State::Normal;
+    for ch in input.chars() {
+        match state {
+            State::Normal => {
+                if ch == '\x1b' {
+                    state = State::Esc;
+                } else {
+                    out.push(ch);
+                }
+            }
+            State::Esc => match ch {
+                '[' => state = State::Csi,
+                ']' => state = State::Osc,
+                _ => state = State::Normal,
+            },
+            State::Csi => {
+                if ('@'..='~').contains(&ch) {
+                    state = State::Normal;
+                }
+            }
+            State::Osc => match ch {
+                '\x07' => state = State::Normal,
+                '\x1b' => state = State::OscEsc,
+                _ => {}
+            },
+            State::OscEsc => {
+                state = State::Normal;
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strips_common_ansi_sequences() {
+        assert_eq!(strip_ansi("\x1b[32mhello\x1b[0m"), "hello");
+        assert_eq!(strip_ansi("a\x1b]0;title\x07b"), "ab");
+    }
+
+    #[test]
+    fn approval_detection_marks_session() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut pane = ProcessPane::spawn(
+            1,
+            SessionKind::Shell,
+            "missing".into(),
+            "/definitely/not/a/bin".into(),
+            Vec::new(),
+            PathBuf::from("."),
+            tx,
+        );
+        pane.state = PaneState::Running;
+        pane.push_output(b"Approve command? [y/n]");
+        assert_eq!(pane.state, PaneState::AwaitingApproval);
+    }
+}

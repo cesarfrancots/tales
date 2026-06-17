@@ -12,15 +12,7 @@ use ratatui::text::{Line, Span};
 use tales_core::event::{OrchestratorEvent, UserCommand};
 use uuid::Uuid;
 
-// ── palette (truecolor; degrades gracefully) ─────────────────────────────────
-const TEXT: Color = Color::Rgb(0xd2, 0xd8, 0xe2);
-const DIM: Color = Color::Rgb(0x6b, 0x74, 0x83);
-const FAINT: Color = Color::Rgb(0x44, 0x4d, 0x5a);
-const CLAUDE: Color = Color::Rgb(0x5c, 0xb0, 0xff);
-const CODEX: Color = Color::Rgb(0xc0, 0x8c, 0xff);
-const YOU: Color = Color::Rgb(0x7e, 0xe0, 0xa3);
-const ACCENT: Color = Color::Rgb(0x2d, 0xd4, 0xbf);
-const ERRC: Color = Color::Rgb(0xff, 0x7a, 0x85);
+use crate::theme::{color_for, pretty, ACCENT, DIM, ERRC, FAINT, TEXT, YOU};
 
 #[derive(Clone, Copy)]
 enum SysKind {
@@ -54,6 +46,9 @@ pub struct App {
     pub should_quit: bool,
     /// Media queued via /attach, sent with the next message.
     pending_attachments: Vec<PathBuf>,
+    /// The connected tools, in roster order — the executor candidates the user
+    /// can pick at the gate (by name or by 1-based number).
+    candidates: Vec<String>,
 }
 
 impl App {
@@ -70,7 +65,14 @@ impl App {
             awaiting: false,
             should_quit: false,
             pending_attachments: Vec::new(),
+            candidates: Vec::new(),
         }
+    }
+
+    /// Record the connected tools so the gate can offer them as numbered
+    /// executor choices.
+    pub fn set_candidates(&mut self, candidates: Vec<String>) {
+        self.candidates = candidates;
     }
 
     /// Number of files queued to send with the next message.
@@ -170,8 +172,10 @@ impl App {
         let text = self.input.trim().to_string();
         self.input.clear();
 
-        if let Some(rest) = text.strip_prefix("/attach") {
-            let raw = rest.trim();
+        // Match commands exactly (or followed by a space) so `/attachfoo` and
+        // `/confirmation` fall through to a normal message rather than mis-firing.
+        if text == "/attach" || text.starts_with("/attach ") {
+            let raw = text["/attach".len()..].trim();
             if raw.is_empty() {
                 self.sys("usage: /attach <path-to-image-or-pdf>", SysKind::Note);
             } else {
@@ -193,14 +197,11 @@ impl App {
             }
             return None;
         }
-        if let Some(rest) = text.strip_prefix("/confirm") {
-            let arg = rest.trim();
-            let executor = if arg.is_empty() {
-                self.recommended.clone().unwrap_or_default()
-            } else {
-                arg.to_string()
-            };
-            return Some(UserCommand::ConfirmExecution { executor });
+        if text == "/confirm" || text.starts_with("/confirm ") {
+            let arg = text["/confirm".len()..].trim();
+            return Some(UserCommand::ConfirmExecution {
+                executor: self.resolve_executor(arg),
+            });
         }
         if text == "/reject" {
             return Some(UserCommand::Reject);
@@ -211,6 +212,14 @@ impl App {
         }
         // A normal message — or attachments on their own.
         if text.is_empty() && self.pending_attachments.is_empty() {
+            // At the gate, a bare Enter accepts the recommended executor.
+            if self.awaiting {
+                if let Some(rec) = &self.recommended {
+                    return Some(UserCommand::ConfirmExecution {
+                        executor: rec.clone(),
+                    });
+                }
+            }
             return None;
         }
         let attachments = std::mem::take(&mut self.pending_attachments);
@@ -219,6 +228,113 @@ impl App {
             text,
             attachments,
         })
+    }
+
+    /// Resolve a `/confirm` argument to an executor label. Accepts a 1-based
+    /// number (matching the gate's picker), a tool name, or empty (the
+    /// recommended one).
+    fn resolve_executor(&self, arg: &str) -> String {
+        if arg.is_empty() {
+            return self.recommended.clone().unwrap_or_default();
+        }
+        if let Ok(n) = arg.parse::<usize>() {
+            if n >= 1 {
+                if let Some(label) = self.candidates.get(n - 1) {
+                    return label.clone();
+                }
+            }
+        }
+        // Accept the displayed pretty name too (e.g. "Claude Code" → "claude").
+        for key in &self.candidates {
+            if pretty(key).eq_ignore_ascii_case(arg) {
+                return key.clone();
+            }
+        }
+        arg.to_string()
+    }
+
+    /// The footer hint line. At the gate it becomes an executor picker listing
+    /// the connected tools as numbered choices; otherwise it's the chat help.
+    pub fn footer_line(&self) -> Line<'static> {
+        if !self.awaiting {
+            return Line::from(Span::styled(
+                "type to talk · /attach <file> · /confirm [agent] · /reject · /quit",
+                Style::default().fg(FAINT),
+            ));
+        }
+        let mut spans = vec![Span::styled(
+            "pick executor: ",
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        )];
+        for (i, key) in self.candidates.iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::raw("  "));
+            }
+            spans.push(Span::styled(
+                format!("[{}] ", i + 1),
+                Style::default().fg(FAINT),
+            ));
+            spans.push(Span::styled(
+                pretty(key),
+                Style::default()
+                    .fg(color_for(key))
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+        let tail = match &self.recommended {
+            Some(r) => format!("  ·  Enter = {}  ·  /confirm <n>  ·  /reject", pretty(r)),
+            None => "  ·  /confirm <n>  ·  /reject".to_string(),
+        };
+        spans.push(Span::styled(tail, Style::default().fg(DIM)));
+        Line::from(spans)
+    }
+
+    /// Plain-text transcript for handing a plan off to a live executor pane.
+    pub fn transcript_text(&self) -> String {
+        let mut out = String::new();
+        for b in &self.blocks {
+            match b {
+                Block::Agent { label, role, text } => {
+                    let role = role
+                        .as_deref()
+                        .map(|r| format!(" ({r})"))
+                        .unwrap_or_default();
+                    out.push_str(&format!("{}{}:\n{}\n\n", pretty(label), role, text.trim()));
+                }
+                Block::You(text) => {
+                    out.push_str(&format!("You:\n{}\n\n", text.trim()));
+                }
+                Block::Sys(text, _) => {
+                    out.push_str(&format!("[Tales]\n{}\n\n", text.trim()));
+                }
+            }
+        }
+        for (agent, text) in &self.partial {
+            let label = self.label_of(agent);
+            if !text.trim().is_empty() {
+                out.push_str(&format!(
+                    "{} (in progress):\n{}\n\n",
+                    pretty(&label),
+                    text.trim()
+                ));
+            }
+        }
+        out.trim().to_string()
+    }
+
+    /// Executor prompt used when the terminal workspace sends the agreed plan to
+    /// a live Claude/Codex pane instead of letting the core run headlessly.
+    pub fn executor_handoff_prompt(&self) -> String {
+        format!(
+            "You are now EXECUTING the plan the team agreed on.\n\
+             Task: {}\n\n\
+             Discussion and plan:\n{}\n\n\
+             Implement it now. Use your file-writing tool (Write/Edit) to create \
+             every file the plan calls for. When finished, briefly summarize \
+             what you wrote.\n",
+            self.task,
+            self.transcript_text()
+        )
     }
 
     /// Build the Warp-style block render lines (transcript + live partials).
@@ -343,28 +459,6 @@ fn expand_path(raw: &str) -> PathBuf {
     PathBuf::from(raw)
 }
 
-fn pretty(label: &str) -> String {
-    match label.to_lowercase().as_str() {
-        "claude" => "Claude Code".to_string(),
-        "codex" => "Codex".to_string(),
-        other => {
-            let mut c = other.chars();
-            match c.next() {
-                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-                None => other.to_string(),
-            }
-        }
-    }
-}
-
-fn color_for(label: &str) -> Color {
-    match label.to_lowercase().as_str() {
-        "claude" => CLAUDE,
-        "codex" => CODEX,
-        _ => Color::Rgb(0xff, 0xc7, 0x77),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -431,6 +525,39 @@ mod tests {
         let r = text_of(&app.render_lines(80));
         assert!(r.contains("Codex"));
         assert!(r.contains("CRITIC"));
+    }
+
+    #[test]
+    fn gate_executor_resolution() {
+        let mut app = App::new("t".into());
+        app.set_candidates(vec!["claude".into(), "codex".into()]);
+        app.recommended = Some("claude".into());
+
+        // Numeric pick → the nth candidate.
+        app.input = "/confirm 2".into();
+        match app.submit_input() {
+            Some(UserCommand::ConfirmExecution { executor }) => assert_eq!(executor, "codex"),
+            other => panic!("expected confirm codex, got {other:?}"),
+        }
+        // Pretty name pick → underlying key.
+        app.input = "/confirm Codex".into();
+        match app.submit_input() {
+            Some(UserCommand::ConfirmExecution { executor }) => assert_eq!(executor, "codex"),
+            other => panic!("expected confirm codex, got {other:?}"),
+        }
+        // A near-miss command is NOT a confirm — it's a normal message.
+        app.input = "/confirmation needed".into();
+        match app.submit_input() {
+            Some(UserCommand::InjectNote { text, .. }) => assert_eq!(text, "/confirmation needed"),
+            other => panic!("expected inject note, got {other:?}"),
+        }
+        // At the gate, a bare Enter accepts the recommendation.
+        app.awaiting = true;
+        app.input = String::new();
+        match app.submit_input() {
+            Some(UserCommand::ConfirmExecution { executor }) => assert_eq!(executor, "claude"),
+            other => panic!("expected confirm claude, got {other:?}"),
+        }
     }
 
     #[test]

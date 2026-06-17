@@ -17,3 +17,4 @@ crossterm = { version = "0.28", features = ["event-stream"] }
 clap = { version = "4", features = ["derive"] }
 futures = "0.3"
 uuid = { version = "1", features = ["v4"] }
+libc = "0.2"

@@ -1,13 +1,15 @@
 # Tales
 
 A lightweight multi-agent AI coding orchestrator. It drives multiple AI coding
-CLIs (Claude Code today, Codex next) as subprocesses so they can collaborate on
+CLIs (Claude Code, Codex, Open Code) as subprocesses so they can collaborate on
 the **same project** in real time — debate a plan, code in isolated git
 worktrees, then **recommend who should execute** while requiring **your
 confirmation** before anything runs.
 
-The unified console *is* the tool. You watch the orchestrator, not the
-individual apps.
+The unified console *is* the tool — it works like any other AI terminal (Claude
+Code, Codex, Warp), you just have more than one model in the room. Just type
+`tales`: it opens a terminal workspace with Tales as the default pane, plus
+sibling panes for shells and agent CLIs.
 
 ## Why CLIs, not the desktop apps
 
@@ -28,12 +30,16 @@ UI never branch on *which* tool — only on capabilities.
 A Cargo workspace enforces a UI-agnostic core:
 
 - **`tales-core`** — orchestration. Cannot depend on any frontend.
-  - `agent/` — the `AgentAdapter` trait + `ClaudeAdapter` (the heart).
+  - `agent/` — the `AgentAdapter` trait + the Claude / Codex / Open Code
+    adapters, plus `KNOWN_TOOLS` + `make_adapter` (one registry the picker, the
+    CLI, and the orchestrator all read from).
   - `event.rs` / `bus.rs` — the only core↔frontend contract (broadcast events,
     mpsc commands), so a web dashboard drops in later with zero core changes.
   - `supervisor.rs` — process lifecycle / zombie prevention.
-- **`tales-cli`** — the `tales` binary (`solo` / `discuss` / `run`).
-- **`tales-tui`** — the `tales-tui` binary: the terminal live chat.
+- **`tales-cli`** — the `tales` binary: bare `tales` or `tales term` opens the
+  terminal workspace; `solo` / `discuss` / `run` are the scriptable counterparts.
+- **`tales-tui`** — the `tales-tui` binary: the interactive terminal workspace
+  with a default Tales orchestrator pane and sibling shell/agent panes.
 - **`tales-web`** — the `tales-web` binary: a browser live chat (axum + WebSocket).
 
 All three frontends talk to the core *only* through the bus — adding `tales-web`
@@ -53,6 +59,7 @@ needed zero changes to `tales-core`.
 | M7 | **Live chat TUI** — watch + interject + decide (human-in-the-loop) | ✅ done |
 | M8 | Hardening — per-turn timeout, cancellable graceful-then-kill shutdown | ✅ core (`tales-web` future) |
 | — | Launcher skill (Claude Code + Codex commands) | ✅ done |
+| — | Interactive terminal workspace (Tales default pane, shell/agent panes, plan handoff) + Open Code adapter | ✅ done |
 
 Two adversarial-review passes (run as multi-agent Workflows) found **17 real
 bugs** total — 12 in the core (a Codex `turn.failed` deadlock, worktree merge
@@ -71,22 +78,44 @@ cargo build
 A local web page streams the Claude↔Codex chat live; type to interject, and
 click **Approve & run** (or **Reject**) at the gate. Nothing executes until you do.
 
-### Live chat in the terminal
+### The interactive terminal workspace (just type `tales`)
 
 ```sh
-# real run (talk to them, decide the executor):
-./target/debug/tales-tui "Design and build a rate limiter" --drafter claude --critic codex
-# try the UI with no API calls:
-./target/debug/tales-tui "demo" --demo
+cargo build --release
+tales                       # opens Tales as the default terminal pane
+tales term                  # same as bare tales
+tales-tui --demo            # try the whole flow with no API calls
+tales-tui --classic         # old connect → prompt → plan screen
 ```
 
-In the chat: **type to talk to them** (you're a participant), `/confirm` (or
-`/confirm <agent>`) at the gate to execute, `/reject` to decline, `/quit` or
-`Ctrl-C` to exit. The executor cannot run until you confirm.
+`tales` with no subcommand opens the terminal workspace:
 
-Launch from inside a harness via the bundled skill: a Claude Code command
+1. **Tales pane** — the default pane is the Tales orchestrator. Type the planning
+   prompt and press `Enter`; Claude/Codex discuss and draft the plan in place.
+2. **Terminal panes** — `Ctrl-N` opens a shell, `Ctrl-X` opens Codex, `Ctrl-L`
+   opens Claude Code, and `Ctrl-O` opens Open Code. `Tab` switches focus.
+3. **Observe / intervene** — focused agent panes receive your keystrokes
+   directly. `Ctrl-A` sends an explicit approval only when that pane is waiting.
+4. **Execute / hand off** — at the gate, `Enter` or `/confirm <n>` launches the
+   selected executor in its own live pane and sends it the Tales plan. You can
+   also focus any existing agent pane and press `Ctrl-S` to send the plan there.
+
+The legacy single-pane planner is still available with `tales-tui --classic`:
+connect tools, type a task, interject with chat commands, then confirm or reject
+the recommended executor.
+
+Launch from inside a harness via the bundled skill — `/tales` opens this same
+terminal with the harness you're in pre-connected: a Claude Code command
 (`.claude/commands/tales.md`) and a Codex prompt (`codex/prompts/tales.md`).
 See `skill/tales/SKILL.md`.
+
+You can also pre-connect / pre-fill explicitly, or pass a task to skip setup:
+
+```sh
+tales-tui --connect claude --connect codex
+tales-tui --connect claude --prefill "Design a rate limiter"
+tales-tui "Design and build a rate limiter" --drafter claude --critic codex  # immediate
+```
 
 ### Non-interactive pipeline & the dogfood
 
@@ -129,7 +158,7 @@ Full design: see the plan at
 
 ```sh
 cargo build
-./target/debug/tales --model sonnet "Reply with exactly: hello from tales"
+./target/debug/tales solo --model sonnet "Reply with exactly: hello from tales"
 ```
 
 Requires the `claude` CLI installed and authenticated.

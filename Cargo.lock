@@ -1232,6 +1232,7 @@ dependencies = [
  "clap",
  "crossterm",
  "futures",
+ "libc",
  "ratatui",
  "tales-core",
  "tokio",

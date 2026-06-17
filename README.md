@@ -45,14 +45,16 @@ A Cargo workspace enforces a UI-agnostic core:
 | M3 | Worktree manager (per-agent isolation, diffs) — *integration-tested* | ✅ done |
 | M4 | Orchestrator + discussion loop (drafter/critic) — *mock-tested + live Claude↔Codex* | ✅ done |
 | M5 | Recommendation stage + required confirmation gate — *gate-tested* | ✅ done |
-| M6 | Gated execution (executor runs the agreed plan) | ✅ basic · worktree-merge next |
+| M6 | Gated execution + git-worktree isolation + merge (`tales run --worktree`) | ✅ done |
 | M7 | **Live chat TUI** — watch + interject + decide (human-in-the-loop) | ✅ done |
-| M8 | Hardening + `tales-web` | partial (per-turn timeout, review fixes) |
+| M8 | Hardening — per-turn timeout, cancellable graceful-then-kill shutdown | ✅ core (`tales-web` future) |
 | — | Launcher skill (Claude Code + Codex commands) | ✅ done |
 
-A 4-agent adversarial review found **12 real bugs** (a Codex `turn.failed`
-deadlock, worktree merge misclassification, branch collisions, …) — all fixed
-and covered by tests.
+Two adversarial-review passes (run as multi-agent Workflows) found **17 real
+bugs** total — 12 in the core (a Codex `turn.failed` deadlock, worktree merge
+misclassification, branch collisions, …) and 5 in the worktree/shutdown code
+(worktree+task leaks on error paths, per-turn-timeout not terminating the stuck
+agent, process-group kill for tool/MCP grandchildren, …) — all fixed.
 
 ### Live chat — watch Claude & Codex collaborate, and steer them
 
@@ -86,6 +88,13 @@ command — Codex drafted the plan, Claude critiqued it, both voted, and Claude
 Code executed it into `landing/index.html` + `landing/style.css`. Open
 `landing/index.html` in a browser. The executor is restricted to file-writing
 tools so it can't stall on an unapproved shell prompt in headless mode.
+
+Add `--worktree` to run the executor inside its own `git worktree` and merge the
+result back into the current branch (clean diff + reviewable hand-off):
+
+```sh
+tales run "Add a /health endpoint" --execute claude --worktree
+```
 
 ### Try the live discussion (M4)
 

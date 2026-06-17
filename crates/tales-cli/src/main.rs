@@ -23,7 +23,8 @@ use tales_core::agent::{AgentAdapter, AgentCommand, AgentEvent, SpawnCtx};
 use tales_core::bus::EventBus;
 use tales_core::conductor::Role;
 use tales_core::event::{OrchestratorEvent, UserCommand};
-use tales_core::orchestrator::Orchestrator;
+use tales_core::orchestrator::{Orchestrator, RunOutcome};
+use tales_core::worktree::{MergeOutcome, WorktreeManager};
 
 #[derive(Parser, Debug)]
 #[command(name = "tales", about = "Multi-agent AI coding orchestrator")]
@@ -75,6 +76,10 @@ enum Command {
         cwd: Option<String>,
         #[arg(long, default_value = "workspace-write")]
         sandbox: String,
+        /// Run the executor in its own git worktree, then merge the result back
+        /// into the current branch (requires a git repo).
+        #[arg(long)]
+        worktree: bool,
     },
     /// Run a live drafter/critic discussion between two agents.
     Discuss {
@@ -139,9 +144,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             turns,
             cwd,
             sandbox,
+            worktree,
         } => {
             run_pipeline(
                 prompt, drafter, critic, execute, drafter_model, critic_model, turns, cwd, sandbox,
+                worktree,
             )
             .await
         }
@@ -336,7 +343,9 @@ fn flush() {
     let _ = std::io::stdout().flush();
 }
 
+#[allow(clippy::too_many_arguments)]
 fn mk_ctx(
+    agent: Uuid,
     label: &str,
     cwd: &std::path::Path,
     model: Option<String>,
@@ -345,7 +354,7 @@ fn mk_ctx(
     allowed_tools: Option<Vec<String>>,
 ) -> SpawnCtx {
     SpawnCtx {
-        agent: Uuid::new_v4(),
+        agent,
         label: label.to_string(),
         cwd: cwd.to_path_buf(),
         model,
@@ -353,6 +362,16 @@ fn mk_ctx(
         sandbox: sandbox.to_string(),
         allowed_tools,
     }
+}
+
+async fn is_git_repo(cwd: &std::path::Path) -> bool {
+    tokio::process::Command::new("git")
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .current_dir(cwd)
+        .output()
+        .await
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -366,6 +385,7 @@ async fn run_pipeline(
     turns: usize,
     cwd: Option<String>,
     sandbox: String,
+    worktree: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let cwd = cwd.map(PathBuf::from).unwrap_or(std::env::current_dir()?);
     let (bus, mut commands_rx) = EventBus::new(2048, 64);
@@ -408,51 +428,121 @@ async fn run_pipeline(
         }
     });
 
+    // The executor must be one of the two participants.
+    let exec_lc = execute.to_lowercase();
+    let exec_is_drafter = drafter.to_lowercase() == exec_lc;
+    let exec_is_critic = critic.to_lowercase() == exec_lc;
+    if !exec_is_drafter && !exec_is_critic {
+        printer.abort();
+        return Err(format!(
+            "--execute '{execute}' must be one of the participants ('{drafter}', '{critic}')"
+        )
+        .into());
+    }
+
     // Agents run on acceptEdits (Write/Edit auto-approved). The Claude executor
     // is additionally restricted to file tools so it cannot stall on an
     // unapproved Bash call in headless mode (Write creates parent dirs, so no
     // shell mkdir is needed). Non-executors and Codex are unrestricted.
-    let exec_lc = execute.to_lowercase();
     let tools_for = |label: &str| -> Option<Vec<String>> {
         if label.to_lowercase() == exec_lc && label.to_lowercase() == "claude" {
-            Some(vec![
-                "Write".into(),
-                "Edit".into(),
-                "MultiEdit".into(),
-                "Read".into(),
-            ])
+            Some(vec!["Write".into(), "Edit".into(), "MultiEdit".into(), "Read".into()])
         } else {
             None
         }
     };
 
-    let mut orch = Orchestrator::new(bus.clone());
-    orch.add_agent(
-        make_adapter(&drafter)?,
-        mk_ctx(&drafter, &cwd, drafter_model, &sandbox, "acceptEdits", tools_for(&drafter)),
-        Role::Drafter,
-    )
-    .await?;
-    orch.add_agent(
-        make_adapter(&critic)?,
-        mk_ctx(&critic, &cwd, critic_model, &sandbox, "acceptEdits", tools_for(&critic)),
-        Role::Critic,
-    )
-    .await?;
+    let drafter_id = Uuid::new_v4();
+    let critic_id = Uuid::new_v4();
+    let exec_id = if exec_is_drafter { drafter_id } else { critic_id };
 
-    // Auto-confirm the executor: queued before the run, it is remembered and
-    // honored when the gate opens (non-interactive equivalent of the user
-    // typing /confirm in the TUI).
-    commands_tx
-        .send(UserCommand::ConfirmExecution { executor: execute.clone() })
+    // Optional git-worktree isolation: the executor runs in its own worktree,
+    // and the result is merged back after execution.
+    let use_wt = worktree && is_git_repo(&cwd).await;
+    if worktree && !use_wt {
+        eprintln!("note: --worktree ignored (cwd is not a git repository)");
+    }
+    let mut wt_mgr: Option<WorktreeManager> = None;
+    let mut exec_cwd = cwd.clone();
+    if use_wt {
+        let run_id = format!("run-{}", &exec_id.simple().to_string()[..8]);
+        let mut mgr = WorktreeManager::init(&cwd, run_id).await?;
+        let path = mgr.create(exec_id, &execute).await?;
+        println!("● executor worktree: {}", path.display());
+        exec_cwd = path;
+        wt_mgr = Some(mgr);
+    }
+    // The orchestrator executes the FIRST roster entry whose label matches, so
+    // when both roles share a label the drafter is the executor. Give the
+    // worktree cwd only to that one agent; the other stays on the base cwd.
+    let drafter_cwd = if exec_is_drafter { exec_cwd.clone() } else { cwd.clone() };
+    let critic_cwd = if exec_is_critic && !exec_is_drafter {
+        exec_cwd.clone()
+    } else {
+        cwd.clone()
+    };
+
+    // Run inside a block so that — no matter where it fails — we still abort the
+    // printer task and prune the executor's worktree (its on-disk dir + branch).
+    let run_result: Result<RunOutcome, Box<dyn std::error::Error>> = async {
+        let mut orch = Orchestrator::new(bus.clone());
+        orch.add_agent(
+            make_adapter(&drafter)?,
+            mk_ctx(drafter_id, &drafter, &drafter_cwd, drafter_model, &sandbox, "acceptEdits", tools_for(&drafter)),
+            Role::Drafter,
+        )
+        .await?;
+        orch.add_agent(
+            make_adapter(&critic)?,
+            mk_ctx(critic_id, &critic, &critic_cwd, critic_model, &sandbox, "acceptEdits", tools_for(&critic)),
+            Role::Critic,
+        )
         .await?;
 
-    println!("\n=== run: {prompt}  (executor: {execute}) ===");
-    let outcome = orch.run_interactive(&prompt, turns, &mut commands_rx).await?;
-    orch.shutdown().await;
+        // Auto-confirm the executor: queued before the run, it is remembered and
+        // honored when the gate opens (non-interactive equivalent of /confirm).
+        commands_tx
+            .send(UserCommand::ConfirmExecution { executor: execute.clone() })
+            .await?;
+
+        println!("\n=== run: {prompt}  (executor: {execute}) ===");
+        let outcome = orch.run_interactive(&prompt, turns, &mut commands_rx).await?;
+        orch.shutdown().await;
+        Ok(outcome)
+    }
+    .await;
 
     sleep(Duration::from_millis(200)).await;
     printer.abort();
+
+    // Merge the executor's worktree on success, and prune it on EVERY path.
+    if let Some(mut mgr) = wt_mgr {
+        if let Ok(RunOutcome::Executed { .. }) = &run_result {
+            match mgr.diff(exec_id).await {
+                Ok(d) => println!(
+                    "\n=== executor changes ({} files) ===\n{}",
+                    d.files_changed,
+                    d.stat.trim()
+                ),
+                Err(e) => eprintln!("diff failed: {e}"),
+            }
+            match mgr.commit_and_merge(exec_id).await {
+                Ok(MergeOutcome::Clean) => {
+                    println!("✓ merged the executor's worktree into the base branch")
+                }
+                Ok(MergeOutcome::NoChanges) => println!("(executor produced no changes)"),
+                Ok(MergeOutcome::Conflict { files }) => {
+                    println!("⚠ merge conflicts — resolve in base: {}", files.join(", "))
+                }
+                Err(e) => eprintln!("merge failed: {e}"),
+            }
+        }
+        if let Err(e) = mgr.remove(exec_id).await {
+            eprintln!("worktree cleanup: {e}");
+        }
+    }
+
+    let outcome = run_result?;
     println!("\n=== outcome: {outcome:?} ===");
     Ok(())
 }

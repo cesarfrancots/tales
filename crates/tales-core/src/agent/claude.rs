@@ -16,12 +16,13 @@
 //!   {"type":"result","subtype":"success","total_cost_usd":…}
 
 use std::process::Stdio;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use super::{AgentAdapter, AgentCaps, AgentCommand, AgentEvent, SpawnCtx, TurnId};
 use crate::{AgentId, Result, TalesError};
@@ -96,6 +97,9 @@ impl AgentAdapter for ClaudeAdapter {
                 cmd.arg("--allowedTools").args(tools);
             }
         }
+        // Own process group so a force-kill can reap claude's tool/MCP children.
+        #[cfg(unix)]
+        cmd.process_group(0);
 
         let mut child = cmd
             .spawn()
@@ -107,15 +111,18 @@ impl AgentAdapter for ClaudeAdapter {
 
         let (cmd_tx, cmd_rx) = mpsc::channel::<AgentCommand>(64);
         let agent = ctx.agent;
+        // Lets the writer tell the waiter "shutdown requested" so the waiter can
+        // force-kill if the child doesn't exit on stdin EOF within a grace.
+        let (kill_tx, kill_rx) = oneshot::channel::<()>();
 
         // Writer: owns stdin, serializes commands as stream-json user messages.
-        tokio::spawn(writer_task(stdin, cmd_rx));
+        tokio::spawn(writer_task(stdin, cmd_rx, kill_tx));
         // Reader: parses stdout JSONL → normalized events.
         tokio::spawn(reader_task(stdout, events_tx.clone(), agent));
         // Stderr drain → tracing (never let it fill the OS pipe).
         tokio::spawn(stderr_task(stderr, agent));
-        // Waiter: reaps the child and reports exit.
-        tokio::spawn(waiter_task(child, events_tx, agent));
+        // Waiter: reaps the child and reports exit (force-kills on shutdown).
+        tokio::spawn(waiter_task(child, events_tx, agent, kill_rx));
 
         Ok(cmd_tx)
     }
@@ -136,6 +143,7 @@ fn user_message_line(text: &str) -> String {
 async fn writer_task(
     mut stdin: tokio::process::ChildStdin,
     mut cmd_rx: mpsc::Receiver<AgentCommand>,
+    kill_tx: oneshot::Sender<()>,
 ) {
     while let Some(command) = cmd_rx.recv().await {
         match command {
@@ -151,7 +159,10 @@ async fn writer_task(
             AgentCommand::Shutdown => break,
         }
     }
-    // Dropping `stdin` here closes the pipe → claude sees EOF and exits.
+    // Close the pipe → claude sees EOF and exits gracefully, then tell the
+    // waiter so it can force-kill if the child lingers.
+    drop(stdin);
+    let _ = kill_tx.send(());
 }
 
 async fn reader_task(
@@ -281,7 +292,39 @@ async fn waiter_task(
     mut child: tokio::process::Child,
     events_tx: mpsc::Sender<AgentEvent>,
     agent: AgentId,
+    kill_rx: oneshot::Receiver<()>,
 ) {
-    let code = child.wait().await.ok().and_then(|s| s.code());
+    let pid = child.id();
+    let code = tokio::select! {
+        status = child.wait() => status.ok().and_then(|s| s.code()),
+        _ = kill_rx => {
+            // Shutdown requested: give the child a short grace to exit on the
+            // stdin EOF, then force-kill so it can never become a zombie.
+            match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
+                Ok(status) => status.ok().and_then(|s| s.code()),
+                Err(_) => {
+                    kill_process_group(pid);
+                    let _ = child.start_kill();
+                    child.wait().await.ok().and_then(|s| s.code())
+                }
+            }
+        }
+    };
     let _ = events_tx.send(AgentEvent::Exited { agent, code }).await;
 }
+
+/// Force-kill the child's whole process group. The child is its own group
+/// leader (`process_group(0)` at spawn), so its pgid equals its pid; signalling
+/// `-pid` reaps the agent and any tool/MCP subprocesses it spawned.
+#[cfg(unix)]
+fn kill_process_group(pid: Option<u32>) {
+    if let Some(pid) = pid {
+        let _ = std::process::Command::new("kill")
+            .arg("-KILL")
+            .arg(format!("-{pid}"))
+            .output();
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_process_group(_pid: Option<u32>) {}

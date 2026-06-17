@@ -174,10 +174,15 @@ impl Orchestrator {
                     self.bus.emit(OrchestratorEvent::Log {
                         level: "error".to_string(),
                         msg: format!(
-                            "turn timed out after {:?}; abandoning this turn",
+                            "turn timed out after {:?}; terminating this agent",
                             self.turn_timeout
                         ),
                     });
+                    // Shut the stuck agent down so it can't keep running and
+                    // emit stray output into a later turn.
+                    if let Some(tx) = self.cmd_txs.get(&agent) {
+                        let _ = tx.send(AgentCommand::Shutdown).await;
+                    }
                     return Ok(final_text);
                 }
             };

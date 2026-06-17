@@ -654,3 +654,126 @@ footer {
   .hero-ctas { flex-direction: column; }
   .footer-inner { flex-direction: column; align-items: flex-start; }
 }
+
+/* ── JS-gated animation states ──────────────────────────── */
+
+/* Hero entrance */
+.js-loaded .hero-copy,
+.js-loaded .hero-visual {
+  opacity: 0;
+  transform: translateY(24px);
+  transition: opacity .65s cubic-bezier(.22,.68,0,1.2), transform .65s cubic-bezier(.22,.68,0,1.2);
+}
+
+#hero.hero-entered .hero-copy {
+  opacity: 1;
+  transform: none;
+}
+
+#hero.hero-entered .hero-visual {
+  opacity: 1;
+  transform: none;
+  transition-delay: 130ms;
+}
+
+/* Scroll reveal — opacity only for cards/steps (they have hover transforms) */
+.js-loaded .reveal {
+  opacity: 0;
+  transition: opacity .55s ease;
+  transition-delay: var(--delay, 0s);
+}
+
+/* Scroll reveal — opacity + slide for static elements (headings, labels) */
+.js-loaded .reveal-slide {
+  opacity: 0;
+  transform: translateY(18px);
+  transition: opacity .55s ease, transform .55s ease;
+  transition-delay: var(--delay, 0s);
+}
+
+.reveal.is-visible      { opacity: 1; }
+.reveal-slide.is-visible { opacity: 1; transform: none; }
+
+/* Button press micro-interaction */
+.btn {
+  transition: opacity .15s, box-shadow .15s, background .15s, border-color .15s, color .15s, transform .1s ease;
+}
+
+.btn.is-pressing { transform: scale(0.96); }
+
+/* Reduced motion: skip all animation states */
+@media (prefers-reduced-motion: reduce) {
+  .js-loaded .hero-copy,
+  .js-loaded .hero-visual,
+  .js-loaded .reveal,
+  .js-loaded .reveal-slide {
+    transition: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+}
+
+/* ── Demo section ────────────────────────────────────────── */
+#demo {
+  background: linear-gradient(180deg, var(--bg-surface) 0%, var(--bg-base) 100%);
+}
+
+.demo-wrapper {
+  position: relative;
+  max-width: 860px;
+  margin: 0 auto;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-card), var(--shadow-glow-cyan);
+}
+
+#demo-video {
+  width: 100%;
+  display: block;
+  background: var(--bg-card);
+}
+
+.demo-play-btn {
+  position: absolute;
+  bottom: 16px;
+  left: 16px;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 1px solid rgba(255,255,255,.18);
+  background: rgba(10,12,15,.72);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  color: var(--text-primary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  opacity: 0;
+  transition: opacity .3s ease, background .15s, border-color .15s, color .15s;
+}
+
+.demo-wrapper:hover .demo-play-btn,
+.demo-play-btn:focus-visible {
+  opacity: 1;
+}
+
+.demo-play-btn:hover {
+  background: rgba(57,208,216,.18);
+  border-color: rgba(57,208,216,.45);
+  color: var(--accent-cyan);
+}
+
+.demo-play-btn:focus-visible {
+  outline: 2px solid var(--accent-cyan);
+  outline-offset: 3px;
+}
+
+.demo-play-btn svg { width: 14px; height: 14px; }
+
+.demo-play-btn[data-playing="true"]  .icon-play  { display: none; }
+.demo-play-btn[data-playing="true"]  .icon-pause { display: block; }
+.demo-play-btn[data-playing="false"] .icon-play  { display: block; }
+.demo-play-btn[data-playing="false"] .icon-pause { display: none; }

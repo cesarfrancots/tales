@@ -118,8 +118,9 @@ def main():
             recommended = m["executor"]
             print(f"\n[recommend: {m['executor']}]", flush=True)
         elif k == "awaiting":
-            print("\n  >>> [ME -> gate] confirm executor", flush=True)
-            send(s, {"kind": "confirm", "executor": recommended or "claude"})
+            exec_choice = os.environ.get("TALES_EXEC") or recommended or "claude"
+            print(f"\n  >>> [ME -> gate] confirm executor: {exec_choice}", flush=True)
+            send(s, {"kind": "confirm", "executor": exec_choice})
         elif k == "tool":
             print(f"  [tool] {labels.get(m['agent'], '?')}: {m.get('summary', '')}", flush=True)
         elif k == "log" and m.get("level") == "done":

@@ -180,7 +180,7 @@
   const confirmBtn = $('confirm'), rejectBtn = $('reject');
 
   const names = {};       // agentId -> { label, display }
-  const roleByLabel = {}; // label -> "Drafter" | "Critic"
+  const roleById = {};    // agentId -> "Drafter" | "Critic" | "Executor"
   const streaming = {};   // agentId -> body text node being streamed
   const lastBlock = {};   // agentId -> most recent block element
   const seenCounts = {};  // base display name -> count (for duplicates)
@@ -222,11 +222,6 @@
   }
 
   function displayOf(id) { return (names[id] && names[id].display) || '?'; }
-  function idByLabel(label) {
-    const L = (label || '').toLowerCase();
-    for (const id in names) if (names[id].label.toLowerCase() === L) return id;
-    return null;
-  }
   function classOf(label) {
     const l = (label || '').toLowerCase();
     return l === 'claude' ? 'claude' : l === 'codex' ? 'codex' : '';
@@ -237,7 +232,7 @@
     const el = document.createElement('div');
     el.className = 'block ' + cls;
     const display = who === 'you' ? 'You' : displayOf(id);
-    const role = roleByLabel[(label || '').toLowerCase()];
+    const role = id ? roleById[id] : null;
     el.innerHTML =
       '<div class="head"><span class="caret">▾</span><span class="dot"></span>' +
       '<span class="name"></span>' +
@@ -279,18 +274,7 @@
       case 'log': {
         if (m.level === 'task') { taskEl.textContent = m.msg; document.title = 'tales · ' + m.msg; break; }
         if (m.level === 'done') { sys('session finished'); break; }
-        const sp = /^(\S+) speaking as (\w+)/.exec(m.msg);
-        if (sp) {
-          roleByLabel[sp[1].toLowerCase()] = sp[2];
-          const id = idByLabel(sp[1]);                 // show "thinking…" until output lands
-          if (id && !streaming[id]) {
-            const el = makeBlock(id, sp[1].toLowerCase());
-            el.classList.add('streaming', 'thinking');
-            append(el);
-            streaming[id] = el.querySelector('.body');
-          }
-          break;
-        }
+        if (/ speaking as /.test(m.msg)) break;        // handled via turn_started (keyed by id)
         if (/executing with/.test(m.msg)) { sys(m.msg, 'rec'); break; }
         sys(m.msg, m.level === 'warn' ? 'warn' : '');
         break;
@@ -307,6 +291,17 @@
         phaseEl.textContent = m.phase;
         if (m.phase !== 'awaitingconfirmation') gate.classList.remove('show');
         break;
+      case 'turn_started': {
+        roleById[m.agent] = m.role;                  // show "thinking…" until output lands
+        if (!streaming[m.agent]) {
+          const label = names[m.agent] && names[m.agent].label;
+          const el = makeBlock(m.agent, label);
+          el.classList.add('streaming', 'thinking');
+          append(el);
+          streaming[m.agent] = el.querySelector('.body');
+        }
+        break;
+      }
       case 'token': {
         let body = streaming[m.agent];
         if (!body) {

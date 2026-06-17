@@ -348,6 +348,10 @@ impl Orchestrator {
             }
             let entry = &roster[turn_idx % roster.len()];
             let prompt = compose_prompt(entry.role, task, &self.blackboard);
+            self.bus.emit(OrchestratorEvent::TurnStarted {
+                agent: entry.agent,
+                role: format!("{:?}", entry.role),
+            });
             self.bus.emit(OrchestratorEvent::Log {
                 level: "info".to_string(),
                 msg: format!("{} speaking as {:?}", entry.label, entry.role),
@@ -451,6 +455,10 @@ impl Orchestrator {
              use shell commands like mkdir. Create all the files the plan calls \
              for in this turn. When finished, briefly summarize what you wrote."
         );
+        self.bus.emit(OrchestratorEvent::TurnStarted {
+            agent: entry.agent,
+            role: "Executor".to_string(),
+        });
         self.bus.emit(OrchestratorEvent::Log {
             level: "info".to_string(),
             msg: format!("executing with {executor_label}"),

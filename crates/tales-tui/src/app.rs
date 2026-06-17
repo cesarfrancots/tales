@@ -89,6 +89,8 @@ impl App {
                     text,
                 });
             }
+            // The TUI already shows the "speaking as" Log line; nothing to do.
+            OrchestratorEvent::TurnStarted { .. } => {}
             OrchestratorEvent::ToolActivity { agent, summary } => {
                 let label = self.label_of(&agent);
                 self.sys(format!("⚙ {label}: {summary}"));

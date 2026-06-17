@@ -15,6 +15,10 @@ pub enum OrchestratorEvent {
     AgentSpawned { agent: AgentId, label: String, session_id: String },
     /// A streamed token chunk from an agent (the live "console" feed).
     Token { agent: AgentId, text: String },
+    /// An agent's turn is starting (carries the agent id + its role). Frontends
+    /// use this to show a per-agent "thinking" placeholder keyed by id, which
+    /// correctly disambiguates two agents that happen to share a label.
+    TurnStarted { agent: AgentId, role: String },
     /// A completed assistant message (full text of one turn).
     Message { agent: AgentId, text: String },
     /// A message the human typed into the chat (human-in-the-loop).

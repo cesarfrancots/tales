@@ -190,6 +190,9 @@ fn event_to_json(ev: &OrchestratorEvent) -> Value {
         OrchestratorEvent::Token { agent, text } => {
             json!({ "kind": "token", "agent": agent.to_string(), "text": text })
         }
+        OrchestratorEvent::TurnStarted { agent, role } => {
+            json!({ "kind": "turn_started", "agent": agent.to_string(), "role": role })
+        }
         OrchestratorEvent::Message { agent, text } => {
             json!({ "kind": "message", "agent": agent.to_string(), "text": text })
         }

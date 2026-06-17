@@ -144,6 +144,8 @@
     font: 13px var(--mono); outline: none; caret-color: var(--accent);
   }
   #input::placeholder { color: var(--faint); }
+  #input:disabled { opacity: .45; }
+  .btn:disabled { opacity: .4; cursor: default; }
   .hint { color: var(--faint); font-size: 11px; padding: 0 18px 9px; }
   kbd { border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; font-size: 10px; color: var(--dim); }
 </style>
@@ -175,6 +177,7 @@
   const $ = (id) => document.getElementById(id);
   const stream = $('stream'), statusEl = $('status'), phaseEl = $('phase');
   const taskEl = $('task'), gate = $('gate'), execSel = $('executor'), input = $('input');
+  const confirmBtn = $('confirm'), rejectBtn = $('reject');
 
   const names = {};       // agentId -> { label, display }
   const roleByLabel = {}; // label -> "Drafter" | "Critic"
@@ -187,13 +190,36 @@
   const PRETTY = { claude: 'Claude Code', codex: 'Codex' };
   function prettyBase(label) { return PRETTY[(label || '').toLowerCase()] || label; }
 
-  const ws = new WebSocket(`ws://${location.host}/ws`);
-  ws.onopen = () => { phaseEl.textContent = 'idle'; statusEl.classList.add('on'); };
-  ws.onclose = () => { phaseEl.textContent = 'disconnected'; statusEl.classList.remove('on'); };
+  let ws, reconnectDelay = 500;
+  function setConnected(on) {
+    statusEl.classList.toggle('on', on);
+    input.disabled = !on; confirmBtn.disabled = !on; rejectBtn.disabled = !on;
+  }
+  function wsSend(obj) {
+    if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify(obj)); return true; }
+    return false;
+  }
+  function connect() {
+    ws = new WebSocket(`ws://${location.host}/ws`);
+    ws.onopen = () => { phaseEl.textContent = 'idle'; setConnected(true); reconnectDelay = 500; };
+    ws.onerror = () => {};            // onclose drives recovery
+    ws.onclose = () => {
+      phaseEl.textContent = 'reconnecting'; setConnected(false);
+      setTimeout(connect, reconnectDelay);
+      reconnectDelay = Math.min(reconnectDelay * 2, 8000);
+    };
+    ws.onmessage = onMessage;
+  }
 
   const nearBottom = () => stream.scrollHeight - stream.scrollTop - stream.clientHeight < 90;
   const toBottom = () => { stream.scrollTop = stream.scrollHeight; };
-  function append(node) { const s = nearBottom(); stream.appendChild(node); if (s) toBottom(); }
+  const MAX_NODES = 400;
+  function append(node) {
+    const s = nearBottom();
+    stream.appendChild(node);
+    while (stream.childElementCount > MAX_NODES) stream.removeChild(stream.firstElementChild);
+    if (s) toBottom();
+  }
 
   function displayOf(id) { return (names[id] && names[id].display) || '?'; }
   function idByLabel(label) {
@@ -242,9 +268,12 @@
     el.lastChild.textContent = text;
     append(el);
   }
-  const isVote = (t) => /"recommended_executor"/.test(t);
+  function isVote(t) {                 // strict: the whole message is a vote JSON object
+    try { const o = JSON.parse(t.trim()); return o && typeof o === 'object' && 'recommended_executor' in o; }
+    catch (e) { return false; }
+  }
 
-  ws.onmessage = (ev) => {
+  function onMessage(ev) {
     const m = JSON.parse(ev.data);
     switch (m.kind) {
       case 'log': {
@@ -357,17 +386,18 @@
       case 'exited': sys(displayOf(m.agent) + ' exited'); break;
       case 'fatal': sys(m.msg, 'err'); break;
     }
-  };
+  }
 
   function send() {
     const text = input.value.trim();
     if (!text) return;
-    ws.send(JSON.stringify({ kind: 'say', text }));
-    input.value = '';
+    if (wsSend({ kind: 'say', text })) input.value = '';
   }
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
-  $('confirm').onclick = () => { ws.send(JSON.stringify({ kind: 'confirm', executor: execSel.value || recommended })); gate.classList.remove('show'); };
-  $('reject').onclick = () => { ws.send(JSON.stringify({ kind: 'reject' })); gate.classList.remove('show'); };
+  confirmBtn.onclick = () => { if (wsSend({ kind: 'confirm', executor: execSel.value || recommended })) gate.classList.remove('show'); };
+  rejectBtn.onclick = () => { if (wsSend({ kind: 'reject' })) gate.classList.remove('show'); };
+
+  connect();
 })();
 </script>
 </body>

@@ -3,9 +3,16 @@
 //! Each agent turn renders as a "block": a colored left bar + name + role badge
 //! header, then an indented body. Minimal chrome, restrained palette, monospace
 //! (a terminal is monospace by nature) — clean and lightweight.
+//!
+//! Streaming is *smoothed*: incoming text (whether Claude's bursty token deltas
+//! or Codex's whole-message dump) is buffered and revealed at a steady, catch-up
+//! rate by [`App::tick`], so the conversation types out evenly instead of
+//! freezing then dumping. While an agent is thinking with no output yet, an
+//! animated spinner makes the wait read as "working", not "frozen".
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::Instant;
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -13,6 +20,17 @@ use tales_core::event::{OrchestratorEvent, UserCommand};
 use uuid::Uuid;
 
 use crate::theme::{color_for, pretty, ACCENT, DIM, ERRC, FAINT, TEXT, YOU};
+
+/// Braille spinner frames for the "thinking" indicator.
+const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+/// Seconds to drain whatever text is currently buffered — small so reveal stays
+/// snappy. Because the rate scales with the backlog, a big dump clears in about
+/// this long while a trickle reveals at [`MIN_CPS`].
+const CATCHUP_SECS: f64 = 0.18;
+/// Floor reveal speed (chars/sec) so a slow trickle still types out visibly.
+const MIN_CPS: f64 = 160.0;
+/// Seconds between spinner frames.
+const SPIN_INTERVAL: f64 = 0.09;
 
 #[derive(Clone, Copy)]
 enum SysKind {
@@ -31,13 +49,28 @@ enum Block {
     Sys(String, SysKind),
 }
 
+/// An in-progress agent turn, revealed progressively for a smooth typewriter
+/// feel. `full` is everything received; `revealed` is how much is shown so far.
+#[derive(Default)]
+struct Stream {
+    full: String,
+    revealed: usize,
+    /// The turn has finished (TurnComplete seen); finalize once fully revealed.
+    done: bool,
+    /// Cost note to emit when the block finalizes (keeps ordering correct).
+    cost: Option<f64>,
+}
+
 /// All UI state.
 pub struct App {
     pub task: String,
     pub phase: String,
     blocks: Vec<Block>,
-    /// In-progress streamed text per agent (empty string = "thinking").
-    partial: HashMap<Uuid, String>,
+    /// In-progress streamed text per agent, revealed gradually.
+    partial: HashMap<Uuid, Stream>,
+    /// Stable render order for partials (a HashMap iterates arbitrarily, and two
+    /// partials can briefly coexist while one finishes revealing).
+    partial_order: Vec<Uuid>,
     labels: HashMap<Uuid, String>,
     roles: HashMap<Uuid, String>,
     pub input: String,
@@ -49,6 +82,10 @@ pub struct App {
     /// The connected tools, in roster order — the executor candidates the user
     /// can pick at the gate (by name or by 1-based number).
     candidates: Vec<String>,
+    /// Animation clock + spinner frame, advanced by [`App::tick`].
+    last_tick: Option<Instant>,
+    spin_accum: f64,
+    spinner: usize,
 }
 
 impl App {
@@ -58,6 +95,7 @@ impl App {
             phase: "idle".to_string(),
             blocks: Vec::new(),
             partial: HashMap::new(),
+            partial_order: Vec::new(),
             labels: HashMap::new(),
             roles: HashMap::new(),
             input: String::new(),
@@ -66,6 +104,9 @@ impl App {
             should_quit: false,
             pending_attachments: Vec::new(),
             candidates: Vec::new(),
+            last_tick: None,
+            spin_accum: 0.0,
+            spinner: 0,
         }
     }
 
@@ -91,6 +132,18 @@ impl App {
             .unwrap_or_else(|| "?".to_string())
     }
 
+    /// Get (creating if needed) the live stream for an agent, preserving order.
+    fn stream_mut(&mut self, agent: Uuid) -> &mut Stream {
+        use std::collections::hash_map::Entry;
+        match self.partial.entry(agent) {
+            Entry::Occupied(e) => e.into_mut(),
+            Entry::Vacant(e) => {
+                self.partial_order.push(agent);
+                e.insert(Stream::default())
+            }
+        }
+    }
+
     /// Fold a bus event into the chat state.
     pub fn apply(&mut self, ev: OrchestratorEvent) {
         match ev {
@@ -100,16 +153,18 @@ impl App {
             }
             OrchestratorEvent::TurnStarted { agent, role } => {
                 self.roles.insert(agent, role);
-                self.partial.entry(agent).or_default(); // empty = thinking placeholder
+                self.stream_mut(agent); // empty stream = "thinking" placeholder
             }
             OrchestratorEvent::Token { agent, text } => {
-                self.partial.entry(agent).or_default().push_str(&text);
+                self.stream_mut(agent).full.push_str(&text);
             }
             OrchestratorEvent::Message { agent, text } => {
-                self.partial.remove(&agent);
-                let label = self.label_of(&agent);
-                let role = self.roles.get(&agent).cloned();
-                self.blocks.push(Block::Agent { label, role, text });
+                let s = self.stream_mut(agent);
+                s.full = text;
+                let len = s.full.chars().count();
+                if s.revealed > len {
+                    s.revealed = len;
+                }
             }
             OrchestratorEvent::UserMessage { text } => {
                 self.blocks.push(Block::You(text));
@@ -119,8 +174,13 @@ impl App {
                 self.sys(format!("⚙ {} · {summary}", pretty(&label)), SysKind::Note);
             }
             OrchestratorEvent::TurnComplete { agent, cost_usd } => {
-                self.partial.remove(&agent);
-                if let Some(c) = cost_usd {
+                // Mark done + stash the cost; the block (and its cost note) are
+                // emitted together when the reveal catches up, preserving order.
+                if self.partial.contains_key(&agent) {
+                    let s = self.stream_mut(agent);
+                    s.done = true;
+                    s.cost = cost_usd;
+                } else if let Some(c) = cost_usd {
                     self.sys(
                         format!("{} · ${c:.4}", pretty(&self.label_of(&agent))),
                         SysKind::Note,
@@ -147,6 +207,11 @@ impl App {
                 self.awaiting = true;
             }
             OrchestratorEvent::AgentExited { agent, code } => {
+                // End the agent's live stream so it finalizes instead of
+                // animating a "thinking…" spinner forever for a dead agent.
+                if let Some(s) = self.partial.get_mut(&agent) {
+                    s.done = true;
+                }
                 self.sys(
                     format!("{} exited ({code:?})", pretty(&self.label_of(&agent))),
                     SysKind::Note,
@@ -163,8 +228,117 @@ impl App {
                 };
                 self.sys(msg, kind);
             }
-            OrchestratorEvent::Fatal { msg } => self.sys(format!("✗ {msg}"), SysKind::Err),
+            OrchestratorEvent::Fatal { msg } => {
+                // A fatal ends the run; mark every live stream done so they
+                // finalize and the animation loop can settle (Fatal carries no
+                // agent id, so we can't target one).
+                for s in self.partial.values_mut() {
+                    s.done = true;
+                }
+                self.sys(format!("✗ {msg}"), SysKind::Err);
+            }
         }
+    }
+
+    /// Advance reveal + spinner animation using the real clock. Call once per
+    /// frame. Cheap and a no-op when nothing is streaming.
+    pub fn tick(&mut self) {
+        let now = Instant::now();
+        let elapsed = match self.last_tick.replace(now) {
+            // Clamp so a long pause (no frames) doesn't dump everything at once.
+            Some(prev) => (now - prev).as_secs_f64().min(0.1),
+            None => return,
+        };
+        self.advance(elapsed);
+    }
+
+    /// Reveal more buffered text and tick the spinner. Pulled out of [`tick`] so
+    /// tests/snapshots can drive it deterministically. Returns whether anything
+    /// animated.
+    pub(crate) fn advance(&mut self, elapsed_secs: f64) -> bool {
+        // Spinner.
+        self.spin_accum += elapsed_secs;
+        while self.spin_accum >= SPIN_INTERVAL {
+            self.spin_accum -= SPIN_INTERVAL;
+            self.spinner = self.spinner.wrapping_add(1);
+        }
+
+        // Reveal, oldest stream first.
+        let ids: Vec<Uuid> = self.partial_order.clone();
+        for id in &ids {
+            if let Some(s) = self.partial.get_mut(id) {
+                let len = s.full.chars().count();
+                if s.revealed < len {
+                    let backlog = (len - s.revealed) as f64;
+                    let cps = (backlog / CATCHUP_SECS).max(MIN_CPS);
+                    let budget = (cps * elapsed_secs).ceil() as usize;
+                    s.revealed = (s.revealed + budget).min(len);
+                }
+            }
+        }
+        self.finalize_ready();
+        self.is_animating()
+    }
+
+    /// Move fully-revealed, finished streams into the permanent block list
+    /// (block first, then its cost note), preserving conversation order.
+    fn finalize_ready(&mut self) {
+        let ready: Vec<Uuid> = self
+            .partial_order
+            .iter()
+            .copied()
+            .filter(|id| {
+                self.partial
+                    .get(id)
+                    .map(|s| s.done && s.revealed >= s.full.chars().count())
+                    .unwrap_or(false)
+            })
+            .collect();
+        for id in ready {
+            let Some(s) = self.partial.remove(&id) else {
+                continue;
+            };
+            self.partial_order.retain(|x| *x != id);
+            let label = self.label_of(&id);
+            let role = self.roles.get(&id).cloned();
+            if !s.full.trim().is_empty() {
+                self.blocks.push(Block::Agent {
+                    label: label.clone(),
+                    role,
+                    text: s.full,
+                });
+            }
+            if let Some(c) = s.cost {
+                self.sys(format!("{} · ${c:.4}", pretty(&label)), SysKind::Note);
+            }
+        }
+    }
+
+    /// Whether any stream is still revealing or thinking (so the render loop
+    /// should keep ticking at the smooth animation rate).
+    pub fn is_animating(&self) -> bool {
+        self.partial.values().any(|s| {
+            let len = s.full.chars().count();
+            s.revealed < len || (len == 0 && !s.done)
+        })
+    }
+
+    /// At the gate, a bare digit key picks that executor (1-based) — the easiest
+    /// way to choose. Only fires when awaiting and the input line is empty, so it
+    /// never eats a digit the user is typing into a message.
+    pub fn gate_pick(&self, c: char) -> Option<UserCommand> {
+        if !self.awaiting || !self.input.is_empty() {
+            return None;
+        }
+        let n = c.to_digit(10)? as usize;
+        if n >= 1 {
+            if let Some(label) = self.candidates.get(n - 1) {
+                return Some(UserCommand::ConfirmExecution {
+                    executor: label.clone(),
+                });
+            }
+        }
+        None
     }
 
     /// Interpret the input line on Enter and clear it.
@@ -309,14 +483,16 @@ impl App {
                 }
             }
         }
-        for (agent, text) in &self.partial {
-            let label = self.label_of(agent);
-            if !text.trim().is_empty() {
-                out.push_str(&format!(
-                    "{} (in progress):\n{}\n\n",
-                    pretty(&label),
-                    text.trim()
-                ));
+        for agent in &self.partial_order {
+            if let Some(s) = self.partial.get(agent) {
+                let label = self.label_of(agent);
+                if !s.full.trim().is_empty() {
+                    out.push_str(&format!(
+                        "{} (in progress):\n{}\n\n",
+                        pretty(&label),
+                        s.full.trim()
+                    ));
+                }
             }
         }
         out.trim().to_string()
@@ -337,7 +513,8 @@ impl App {
         )
     }
 
-    /// Build the Warp-style block render lines (transcript + live partials).
+    /// Build the Warp-style block render lines (transcript + live partials + the
+    /// action banner at the gate).
     pub fn render_lines(&self, width: usize) -> Vec<Line<'static>> {
         let width = width.max(10);
         let mut out: Vec<Line<'static>> = Vec::new();
@@ -354,24 +531,36 @@ impl App {
                         width,
                     );
                 }
-                Block::You(text) => agent_block(&mut out, YOU, "You", None, text, width),
+                Block::You(text) => you_block(&mut out, text, width),
                 Block::Sys(text, kind) => sys_block(&mut out, text, *kind, width),
             }
         }
 
-        // Live partials (one active at a time in the discussion).
-        for (agent, text) in &self.partial {
+        // Live partials, revealed progressively (oldest first).
+        for agent in &self.partial_order {
+            let Some(s) = self.partial.get(agent) else {
+                continue;
+            };
             let label = self.label_of(agent);
             let role = self.roles.get(agent).cloned();
             let color = color_for(&label);
             header(&mut out, color, &pretty(&label), role.as_deref());
-            if text.is_empty() {
-                out.push(indent_line("thinking…", DIM));
+            let len = s.full.chars().count();
+            if len == 0 {
+                let spin = SPINNER[self.spinner % SPINNER.len()];
+                out.push(indent_line(&format!("{spin} thinking…"), DIM));
             } else {
-                body(&mut out, text, width);
+                let shown: String = s.full.chars().take(s.revealed).collect();
+                body(&mut out, &shown, width);
             }
             out.push(Line::from(""));
         }
+
+        // The gate: a prominent "action needed" banner with numbered choices.
+        if self.awaiting {
+            action_banner(&mut out, &self.candidates, self.recommended.as_deref());
+        }
+
         out
     }
 }
@@ -424,6 +613,75 @@ fn agent_block(
 ) {
     header(out, color, name, role);
     body(out, text, width);
+    out.push(Line::from(""));
+}
+
+/// Human messages get a full green left-gutter on every line, so the human's
+/// voice stands clearly apart from the AIs (whose only the header bar is tinted).
+fn you_block(out: &mut Vec<Line<'static>>, text: &str, width: usize) {
+    out.push(Line::from(vec![
+        Span::styled("▐ ", Style::default().fg(YOU).add_modifier(Modifier::BOLD)),
+        Span::styled("You", Style::default().fg(YOU).add_modifier(Modifier::BOLD)),
+    ]));
+    let iw = width.saturating_sub(2).max(8);
+    for segment in text.split('\n') {
+        if segment.is_empty() {
+            out.push(Line::from(Span::styled("▐", Style::default().fg(YOU))));
+            continue;
+        }
+        let chars: Vec<char> = segment.chars().collect();
+        for chunk in chars.chunks(iw) {
+            out.push(Line::from(vec![
+                Span::styled("▐ ", Style::default().fg(YOU)),
+                Span::styled(chunk.iter().collect::<String>(), Style::default().fg(TEXT)),
+            ]));
+        }
+    }
+    out.push(Line::from(""));
+}
+
+/// The gate affordance: a clear "action needed" banner with numbered, pickable
+/// executor choices and the recommendation marked.
+fn action_banner(out: &mut Vec<Line<'static>>, candidates: &[String], recommended: Option<&str>) {
+    out.push(Line::from(""));
+    out.push(Line::from(vec![
+        Span::styled(
+            "▌ ACTION NEEDED",
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "  —  pick who executes the plan",
+            Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    for (i, key) in candidates.iter().enumerate() {
+        let is_rec = recommended.is_some_and(|r| r.eq_ignore_ascii_case(key));
+        let marker = if is_rec { "▸" } else { " " };
+        let mut spans = vec![
+            Span::styled(format!("  {marker} "), Style::default().fg(ACCENT)),
+            Span::styled(
+                format!("{}  ", i + 1),
+                Style::default().fg(FAINT).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                pretty(key),
+                Style::default()
+                    .fg(color_for(key))
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ];
+        if is_rec {
+            spans.push(Span::styled(
+                "   ← recommended",
+                Style::default().fg(YOU).add_modifier(Modifier::BOLD),
+            ));
+        }
+        out.push(Line::from(spans));
+    }
+    out.push(Line::from(Span::styled(
+        "  Enter accept · press 1-9 to pick · /reject to decline",
+        Style::default().fg(DIM),
+    )));
     out.push(Line::from(""));
 }
 
@@ -493,6 +751,8 @@ mod tests {
             agent,
             text: "world".into(),
         });
+        // Reveal the buffered tokens (a generous slice fully reveals).
+        app.advance(10.0);
         let mid = text_of(&app.render_lines(80));
         assert!(mid.contains("Claude Code"));
         assert!(mid.contains("hello world"));
@@ -501,8 +761,124 @@ mod tests {
             agent,
             text: "hello world, done".into(),
         });
+        app.apply(OrchestratorEvent::TurnComplete {
+            agent,
+            cost_usd: None,
+        });
+        app.advance(10.0); // reveal + finalize into a permanent block
         let done = text_of(&app.render_lines(80));
         assert!(done.contains("hello world, done"));
+    }
+
+    #[test]
+    fn thinking_spinner_before_output() {
+        let agent = Uuid::new_v4();
+        let mut app = App::new("t".into());
+        app.apply(OrchestratorEvent::AgentSpawned {
+            agent,
+            label: "codex".into(),
+            session_id: String::new(),
+        });
+        app.apply(OrchestratorEvent::TurnStarted {
+            agent,
+            role: "Drafter".into(),
+        });
+        let r = text_of(&app.render_lines(80));
+        assert!(r.contains("thinking"), "{r}");
+        assert!(app.is_animating());
+    }
+
+    #[test]
+    fn animation_settles_after_turn_so_the_loop_can_idle() {
+        let agent = Uuid::new_v4();
+        let mut app = App::new("t".into());
+        app.apply(OrchestratorEvent::TurnStarted {
+            agent,
+            role: "Drafter".into(),
+        });
+        assert!(app.is_animating(), "thinking should animate");
+        app.apply(OrchestratorEvent::Message {
+            agent,
+            text: "done".into(),
+        });
+        app.apply(OrchestratorEvent::TurnComplete {
+            agent,
+            cost_usd: Some(0.01),
+        });
+        app.advance(10.0); // fully reveal + finalize
+        assert!(
+            !app.is_animating(),
+            "must settle so the render loop stops spinning at 30fps"
+        );
+        // A turn that produces NO output at all must also settle (not linger).
+        let ghost = Uuid::new_v4();
+        app.apply(OrchestratorEvent::TurnStarted {
+            agent: ghost,
+            role: "Critic".into(),
+        });
+        app.apply(OrchestratorEvent::TurnComplete {
+            agent: ghost,
+            cost_usd: None,
+        });
+        app.advance(10.0);
+        assert!(
+            !app.is_animating(),
+            "an empty turn must not animate forever"
+        );
+    }
+
+    #[test]
+    fn agent_exit_without_turn_complete_settles() {
+        // A timeout/crash path: TurnStarted (thinking) then only AgentExited,
+        // no TurnComplete. The stream must still settle, not spin forever.
+        let agent = Uuid::new_v4();
+        let mut app = App::new("t".into());
+        app.apply(OrchestratorEvent::TurnStarted {
+            agent,
+            role: "Drafter".into(),
+        });
+        app.apply(OrchestratorEvent::Token {
+            agent,
+            text: "partial work".into(),
+        });
+        app.apply(OrchestratorEvent::AgentExited {
+            agent,
+            code: Some(1),
+        });
+        app.advance(10.0);
+        assert!(!app.is_animating(), "a dead agent must not animate forever");
+        // Any text it did produce is preserved as a permanent block.
+        let r = text_of(&app.render_lines(80));
+        assert!(r.contains("partial work"), "{r}");
+    }
+
+    #[test]
+    fn codex_whole_message_reveals_smoothly() {
+        let agent = Uuid::new_v4();
+        let mut app = App::new("t".into());
+        app.apply(OrchestratorEvent::AgentSpawned {
+            agent,
+            label: "codex".into(),
+            session_id: String::new(),
+        });
+        app.apply(OrchestratorEvent::TurnStarted {
+            agent,
+            role: "Critic".into(),
+        });
+        // Codex dumps the whole message at once.
+        let msg = "a".repeat(400);
+        app.apply(OrchestratorEvent::Message {
+            agent,
+            text: msg.clone(),
+        });
+        // One tiny frame reveals only a slice, not the whole dump.
+        app.advance(0.016);
+        let partial = text_of(&app.render_lines(120));
+        let shown = partial.matches('a').count();
+        assert!(shown > 0 && shown < 400, "revealed {shown} of 400");
+        // Catch up.
+        app.advance(10.0);
+        assert!(text_of(&app.render_lines(120)).matches('a').count() == 400);
     }
 
     #[test]
@@ -522,9 +898,35 @@ mod tests {
             agent,
             text: "a critique".into(),
         });
+        app.apply(OrchestratorEvent::TurnComplete {
+            agent,
+            cost_usd: None,
+        });
+        app.advance(10.0);
         let r = text_of(&app.render_lines(80));
         assert!(r.contains("Codex"));
         assert!(r.contains("CRITIC"));
+    }
+
+    #[test]
+    fn action_banner_and_digit_pick_at_gate() {
+        let mut app = App::new("t".into());
+        app.set_candidates(vec!["claude".into(), "codex".into()]);
+        app.recommended = Some("claude".into());
+        app.awaiting = true;
+
+        let r = text_of(&app.render_lines(80));
+        assert!(r.contains("ACTION NEEDED"), "{r}");
+        assert!(r.contains("recommended"), "{r}");
+
+        // Digit picks the matching candidate when input is empty.
+        match app.gate_pick('2') {
+            Some(UserCommand::ConfirmExecution { executor }) => assert_eq!(executor, "codex"),
+            other => panic!("expected confirm codex, got {other:?}"),
+        }
+        // Not at the gate / mid-typing → digit is just a character.
+        app.input = "2 cents".into();
+        assert!(app.gate_pick('2').is_none());
     }
 
     #[test]

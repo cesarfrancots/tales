@@ -55,15 +55,23 @@ pub(crate) async fn run_terminal_workspace(
     };
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mut workspace = Workspace::new(cfg, tx);
-    let mut tick = time::interval(Duration::from_millis(80));
 
     loop {
         workspace.poll_tales_events();
         workspace.poll_children();
+        workspace.tick_animations();
         terminal.draw(|f| workspace.draw(f))?;
         if workspace.should_quit {
             break;
         }
+
+        // ~30fps while the Tales pane is animating its reveal/spinner, idle
+        // slower otherwise. Keys and PTY output still wake the loop instantly.
+        let frame = if workspace.is_animating() {
+            Duration::from_millis(33)
+        } else {
+            Duration::from_millis(80)
+        };
 
         tokio::select! {
             maybe_key = keys.next() => {
@@ -79,7 +87,7 @@ pub(crate) async fn run_terminal_workspace(
                     workspace.apply_terminal_event(ev);
                 }
             }
-            _ = tick.tick() => {}
+            _ = time::sleep(frame) => {}
         }
     }
 
@@ -325,6 +333,23 @@ impl Workspace {
                 tales.poll_events();
             }
         }
+    }
+
+    /// Advance the Tales pane's smooth-reveal + spinner animation each frame.
+    fn tick_animations(&mut self) {
+        for pane in &mut self.panes {
+            if let Pane::Tales(tales) = pane {
+                tales.app.tick();
+            }
+        }
+    }
+
+    /// Whether the Tales pane is still revealing/spinning, so the loop should
+    /// keep refreshing at the smooth frame rate.
+    fn is_animating(&self) -> bool {
+        self.panes
+            .iter()
+            .any(|pane| matches!(pane, Pane::Tales(tales) if tales.app.is_animating()))
     }
 
     fn poll_children(&mut self) {
@@ -578,8 +603,15 @@ impl TalesPane {
             (KeyCode::Esc, _) => {
                 self.app.input.clear();
             }
+            // At the gate, a bare digit picks that executor; otherwise type it.
             (KeyCode::Char(c), _) => {
-                self.app.input.push(c);
+                if let Some(cmd) = self.app.gate_pick(c) {
+                    if let Some(action) = self.handle_command(cmd).await {
+                        return Some(action);
+                    }
+                } else {
+                    self.app.input.push(c);
+                }
             }
             _ => {}
         }
@@ -592,6 +624,11 @@ impl TalesPane {
                 if let Some(commands) = &self.commands {
                     let _ = commands.send(UserCommand::Shutdown).await;
                 }
+                // Close the gate so the "ACTION NEEDED" banner disappears and a
+                // second digit press can't launch another executor (we short-cut
+                // the run with Shutdown, so no PhaseChanged arrives to clear it).
+                self.app.awaiting = false;
+                self.app.recommended = None;
                 self.state = PaneState::WaitingForInput;
                 self.notice = format!("launching {executor} executor pane");
                 Some(TalesAction::LaunchExecutor {

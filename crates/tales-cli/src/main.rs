@@ -76,13 +76,19 @@ enum Command {
         /// Critic agent: claude | codex.
         #[arg(long, default_value = "codex")]
         critic: String,
-        /// Which agent executes the agreed plan (auto-confirmed).
+        /// Which agent executes the agreed plan (auto-confirmed). May be a
+        /// participant, or a different tool entirely (tiered execution).
         #[arg(long, default_value = "claude")]
         execute: String,
         #[arg(long)]
         drafter_model: Option<String>,
         #[arg(long)]
         critic_model: Option<String>,
+        /// Model for the executor when it's a *separate* tool from the planners
+        /// — the cheap/fast model that implements what the strong planners agreed
+        /// on. Only valid when `--execute` isn't one of `--drafter`/`--critic`.
+        #[arg(long)]
+        execute_model: Option<String>,
         #[arg(long, default_value_t = 4)]
         turns: usize,
         #[arg(long)]
@@ -288,6 +294,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             execute,
             drafter_model,
             critic_model,
+            execute_model,
             turns,
             cwd,
             sandbox,
@@ -300,6 +307,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 execute,
                 drafter_model,
                 critic_model,
+                execute_model,
                 turns,
                 cwd,
                 sandbox,
@@ -511,7 +519,10 @@ fn spawn_printer(bus: &EventBus) -> tokio::task::JoinHandle<()> {
                     OrchestratorEvent::TurnComplete {
                         cost_usd: Some(c), ..
                     } => {
-                        println!("  (turn cost ${c:.4})");
+                        // Claude reports a session-cumulative cost (Codex / Open
+                        // Code report none), so this is the running total, not a
+                        // per-turn delta.
+                        println!("  (session cost ${c:.4})");
                     }
                     OrchestratorEvent::Fatal { msg } => println!("✗ fatal: {msg}"),
                     _ => {}
@@ -562,29 +573,41 @@ async fn run_pipeline(
     execute: String,
     drafter_model: Option<String>,
     critic_model: Option<String>,
+    execute_model: Option<String>,
     turns: usize,
     cwd: Option<String>,
     sandbox: String,
     worktree: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    tales_core::agent::validate_roster(&[drafter.clone(), critic.clone()])?;
+    let exec_lc = execute.to_lowercase();
+    let exec_is_drafter = drafter.to_lowercase() == exec_lc;
+    let exec_is_critic = critic.to_lowercase() == exec_lc;
+    // The executor may be a planning participant (reuses its planning model) or
+    // a SEPARATE tool — the tiered case: strong models plan, a cheap/fast model
+    // implements the agreed plan.
+    let separate_executor = !exec_is_drafter && !exec_is_critic;
+
+    if !separate_executor && execute_model.is_some() {
+        return Err(format!(
+            "--execute-model is only valid when --execute ('{execute}') is a different tool \
+             from --drafter/--critic (same-tool tiering isn't supported yet)"
+        )
+        .into());
+    }
+    // Roster safety includes the separate executor (so e.g. duplicate Open Code
+    // is rejected), and fail fast on an unknown executor tool.
+    let mut roster_keys = vec![drafter.clone(), critic.clone()];
+    if separate_executor {
+        roster_keys.push(execute.clone());
+        let _ = make_adapter(&execute)?;
+    }
+    tales_core::agent::validate_roster(&roster_keys)?;
+
     let cwd = cwd.map(PathBuf::from).unwrap_or(std::env::current_dir()?);
     let (bus, mut commands_rx) = EventBus::new(2048, 64);
     let commands_tx = bus.commands();
 
     let printer = spawn_printer(&bus);
-
-    // The executor must be one of the two participants.
-    let exec_lc = execute.to_lowercase();
-    let exec_is_drafter = drafter.to_lowercase() == exec_lc;
-    let exec_is_critic = critic.to_lowercase() == exec_lc;
-    if !exec_is_drafter && !exec_is_critic {
-        printer.abort();
-        return Err(format!(
-            "--execute '{execute}' must be one of the participants ('{drafter}', '{critic}')"
-        )
-        .into());
-    }
 
     // Agents run on acceptEdits (Write/Edit auto-approved). The Claude executor
     // is additionally restricted to file tools so it cannot stall on an
@@ -605,10 +628,13 @@ async fn run_pipeline(
 
     let drafter_id = Uuid::new_v4();
     let critic_id = Uuid::new_v4();
+    let executor_id = Uuid::new_v4(); // only enrolled when the executor is separate
     let exec_id = if exec_is_drafter {
         drafter_id
-    } else {
+    } else if exec_is_critic {
         critic_id
+    } else {
+        executor_id
     };
 
     // Optional git-worktree isolation: the executor runs in its own worktree,
@@ -640,6 +666,8 @@ async fn run_pipeline(
     } else {
         cwd.clone()
     };
+    // A separate executor gets the worktree cwd; the planners stay on the base.
+    let executor_cwd = exec_cwd.clone();
 
     // Run inside a block so that — no matter where it fails — we still abort the
     // printer task and prune the executor's worktree (its on-disk dir + branch).
@@ -674,6 +702,25 @@ async fn run_pipeline(
         )
         .await?;
 
+        // Tiered execution: enroll a separate executor tool that sits out the
+        // debate and implements the agreed plan with its own (cheap/fast) model.
+        if separate_executor {
+            orch.add_agent(
+                make_adapter(&execute)?,
+                mk_ctx(
+                    executor_id,
+                    &execute,
+                    &executor_cwd,
+                    execute_model.clone(),
+                    &sandbox,
+                    "acceptEdits",
+                    tools_for(&execute),
+                ),
+                Role::Executor,
+            )
+            .await?;
+        }
+
         // Auto-confirm the executor: queued before the run, it is remembered and
         // honored when the gate opens (non-interactive equivalent of /confirm).
         commands_tx
@@ -682,7 +729,15 @@ async fn run_pipeline(
             })
             .await?;
 
-        println!("\n=== run: {prompt}  (executor: {execute}) ===");
+        let tier = if separate_executor {
+            match &execute_model {
+                Some(m) => format!("  (tiered: {drafter}+{critic} plan → {execute}/{m} executes)"),
+                None => format!("  (tiered: {drafter}+{critic} plan → {execute} executes)"),
+            }
+        } else {
+            format!("  (executor: {execute})")
+        };
+        println!("\n=== run: {prompt}{tier} ===");
         let outcome = orch
             .run_interactive(&prompt, turns, &mut commands_rx)
             .await?;

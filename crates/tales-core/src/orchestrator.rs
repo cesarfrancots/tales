@@ -70,6 +70,9 @@ pub struct Orchestrator {
     media_delivered: HashMap<AgentId, usize>,
     /// Skills each connected tool exposes (discovered at startup).
     skills: HashMap<AgentId, Vec<String>>,
+    /// Agents shut down after a turn timeout — never scheduled again (sending to
+    /// a dead command channel would otherwise abort the whole run).
+    terminated: std::collections::HashSet<AgentId>,
 }
 
 impl Orchestrator {
@@ -88,6 +91,7 @@ impl Orchestrator {
             pending_media: Vec::new(),
             media_delivered: HashMap::new(),
             skills: HashMap::new(),
+            terminated: std::collections::HashSet::new(),
         }
     }
 
@@ -188,6 +192,11 @@ impl Orchestrator {
         let mut conductor = RuleConductor::new(self.roster.clone(), max_turns);
 
         while let Some(plan) = conductor.next_turn(&self.blackboard) {
+            // Skip an agent that was terminated after a timeout — its channel is
+            // dead and a send would abort the run.
+            if self.terminated.contains(&plan.agent) {
+                continue;
+            }
             let prompt = compose_prompt(plan.role, task, &self.blackboard);
             self.bus.emit(OrchestratorEvent::Log {
                 level: "info".to_string(),
@@ -205,7 +214,8 @@ impl Orchestrator {
             .map_err(|e| TalesError::Other(format!("send to agent failed: {e}")))?;
 
             let text = self.collect_turn(plan.agent).await?;
-            self.blackboard.record(plan.label.clone(), plan.role, text);
+            self.blackboard
+                .record(plan.label.clone(), plan.role, no_output_placeholder(text));
         }
 
         Ok(self.blackboard.transcript_text())
@@ -231,10 +241,19 @@ impl Orchestrator {
                         ),
                     });
                     // Shut the stuck agent down so it can't keep running and
-                    // emit stray output into a later turn.
+                    // emit stray output into a later turn. Mark it terminated so
+                    // the turn loops stop scheduling it (its command channel is
+                    // now dead; another StartTurn would abort the whole run).
                     if let Some(tx) = self.cmd_txs.get(&agent) {
                         let _ = tx.send(AgentCommand::Shutdown).await;
                     }
+                    self.terminated.insert(agent);
+                    // Signal the turn's end so any frontend's live partial
+                    // finalizes instead of spinning forever on a dead agent.
+                    self.bus.emit(OrchestratorEvent::TurnComplete {
+                        agent,
+                        cost_usd: None,
+                    });
                     return Ok(final_text);
                 }
             };
@@ -270,12 +289,20 @@ impl Orchestrator {
                         msg: message,
                     });
                     if fatal {
+                        self.bus.emit(OrchestratorEvent::TurnComplete {
+                            agent,
+                            cost_usd: None,
+                        });
                         return Ok(final_text);
                     }
                 }
                 AgentEvent::Exited { agent: a, code } if a == agent => {
                     self.bus
                         .emit(OrchestratorEvent::AgentExited { agent, code });
+                    self.bus.emit(OrchestratorEvent::TurnComplete {
+                        agent,
+                        cost_usd: None,
+                    });
                     return Ok(final_text);
                 }
                 // Skill discovery can arrive for any agent (at startup).
@@ -285,6 +312,12 @@ impl Orchestrator {
             }
         }
 
+        // The event channel closed before a terminal event — still signal the
+        // turn's end so a frontend's live partial finalizes.
+        self.bus.emit(OrchestratorEvent::TurnComplete {
+            agent,
+            cost_usd: None,
+        });
         Ok(final_text)
     }
 
@@ -299,6 +332,15 @@ impl Orchestrator {
         let mut votes: Vec<ExecutionVote> = Vec::new();
 
         for entry in &roster {
+            // Only planners vote (a separate executor isn't part of the debate);
+            // but it stays in `candidates` above so it can be recommended.
+            if !entry.role.is_planner() {
+                continue;
+            }
+            // A timed-out agent can't vote — skip it rather than send to a dead channel.
+            if self.terminated.contains(&entry.agent) {
+                continue;
+            }
             let prompt = compose_vote_prompt(&self.blackboard.task, &candidates);
             let tx = self.cmd_txs.get(&entry.agent).ok_or_else(|| {
                 TalesError::Other(format!("no command channel for {}", entry.agent))
@@ -395,15 +437,27 @@ impl Orchestrator {
     ) -> Result<RunOutcome> {
         self.blackboard.task = task.to_string();
         self.set_phase(Phase::Planning);
-        let roster = self.roster.clone();
+        // Only planners take discussion turns; a separate executor sits out the
+        // debate and runs the agreed plan at the gate.
+        let planners: Vec<RosterEntry> = self
+            .roster
+            .iter()
+            .filter(|r| r.role.is_planner())
+            .cloned()
+            .collect();
 
         let mut turn_idx = 0;
-        while turn_idx < max_turns {
+        while turn_idx < max_turns && !planners.is_empty() {
             // Fold any pending human interjections into the conversation first.
             if self.drain_user_notes(commands) {
                 return Ok(RunOutcome::Aborted);
             }
-            let entry = &roster[turn_idx % roster.len()];
+            let entry = &planners[turn_idx % planners.len()];
+            // Skip a timed-out agent (dead channel) rather than abort the run.
+            if self.terminated.contains(&entry.agent) {
+                turn_idx += 1;
+                continue;
+            }
             let prompt = compose_prompt(entry.role, task, &self.blackboard);
             self.bus.emit(OrchestratorEvent::TurnStarted {
                 agent: entry.agent,
@@ -426,7 +480,7 @@ impl Orchestrator {
             .map_err(|e| TalesError::Other(format!("send failed: {e}")))?;
             let text = self.collect_turn(entry.agent).await?;
             self.blackboard
-                .record(entry.label.clone(), entry.role, text);
+                .record(entry.label.clone(), entry.role, no_output_placeholder(text));
             turn_idx += 1;
         }
 
@@ -573,6 +627,17 @@ impl Orchestrator {
     }
 }
 
+/// A turn that produced no text (a crash, a kill, or a tool-only turn with no
+/// final message) shouldn't be recorded as the agent saying nothing — that
+/// silently misleads the next speaker. Mark it explicitly instead.
+fn no_output_placeholder(text: String) -> String {
+    if text.trim().is_empty() {
+        "(no output this turn)".to_string()
+    } else {
+        text
+    }
+}
+
 /// Prompt asking an agent to nominate an executor as a JSON object.
 fn compose_vote_prompt(task: &str, candidates: &[String]) -> String {
     format!(
@@ -617,7 +682,9 @@ fn compose_prompt(role: Role, task: &str, bb: &Blackboard) -> String {
                  ask. Be specific and brief — no preamble."
             )
         }
-        // Humans are recorded out-of-band, never scheduled to "speak" a prompt.
-        Role::Human => task.to_string(),
+        // Humans are recorded out-of-band; executors are filtered out of
+        // planning and run via `run_execution`. Neither is scheduled here — this
+        // arm is a safe fallback, not a code path, so it must never panic.
+        Role::Human | Role::Executor => task.to_string(),
     }
 }

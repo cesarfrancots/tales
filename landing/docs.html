@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tales — documentation</title>
+  <meta name="description" content="How Tales works: install, the interactive terminal, scriptable commands, architecture, and troubleshooting. Written and reviewed by Claude Code and Codex via Tales itself." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+  <style>
+    .docs { display: grid; grid-template-columns: 220px 1fr; gap: 48px; padding: 48px 0 90px; align-items: start; }
+    .toc { position: sticky; top: 72px; font-size: .9rem; }
+    .toc-h { color: var(--accent); font-size: .72rem; letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 14px; }
+    .toc a { display: block; color: var(--dim); padding: 5px 0; border-left: 2px solid var(--line); padding-left: 14px; }
+    .toc a:hover { color: var(--text); border-color: var(--accent); text-decoration: none; }
+    .doc h2 { font-size: 1.5rem; margin: 48px 0 8px; padding-top: 12px; letter-spacing: -.3px; }
+    .doc h2:first-child { margin-top: 0; }
+    .doc h2 .n { color: var(--accent); margin-right: 10px; font-weight: 700; }
+    .doc h3 { font-size: 1.05rem; color: var(--text); margin: 28px 0 6px; }
+    .doc p { color: var(--dim); margin: 12px 0; }
+    .doc p b, .doc li b { color: var(--text); }
+    .doc ul { color: var(--dim); margin: 12px 0 12px 4px; list-style: none; }
+    .doc li { padding: 5px 0 5px 18px; position: relative; }
+    .doc li::before { content: "›"; color: var(--accent); position: absolute; left: 0; }
+    .doc code { background: var(--panel); border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; color: var(--cc); font-size: .86em; }
+    .doc pre { background: var(--bg-2); border: 1px solid var(--line); border-radius: 9px; padding: 16px 18px; overflow-x: auto; margin: 14px 0; font-size: .86rem; line-height: 1.7; color: var(--text); white-space: pre; }
+    .doc pre .c { color: var(--faint); font-style: italic; }
+    .doc pre .p { color: var(--accent); }
+    .doc table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: .88rem; }
+    .doc th, .doc td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+    .doc th { color: var(--dim); font-weight: 500; }
+    .doc td code { color: var(--amber); }
+    .callout { border-left: 2px solid var(--accent); background: rgba(45,212,191,.05); padding: 12px 16px; border-radius: 0 8px 8px 0; margin: 16px 0; color: var(--dim); font-size: .92rem; }
+    .callout b { color: var(--accent); }
+    .doc-note { color: var(--faint); font-size: .82rem; border-top: 1px solid var(--line); margin-top: 50px; padding-top: 18px; }
+    @media (max-width: 760px) { .docs { grid-template-columns: 1fr; } .toc { position: static; } }
+  </style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="wrap topbar-inner">
+    <a href="index.html" class="brand"><span class="brand-caret">❯</span> tales</a>
+    <nav class="topnav">
+      <a href="index.html">home</a>
+      <a href="index.html#run">run it</a>
+      <a href="docs.html" style="color:var(--text)">docs</a>
+      <a href="https://github.com/cesarfrancots/tales" target="_blank" rel="noopener" class="gh">github ↗</a>
+    </nav>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="docs">
+    <aside class="toc">
+      <div class="toc-h">documentation</div>
+      <a href="#what">What Tales is</a>
+      <a href="#install">Install</a>
+      <a href="#terminal">The terminal</a>
+      <a href="#scriptable">Scriptable commands</a>
+      <a href="#architecture">Architecture</a>
+      <a href="#troubleshooting">Troubleshooting</a>
+    </aside>
+
+    <main class="doc">
+
+      <h2 id="what"><span class="n">01</span>What Tales is</h2>
+      <p>Tales is a lightweight Rust orchestrator that runs AI coding CLIs — <b class="cc">Claude&nbsp;Code</b>, <b class="cx">Codex</b>, and <b style="color:var(--amber)">Open&nbsp;Code</b> — as subprocesses so they collaborate on the <i>same</i> project. They debate a plan in a live terminal, each emits a recommendation for who should execute it, and <b>no editing or execution hand-off starts until you confirm.</b></p>
+      <p>It's not a model or an API wrapper. It drives the CLIs you already have installed and authenticated, normalizes their very different I/O into one event stream, and puts a human at the decision gate.</p>
+
+      <h3>Two strong models beat one</h3>
+      <p>A single model commits to its first framing and rarely escapes it. Tales puts two models with different priors in the same room: one drafts, the other critiques across alternating turns, and the disagreement surfaces assumptions a solo run buries.</p>
+      <p>The analogy to <a href="https://openrouter.ai" target="_blank" rel="noopener">OpenRouter's model fusion</a> and <a href="https://kiro.dev" target="_blank" rel="noopener">AWS Kiro</a> is narrow and deliberate: combine the strengths of more than one model instead of betting everything on one — fusion blends answers across models, Kiro splits spec-then-build across agents. Tales applies the idea to <b>planning</b> (the live drafter/critic discussion) and gives you the tools to apply it to <b>execution</b> too (isolated git worktrees), with a human on the gate.</p>
+      <p>It's deliberately <b>model- and tool-agnostic</b>: any AI coding CLI can join behind one small adapter (Claude Code, Codex, Open Code today), and the room doesn't have to be uniform. You can <b>tier</b> it — strong, expensive models do the planning, a cheaper/faster model implements the agreed plan (see <a href="#scriptable"><code>--execute-model</code></a>). Spend on judgment, not on typing.</p>
+      <p>What you get:</p>
+      <ul>
+        <li>A <b>drafter/critic discussion</b> you can read as it streams and interject into.</li>
+        <li>A <b>confidence-weighted recommendation</b> of who should execute — advisory, never automatic.</li>
+        <li><b>Git-worktree isolation</b> for the executor, so a result is always a reviewable diff.</li>
+      </ul>
+      <p>What it is <i>not</i>: an autonomous agent that ships code on its own. The recommendation is a suggestion; the gate is yours.</p>
+
+      <h2 id="install"><span class="n">02</span>Install &amp; prerequisites</h2>
+      <ul>
+        <li><b>Rust toolchain</b> (stable) to build the workspace.</li>
+        <li>Developed and tested on <b>macOS and Linux</b>. <code>tales open</code> (the new-window launcher) is macOS-only; the other commands are Unix-oriented.</li>
+        <li>At least one agent CLI on your <code>PATH</code>, installed and authenticated. The default discussion pairs two, so for a single tool you pass explicit flags (see below).</li>
+      </ul>
+      <table>
+        <thead><tr><th>Tool</th><th>Binary</th><th>Install</th></tr></thead>
+        <tbody>
+          <tr><td>Claude Code</td><td><code>claude</code></td><td><code>npm i -g @anthropic-ai/claude-code</code></td></tr>
+          <tr><td>Codex</td><td><code>codex</code></td><td><code>npm i -g @openai/codex</code></td></tr>
+          <tr><td>Open Code</td><td><code>opencode</code></td><td><code>npm i -g opencode-ai</code></td></tr>
+        </tbody>
+      </table>
+      <p>Tales checks <code>PATH</code> for each and shows which tools are connectable — you only need the ones you intend to use.</p>
+      <pre><span class="c"># build → target/release: tales, tales-tui, tales-web</span>
+<span class="p">cargo</span> build --release
+<span class="c"># put target/release on your PATH, then:</span>
+<span class="p">tales</span></pre>
+      <p>Try the whole flow with <b>no API calls</b>:</p>
+      <pre><span class="p">tales-tui</span> --demo
+<span class="p">tales-web</span> "demo" --demo</pre>
+
+      <h2 id="terminal"><span class="n">03</span>The interactive terminal</h2>
+      <p>Type <code>tales</code> to open a multi-pane terminal workspace: a <b>Tales orchestrator pane</b> plus sibling shell and agent-CLI panes.</p>
+      <ul>
+        <li><b>Plan.</b> In the Tales pane, type your task and press <code>Enter</code>; the drafter and critic discuss and draft a plan in place, streamed token-by-token.</li>
+        <li><b>Open panes as needed.</b> <code>Ctrl-N</code> shell · <code>Ctrl-X</code> Codex · <code>Ctrl-L</code> Claude Code · <code>Ctrl-O</code> Open Code. <code>Tab</code> switches focus.</li>
+        <li><b>Observe / intervene.</b> A focused agent pane receives your keystrokes directly. <code>Ctrl-A</code> sends an explicit approval, but only when that pane is waiting on one.</li>
+        <li><b>Confirm &amp; hand off.</b> After the discussion, agents emit recommendations and Tales surfaces the aggregated pick. At the gate, <code>Enter</code> or <code>/confirm &lt;n&gt;</code> launches the executor in its own live CLI pane and sends it the plan; or focus an existing agent pane and press <code>Ctrl-S</code> to send the plan there.</li>
+      </ul>
+      <div class="callout"><b>Two execution paths.</b> In the workspace, confirming hands the plan to a <i>live, interactive</i> CLI pane you watch and steer. The scriptable <code>tales run</code> and the classic planner run the executor <i>headlessly</i> through the core. Same plan, different driver.</div>
+      <div class="callout"><b>Heads up — live panes share a directory.</b> Worktree isolation is automatic only for <code>tales run --worktree</code>. Live executor panes all start in the same working dir, so if you open several to run in parallel, isolate them yourself (separate worktrees/branches) to avoid clobbering.</div>
+      <p>Prefer one focused view? <code>tales-tui --classic</code> is the original connect → prompt → plan → confirm screen. Skip setup with pre-connect / pre-fill:</p>
+      <pre><span class="p">tales-tui</span> --connect claude --connect codex
+<span class="p">tales-tui</span> --connect claude --prefill "Design a rate limiter"
+<span class="p">tales-tui</span> "Design and build a rate limiter" --drafter claude --critic codex</pre>
+      <div class="callout"><b>Roster rule.</b> Connect Claude and Codex as many times as you like, but <b>Open Code only once per run</b> — its session continuity is keyed on the working directory, so two would resume each other's session. Tales rejects this roster up front.</div>
+
+      <h2 id="scriptable"><span class="n">04</span>Scriptable commands</h2>
+      <p>The non-interactive counterparts — for scripts, CI, and dogfooding.</p>
+
+      <h3><code>tales solo</code> — one agent, one turn</h3>
+      <pre><span class="p">tales</span> solo --model sonnet "Reply with exactly: hello from tales"
+<span class="p">tales</span> solo --agent codex --image diagram.png "Explain this architecture"</pre>
+      <p><code>--agent claude|codex|opencode</code> · <code>--model</code> · <code>--cwd</code> · <code>--sandbox</code> (Codex). <code>--image</code> (repeatable) attaches files: Claude receives images <b>and</b> PDFs; Codex receives images only; Open Code sees them named in the prompt text.</p>
+
+      <h3><code>tales discuss</code> — a live drafter/critic discussion, no execution</h3>
+      <pre><span class="p">tales</span> discuss --drafter claude --critic codex --turns 2 \
+  --drafter-model sonnet --sandbox read-only \
+  "Design a minimal rate limiter for a public REST API. 5 bullet points."</pre>
+
+      <h3><code>tales run</code> — the full pipeline: discuss → recommend → execute</h3>
+      <pre><span class="p">tales</span> run "Build X" --drafter codex --critic claude --execute claude --turns 2</pre>
+      <p>The recommendation is computed and printed, but <b><code>--execute</code> decides who runs</b> (default <code>claude</code>). It can be one of the planners, or <b>a different tool entirely</b>. That choice is queued before the gate and auto-confirmed when the gate opens — the non-interactive equivalent of <code>/confirm</code>. There is no "execute the recommended pick" mode in a single invocation; <code>--execute</code> always decides.</p>
+
+      <h4 style="color:var(--accent);margin:22px 0 6px;font-size:.95rem">Tiered execution — smart models plan, a cheap model runs</h4>
+      <p>When <code>--execute</code> names a tool that <i>isn't</i> a planner, Tales enrolls it as a separate executor that sits out the debate and implements the agreed plan with its own model via <code>--execute-model</code>. Spend on judgment, not on typing:</p>
+      <pre><span class="c"># two strong models plan + argue, a cheap/fast one implements</span>
+<span class="p">tales</span> run "add OAuth login" \
+  --drafter claude --drafter-model opus \
+  --critic  codex  --critic-model  gpt-5 \
+  --execute opencode --execute-model &lt;cheap-fast-model&gt;</pre>
+      <p><code>--execute-model</code> is only valid for a separate executor; pointing <code>--execute</code> at one of the planners (same-tool tiering) is rejected for now. The executor sits out the discussion and the vote, but it's still a valid recommendation candidate.</p>
+
+      <p>Add <code>--worktree</code> to run <b>that one executor</b> in its own git worktree and merge the result back into your current branch (requires a git repo; otherwise ignored with a note):</p>
+      <pre><span class="p">tales</span> run "Add a /health endpoint" --execute claude --worktree</pre>
+      <p>In headless mode the <b>Claude</b> executor is restricted to file-writing tools (<code>--allowedTools</code>) so it can't stall on an unapproved shell prompt; Codex runs under its own sandbox policy instead.</p>
+      <div class="callout">This project's own <code>landing/</code> page and these docs were built <b>with Tales</b>: Codex and Claude Code drafted and reviewed, via <code>tales discuss</code>.</div>
+
+      <h3><code>tales open</code> &amp; the browser view</h3>
+      <p><code>tales open</code> opens the workspace in a <i>new</i> macOS window (used by the <code>/tales</code> skill from inside a harness); <code>--connect &lt;tool&gt;</code> pre-connects and an optional task pre-fills the prompt. <code>tales-web</code> is a secondary local axum + WebSocket view that streams the discussion and exposes an approve/reject gate — it currently supports <b>Claude and Codex only</b>:</p>
+      <pre><span class="p">tales-web</span> "Design and build a rate limiter"   <span class="c"># → http://127.0.0.1:7878</span></pre>
+
+      <h2 id="architecture"><span class="n">05</span>Architecture</h2>
+      <p>A Cargo workspace with a strictly UI-agnostic core. Frontends exchange <i>runtime events and commands</i> with <code>tales-core</code> only through the bus — which is why the web frontend dropped in with zero changes to the engine.</p>
+
+      <h3><code>AgentAdapter</code> — the uniform interface over every tool</h3>
+      <p>Each CLI implements one trait: <code>spawn()</code> launches the process and pumps normalized <code>AgentEvent</code>s (<code>TokenDelta</code>, <code>MessageFinal</code>, <code>ToolCall</code>, <code>TurnComplete</code>, <code>Error</code>, …) into a channel, and returns a command sender driven with <code>AgentCommand</code>s (<code>StartTurn</code>, <code>InjectMessage</code>, <code>Shutdown</code>). The engine and frontends see only these enums — never the concrete tool.</p>
+      <p>The tools differ sharply: Claude is bidirectional <code>stream-json</code> (read tokens live, inject mid-turn); Codex is turn-based <code>exec</code> + <code>resume</code>. That asymmetry lives <b>only</b> in <code>AgentCaps</code> flags (<code>midturn_injection</code>, <code>structured_output</code>, <code>resumable</code>, <code>mcp</code>) — the orchestrator schedules around capabilities, never <code>if claude { … }</code>. Adding a tool = one <code>AgentAdapter</code> impl + one row in <code>KNOWN_TOOLS</code>; the picker, CLI, and orchestrator all read that registry.</p>
+
+      <h3>The bus — the one core↔frontend contract</h3>
+      <p><code>EventBus</code> owns a lossy <code>broadcast</code> channel for events (a slow frontend lags and recovers; it never blocks the engine) and an <code>mpsc</code> channel for commands (many interchangeable producers, one engine consumer). Clone it, hand a clone to each frontend, subscribe.</p>
+
+      <h3>Worktree isolation</h3>
+      <p><code>WorktreeManager</code> can give <i>each</i> agent its own git worktree on its own branch; the orchestrator surfaces each worktree's diff (<code>git diff --stat</code> + full patch). Today <code>tales run --worktree</code> uses this for the <b>single selected executor</b>: create one worktree, run the executor there, and on success merge that branch back — <code>Clean</code>, <code>NoChanges</code>, or <code>Conflict { files }</code> (which leaves the base mid-merge for you to resolve). The executor's worktree is pruned on every exit path.</p>
+
+      <h3>Recommendation &amp; gate</h3>
+      <p>After discussion, each agent emits a <b>JSON recommendation</b> — <code>recommended_executor</code> + <code>confidence</code> + <code>rationale</code> (tolerantly parsed from free-form model text). <code>aggregate</code> tallies confidence-weighted scores per candidate into a <code>Recommendation</code>, with a <code>confident</code> flag that's <code>false</code> when no real consensus emerged (so the UI can say "no clear pick" rather than fake one). The recommendation is <b>advisory</b>; execution begins only when you confirm interactively or via the queued <code>--execute</code> choice.</p>
+
+      <h2 id="troubleshooting"><span class="n">06</span>Troubleshooting</h2>
+      <ul>
+        <li><b>Tool not connectable / "not found".</b> The CLI isn't on <code>PATH</code>. Install it, reopen; Tales re-checks <code>PATH</code> per run.</li>
+        <li><b>Auth failures.</b> Tales doesn't manage credentials — authenticate the underlying CLI directly (<code>claude</code>, <code>codex</code>, <code>opencode</code>) once, then retry.</li>
+        <li><b>"can't connect Open Code twice."</b> Expected — see the roster rule. Use it as a single participant.</li>
+        <li><b>Only one tool installed.</b> The default discussion needs two participants; pass <code>--connect &lt;tool&gt;</code> (TUI) or explicit <code>--drafter</code>/<code>--critic</code> to run with a specific roster.</li>
+        <li><b><code>--worktree</code> ignored.</b> The cwd isn't a git repo; Tales prints a note and runs without isolation. Run inside a repo to enable it.</li>
+        <li><b>Merge left mid-merge (<code>Conflict</code>).</b> The executor's branch conflicts with your base; resolve and commit, or <code>git merge --abort</code>. A detached HEAD or dirty base can also block the merge.</li>
+        <li><b>Headless Claude executor seems limited.</b> By design it's restricted to file-writing tools; a plan needing shell/Bash should run interactively in a live pane where you can approve.</li>
+      </ul>
+
+      <p class="doc-note">These docs were drafted by Claude Code and reviewed by Codex through <code>tales discuss</code>, then finalized against the source. If a detail drifts from the code, the code wins — please open an issue.</p>
+    </main>
+  </div>
+</div>
+
+<footer class="foot">
+  <div class="wrap foot-inner">
+    <a href="index.html" class="brand"><span class="brand-caret">❯</span> tales</a>
+    <div class="foot-links">
+      <a href="index.html">home</a>
+      <a href="https://github.com/cesarfrancots/tales" target="_blank" rel="noopener">github</a>
+      <span class="mit">MIT</span>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

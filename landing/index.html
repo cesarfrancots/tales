@@ -3,280 +3,248 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Tales — AI pair programming, with you in control</title>
-  <meta name="description" content="Tales lets Claude Code and Codex collaborate on your coding task in a live chat. The AIs discuss a plan, recommend who executes, and you confirm before anything runs." />
+  <title>Tales — two AIs, one terminal, you decide</title>
+  <meta name="description" content="Tales is a 1.2 MB terminal that runs Claude Code and Codex side by side: they debate a plan, you pick who executes, nothing runs without your go-ahead. Two models planning and executing in parallel beat one." />
 
-  <!-- Open Graph -->
   <meta property="og:type"        content="website" />
   <meta property="og:url"         content="https://cesarfrancots.github.io/tales/" />
-  <meta property="og:title"       content="Tales — AI pair programming, with you in control" />
-  <meta property="og:description" content="Claude Code and Codex collaborate on your task in a live chat. They debate, draft a plan, recommend who executes — nothing runs until you approve." />
-
-  <!-- Twitter / X -->
+  <meta property="og:title"       content="Tales — two AIs, one terminal, you decide" />
+  <meta property="og:description" content="A 1.2 MB terminal where Claude Code and Codex plan together and you choose who executes. Two models in parallel beat one." />
   <meta name="twitter:card"        content="summary_large_image" />
-  <meta name="twitter:title"       content="Tales — AI pair programming, with you in control" />
-  <meta name="twitter:description" content="Claude Code and Codex collaborate on your task in a live chat. They debate, draft a plan, recommend who executes — nothing runs until you approve." />
+  <meta name="twitter:title"       content="Tales — two AIs, one terminal, you decide" />
+  <meta name="twitter:description" content="A 1.2 MB terminal where Claude Code and Codex plan together and you choose who executes." />
 
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
 
-<!-- ── Nav ──────────────────────────────────────────────── -->
-<nav>
-  <div class="container nav-inner">
-    <a href="#" class="nav-logo">Tales<span>.</span></a>
-    <ul class="nav-links">
-      <li><a href="#how-it-works">How it works</a></li>
-      <li><a href="#features">Features</a></li>
-      <li><a href="#demo">Demo</a></li>
-      <li><a href="#quickstart">Quickstart</a></li>
-      <li>
-        <a href="https://github.com/cesarfrancots/tales" target="_blank" rel="noopener" class="btn btn-ghost" style="padding:6px 14px;font-size:.82rem;">
-          <svg class="icon-github" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61-.546-1.385-1.335-1.755-1.335-1.755-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23a11.5 11.5 0 0 1 3-.405c1.02.005 2.045.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
-          GitHub
-        </a>
-      </li>
-    </ul>
+<!-- ── Top bar ─────────────────────────────────────────────── -->
+<header class="topbar">
+  <div class="wrap topbar-inner">
+    <a href="#" class="brand"><span class="brand-caret">❯</span> tales</a>
+    <nav class="topnav">
+      <a href="#why">why two</a>
+      <a href="#run">run it</a>
+      <a href="docs.html">docs</a>
+      <a href="https://github.com/cesarfrancots/tales" target="_blank" rel="noopener" class="gh">github ↗</a>
+    </nav>
   </div>
-</nav>
+</header>
 
-<!-- ── Hero ─────────────────────────────────────────────── -->
-<section id="hero">
-  <div class="container">
-    <div class="hero-inner">
-
-      <div class="hero-copy">
-        <div class="hero-eyebrow">
-          <span class="dot"></span>
-          Open Source · MIT License
-        </div>
-        <h1>Two AIs plan.<br/><span class="highlight">You decide</span><br/>what runs.</h1>
-        <p class="hero-sub">
-          Tales puts Claude Code and Codex in a shared chat on your task. They debate, draft a plan, and recommend which agent should run — nothing executes until you approve.
-        </p>
-        <p class="hero-sub-note">
-          Attach images or PDFs to your task. Tales surfaces each agent's available skills so both sides know what the other can do.
-        </p>
-        <div class="hero-ctas">
-          <a href="https://github.com/cesarfrancots/tales" target="_blank" rel="noopener" class="btn btn-primary">
-            <svg class="icon-github" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61-.546-1.385-1.335-1.755-1.335-1.755-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23a11.5 11.5 0 0 1 3-.405c1.02.005 2.045.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
-            View on GitHub
-          </a>
-          <a href="#how-it-works" class="btn btn-ghost">See how it works</a>
-        </div>
+<!-- ── Hero: the terminal narrates itself ──────────────────── -->
+<section class="hero">
+  <div class="wrap">
+    <div class="term" id="term" role="img" aria-label="A Tales terminal session: Claude Code and Codex plan a task, then the human picks who executes.">
+      <div class="term-bar">
+        <span class="tdot r"></span><span class="tdot y"></span><span class="tdot g"></span>
+        <span class="term-name">tales — ~/your-project</span>
+        <span class="term-tag">live</span>
       </div>
+      <div class="term-body" id="term-body"><span class="cursor" id="cursor">█</span></div>
+    </div>
 
-      <div class="hero-visual">
-        <div class="terminal">
-          <div class="terminal-bar">
-            <span class="terminal-dot dot-red"></span>
-            <span class="terminal-dot dot-yellow"></span>
-            <span class="terminal-dot dot-green"></span>
-            <span class="terminal-title">tales — task: add OAuth login</span>
-          </div>
-          <div class="terminal-body">
-
-            <div class="chat-msg">
-              <div class="chat-avatar avatar-claude">CC</div>
-              <div class="chat-bubble">
-                <div class="chat-name name-claude">Claude Code</div>
-                <div class="chat-text">I'd approach this with a middleware layer — add <code style="color:var(--accent-cyan)">passport.js</code>, configure the Google strategy, and hook it into the existing session store. Fairly isolated change.</div>
-              </div>
-            </div>
-
-            <div class="chat-msg">
-              <div class="chat-avatar avatar-codex">CX</div>
-              <div class="chat-bubble">
-                <div class="chat-name name-codex">Codex</div>
-                <div class="chat-text">Agreed on the architecture. I'd recommend Claude executes — it has better context on the existing auth flow. I can review the diff after.</div>
-              </div>
-            </div>
-
-            <div class="chat-msg">
-              <div class="chat-avatar avatar-you">You</div>
-              <div class="chat-bubble">
-                <div class="chat-name name-you">You</div>
-                <div class="chat-text">Sounds good. Go ahead.</div>
-                <div class="approval-badge">Approved — Claude Code executing</div>
-              </div>
-            </div>
-
-          </div>
-        </div>
-      </div>
-
+    <p class="hero-static">
+      A terminal that runs <b class="cc">Claude&nbsp;Code</b> and <b class="cx">Codex</b> on the same task —
+      they argue out a plan, <b class="you">you</b> pick who executes.
+    </p>
+    <div class="hero-ctas">
+      <a href="#run" class="btn btn-go">$ get started</a>
+      <a href="https://github.com/cesarfrancots/tales" target="_blank" rel="noopener" class="btn btn-ghost">source — 1.2&nbsp;MB ↗</a>
+      <button class="btn btn-ghost replay" id="replay" type="button">↻ replay</button>
     </div>
   </div>
 </section>
 
-<!-- ── How it works ──────────────────────────────────────── -->
-<section id="how-it-works">
-  <div class="container">
-    <p class="section-label reveal reveal-slide">How it works</p>
-    <h2 class="reveal reveal-slide" data-delay=".08s">Four steps, one rule:<br/>you always confirm.</h2>
-    <p class="section-lead reveal reveal-slide" data-delay=".16s">Tales keeps you in the loop at every stage. The AIs do the thinking; you do the deciding.</p>
+<!-- ── Why two ─────────────────────────────────────────────── -->
+<section id="why" class="band">
+  <div class="wrap">
+    <p class="kicker">// the whole idea</p>
+    <h2>One model has one opinion.<br/><span class="accent">Two models have an argument.</span></h2>
+    <p class="lead">
+      A single agent commits to its first idea and runs. Tales makes two strong models
+      <b>plan and execute in parallel</b>, then cross-check each other before anything touches your code.
+      You get the disagreement <i>before</i> the diff, not after.
+    </p>
 
-    <div class="steps">
-
-      <div class="step reveal" data-delay="0s">
-        <div class="step-num">1</div>
-        <div class="step-title">Discuss</div>
-        <div class="step-desc">Claude Code and Codex read your task and debate the best approach in a shared chat thread — surfacing trade-offs before a single line is written.</div>
+    <div class="why-grid">
+      <div class="why-card">
+        <div class="why-h">drafter</div>
+        <p>One model proposes the approach and writes the plan.</p>
       </div>
-
-      <div class="step reveal" data-delay=".1s">
-        <div class="step-num">2</div>
-        <div class="step-title">Recommend</div>
-        <div class="step-desc">The agents reach consensus and nominate which one should execute, with a rationale. No hidden decisions.</div>
+      <div class="why-arrow">⇄</div>
+      <div class="why-card">
+        <div class="why-h">critic</div>
+        <p>The other pokes holes, asks the questions, names the trade-offs.</p>
       </div>
-
-      <div class="step reveal" data-delay=".2s">
-        <div class="step-num">3</div>
-        <div class="step-title">You decide</div>
-        <div class="step-desc">You review the plan and the recommendation. Approve, redirect, or cancel — nothing runs without your explicit go-ahead.</div>
+      <div class="why-arrow">→</div>
+      <div class="why-card you-card">
+        <div class="why-h you">you</div>
+        <p>You read the debate and pick the executor. Hard gate — nothing auto-runs.</p>
       </div>
-
-      <div class="step reveal" data-delay=".3s">
-        <div class="step-num">4</div>
-        <div class="step-title">Execute</div>
-        <div class="step-desc">The chosen agent carries out the work in a sandboxed git worktree. The other agent reviews the output. You get a clean diff.</div>
-      </div>
-
     </div>
+
+    <p class="receipts">
+      Not a hunch — the field keeps re-discovering it. OpenRouter ships
+      <a href="https://openrouter.ai" target="_blank" rel="noopener">model fusion</a>
+      (blend several models for a stronger answer); AWS
+      <a href="https://kiro.dev" target="_blank" rel="noopener">Kiro</a>
+      splits spec-then-build across agents. Tales does it where you already work —
+      <b>your terminal</b> — and keeps a human on the trigger.
+    </p>
   </div>
 </section>
 
-<!-- ── Features ──────────────────────────────────────────── -->
-<section id="features">
-  <div class="container">
-    <p class="section-label reveal reveal-slide">Features</p>
-    <h2 class="reveal reveal-slide" data-delay=".08s">Built for trust,<br/>not speed-running.</h2>
-    <p class="section-lead reveal reveal-slide" data-delay=".16s">Every design decision in Tales is oriented around keeping humans meaningfully in control of agentic AI.</p>
-
-    <div class="features-grid">
-
-      <div class="feature-card reveal" data-delay="0s">
-        <div class="feature-icon">🤝</div>
-        <div class="feature-title">Multi-agent collaboration</div>
-        <div class="feature-desc">Claude Code and Codex work together as a team — each with different strengths, cross-checking each other's reasoning before making any recommendation.</div>
+<!-- ── Tier the cost ───────────────────────────────────────── -->
+<section id="tier" class="band alt">
+  <div class="wrap">
+    <p class="kicker">// not just two — and not just the expensive ones</p>
+    <h2>Mix the room.<br/><span class="accent">Tier the cost.</span></h2>
+    <p class="lead">
+      Tales isn't locked to two models or one vendor. Any AI coding CLI can join —
+      <b class="cc">Claude&nbsp;Code</b>, <b class="cx">Codex</b>, and
+      <b style="color:var(--amber)">Open&nbsp;Code</b> today, more behind a small adapter each.
+      Put the tools you trust in the room.
+    </p>
+    <p class="lead">
+      And the room doesn't have to be uniform. Run your <b>smart, expensive</b> models on the
+      part that actually matters — the plan and the argument — then hand the agreed plan to a
+      <b>cheaper, faster</b> model to implement. You pay top dollar for judgment, not for typing.
+    </p>
+    <div class="term code-term">
+      <div class="term-bar">
+        <span class="tdot r"></span><span class="tdot y"></span><span class="tdot g"></span>
+        <span class="term-name">bash — tiered run</span>
       </div>
-
-      <div class="feature-card reveal" data-delay=".05s">
-        <div class="feature-icon">⚡</div>
-        <div class="feature-title">Real-time streaming</div>
-        <div class="feature-desc">Watch the discussion unfold live. Streamed token-by-token so you can follow the agents' thinking as it happens, not after the fact.</div>
-      </div>
-
-      <div class="feature-card reveal" data-delay=".1s">
-        <div class="feature-icon">🔒</div>
-        <div class="feature-title">Human-in-the-loop gate</div>
-        <div class="feature-desc">A hard confirmation step before any code runs. No opt-out, no auto-approve mode. You remain the final authority on every action.</div>
-      </div>
-
-      <div class="feature-card reveal" data-delay=".15s">
-        <div class="feature-icon">🌿</div>
-        <div class="feature-title">Git-worktree isolation</div>
-        <div class="feature-desc">Execution happens in a fresh git worktree — your working directory is never touched speculatively. Inspect the diff before merging anything.</div>
-      </div>
-
-      <div class="feature-card reveal" data-delay=".2s">
-        <div class="feature-icon">🔌</div>
-        <div class="feature-title">Pluggable adapters</div>
-        <div class="feature-desc">Swap in different models or AI providers without changing the orchestration logic. The adapter interface is small and well-defined.</div>
-      </div>
-
-      <div class="feature-card reveal" data-delay=".25s">
-        <div class="feature-icon">📖</div>
-        <div class="feature-title">Open source, MIT</div>
-        <div class="feature-desc">Fully auditable. No telemetry, no cloud dependency, no black boxes. Read the code, fork it, extend it — it's yours.</div>
-      </div>
-
+      <pre class="code"><span class="c"># two strong models plan + argue, a cheap/fast one implements</span>
+<span class="p">tales</span> run <span class="s">"add OAuth login"</span> \
+  --drafter claude --drafter-model opus \
+  --critic  codex  --critic-model  gpt-5 \
+  --execute opencode --execute-model <span class="s">&lt;cheap-fast-model&gt;</span></pre>
     </div>
+    <p class="receipts">
+      Live today in <code>tales&nbsp;run</code> via <code>--execute-model</code>. The core is already
+      model- and tool-agnostic; bigger rooms (N&nbsp;planners), more adapters, and same-tool
+      tiering are what the CLI is growing into next.
+    </p>
   </div>
 </section>
 
-<!-- ── Demo ──────────────────────────────────────────────── -->
-<section id="demo">
-  <div class="container">
-    <p class="section-label reveal reveal-slide">See it in action</p>
-    <h2 class="reveal reveal-slide" data-delay=".08s">Watch Tales orchestrate<br/>a real coding task.</h2>
-    <div class="demo-wrapper reveal" data-delay=".18s">
-      <video id="demo-video" src="tales-demo.mp4" muted loop playsinline preload="none"></video>
-      <button class="demo-play-btn" id="demo-play-btn" data-playing="false" aria-label="Play video">
-        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" class="icon-play"><polygon points="5,3 19,12 5,21"/></svg>
-        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" class="icon-pause"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
-      </button>
-    </div>
-  </div>
-</section>
+<!-- ── Run it ──────────────────────────────────────────────── -->
+<section id="run" class="band alt">
+  <div class="wrap">
+    <p class="kicker">// run it</p>
+    <h2>Type <code>tales</code>. That's the whole UI.</h2>
+    <p class="lead">No dashboard, no login, no accounts. Connect the CLIs you already have and go.</p>
 
-<!-- ── Quickstart ────────────────────────────────────────── -->
-<section id="quickstart">
-  <div class="container">
-    <div class="qs-inner">
-
-      <div>
-        <p class="section-label reveal reveal-slide">Quickstart</p>
-        <h2 class="reveal reveal-slide" data-delay=".08s">Up and running<br/>in two minutes.</h2>
-        <p class="section-lead reveal reveal-slide" data-delay=".16s">Tales runs locally. No accounts — just your own Anthropic and OpenAI API keys.</p>
-
-        <ul class="qs-steps">
-          <li class="qs-step-item reveal reveal-slide" data-delay="0s">
-            <span class="qs-n">1</span>
-            <p><strong>Clone</strong> — grab the repo with <code style="color:var(--accent-cyan);font-family:var(--font-mono);font-size:.85em">git clone</code>.</p>
-          </li>
-          <li class="qs-step-item reveal reveal-slide" data-delay=".1s">
-            <span class="qs-n">2</span>
-            <p><strong>Build</strong> — compile the release binary with <code style="color:var(--accent-cyan);font-family:var(--font-mono);font-size:.85em">cargo build --release</code>.</p>
-          </li>
-          <li class="qs-step-item reveal reveal-slide" data-delay=".2s">
-            <span class="qs-n">3</span>
-            <p><strong>Set your keys</strong> — export <code style="color:var(--accent-cyan);font-family:var(--font-mono);font-size:.85em">ANTHROPIC_API_KEY</code> and <code style="color:var(--accent-cyan);font-family:var(--font-mono);font-size:.85em">OPENAI_API_KEY</code>.</p>
-          </li>
-          <li class="qs-step-item reveal reveal-slide" data-delay=".3s">
-            <span class="qs-n">4</span>
-            <p><strong>Run</strong> — pass your task as an argument and approve the plan when ready.</p>
-          </li>
-        </ul>
-      </div>
-
-      <div class="code-block reveal" data-delay=".1s">
-        <div class="code-header">
-          <span class="code-lang">shell</span>
+    <div class="run-steps">
+      <div class="run-step">
+        <span class="run-n">1</span>
+        <div>
+          <div class="run-t">connect</div>
+          <p>Pick the tools to put in the room — Claude Code, Codex, Open Code. Bring two; bring three.</p>
         </div>
-        <div class="code-body">
-          <pre><span class="c"># Clone and enter the repo</span>
-<span class="p">git</span> clone https://github.com/cesarfrancots/tales
-<span class="p">cd</span> tales
+      </div>
+      <div class="run-step">
+        <span class="run-n">2</span>
+        <div>
+          <div class="run-t">plan <span class="run-badge">default</span></div>
+          <p>They discuss in a live chat. Type to interject any time — you're a participant, not a spectator.</p>
+        </div>
+      </div>
+      <div class="run-step">
+        <span class="run-n">3</span>
+        <div>
+          <div class="run-t">pick</div>
+          <p>They recommend an executor. You confirm, override, or reject. <b>This gate cannot be skipped.</b></p>
+        </div>
+      </div>
+      <div class="run-step">
+        <span class="run-n">4</span>
+        <div>
+          <div class="run-t">execute</div>
+          <p>The chosen tool builds the plan in an isolated git worktree. You get a clean, reviewable diff.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
 
-<span class="c"># Build the release binary</span>
+<!-- ── Weighs nothing ──────────────────────────────────────── -->
+<section class="band">
+  <div class="wrap">
+    <p class="kicker">// the receipts</p>
+    <h2>Heavy on ideas.<br/><span class="accent">Light on disk.</span></h2>
+    <div class="stats">
+      <div class="stat"><div class="stat-n" data-count="1.2">1.2</div><div class="stat-u">MB binary</div><p>The whole terminal. Rust, size-optimized, statically built.</p></div>
+      <div class="stat"><div class="stat-n" data-count="7.9">7.9</div><div class="stat-u">k lines of Rust</div><p>A UI-agnostic core; every tool is one small adapter.</p></div>
+      <div class="stat"><div class="stat-n" data-count="0">0</div><div class="stat-u">telemetry · cloud</div><p>Runs entirely on your machine against your own keys.</p></div>
+      <div class="stat"><div class="stat-n keep">∞</div><div class="stat-u">models, eventually</div><p>Gemini, Aider, whatever's next — add an adapter, done.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Demo ────────────────────────────────────────────────── -->
+<section class="band alt">
+  <div class="wrap">
+    <p class="kicker">// 27 seconds</p>
+    <h2>Watch a real run.</h2>
+    <div class="term demo-term">
+      <div class="term-bar">
+        <span class="tdot r"></span><span class="tdot y"></span><span class="tdot g"></span>
+        <span class="term-name">tales — demo</span>
+      </div>
+      <div class="demo-wrap">
+        <video id="demo-video" src="tales-demo.mp4" muted loop playsinline preload="none"></video>
+        <button class="demo-play" id="demo-play" data-playing="false" aria-label="Play video">
+          <svg viewBox="0 0 24 24" fill="currentColor" class="i-play"><polygon points="6,4 20,12 6,20"/></svg>
+          <svg viewBox="0 0 24 24" fill="currentColor" class="i-pause"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Quickstart ──────────────────────────────────────────── -->
+<section id="start" class="band">
+  <div class="wrap">
+    <p class="kicker">// quickstart</p>
+    <h2>Up in two minutes.</h2>
+    <div class="term code-term">
+      <div class="term-bar">
+        <span class="tdot r"></span><span class="tdot y"></span><span class="tdot g"></span>
+        <span class="term-name">bash</span>
+      </div>
+      <pre class="code"><span class="c"># build it (needs Rust + the claude / codex CLIs on PATH)</span>
+<span class="p">git</span> clone https://github.com/cesarfrancots/tales && <span class="p">cd</span> tales
 <span class="p">cargo</span> build --release
 
-<span class="c"># Export your API keys</span>
-<span class="k">export</span> <span class="v">ANTHROPIC_API_KEY</span>=sk-ant-...
-<span class="k">export</span> <span class="v">OPENAI_API_KEY</span>=sk-...
+<span class="c"># open the terminal — connect your tools, then plan</span>
+<span class="p">tales</span>
 
-<span class="c"># Run with your task</span>
-<span class="p">./target/release/tales-tui</span> <span class="s">"add OAuth login"</span></pre>
-        </div>
-      </div>
-
+<span class="c"># or go straight in, scriptable:</span>
+<span class="p">tales</span> run <span class="s">"add OAuth login"</span> --drafter claude --critic codex --execute claude</pre>
     </div>
+    <p class="start-foot">
+      Full walkthrough in the <a href="docs.html">documentation</a> ·
+      the <code>landing/</code> page you're reading was built by Tales itself.
+    </p>
   </div>
 </section>
 
-<!-- ── Footer ────────────────────────────────────────────── -->
-<footer>
-  <div class="container footer-inner">
-    <a href="#" class="footer-brand">Tales<span>.</span></a>
-    <div class="footer-meta">
-      <a href="https://github.com/cesarfrancots/tales" target="_blank" rel="noopener">
-        <svg class="icon-github" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61-.546-1.385-1.335-1.755-1.335-1.755-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23a11.5 11.5 0 0 1 3-.405c1.02.005 2.045.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
-        cesarfrancots/tales
-      </a>
-      <span class="badge-mit">MIT License</span>
+<!-- ── Footer ──────────────────────────────────────────────── -->
+<footer class="foot">
+  <div class="wrap foot-inner">
+    <span class="brand"><span class="brand-caret">❯</span> tales</span>
+    <div class="foot-links">
+      <a href="docs.html">docs</a>
+      <a href="https://github.com/cesarfrancots/tales" target="_blank" rel="noopener">github</a>
+      <span class="mit">MIT</span>
     </div>
   </div>
+  <div class="wrap foot-sig">two models, one terminal, you on the trigger.</div>
 </footer>
 
 <script src="app.js" defer></script>

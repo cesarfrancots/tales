@@ -188,7 +188,10 @@ impl Manager {
         let mut child = match Command::new(&self.bin)
             .args(&args)
             .current_dir(PathBuf::from(&self.ctx.cwd))
-            .stdin(Stdio::null()) // avoid "reading from stdin" wait
+            // Non-interactive: the prompt is passed as an arg, so don't wait on
+            // stdin. (Codex still prints a benign "Reading additional input from
+            // stdin…" banner to stderr regardless — filtered in `stderr_task`.)
+            .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true)
@@ -294,12 +297,16 @@ impl Manager {
                     .and_then(Value::as_str)
                     .unwrap_or("turn failed")
                     .to_string();
+                // Surface the failure AS the turn's message so it lands in the
+                // transcript (and the next agent's context) instead of vanishing
+                // into a warn log — otherwise a failed turn reads as the agent
+                // saying nothing at all.
                 let _ = self
                     .events_tx
-                    .send(AgentEvent::Error {
+                    .send(AgentEvent::MessageFinal {
                         agent,
-                        message: msg,
-                        fatal: false,
+                        turn,
+                        text: format!("[turn failed: {msg}]"),
                     })
                     .await;
                 // `turn.failed` is terminal — no `turn.completed` will follow.
@@ -358,14 +365,16 @@ impl Manager {
             // reasoning is internal; ignore for the console feed.
             Some("reasoning") => {}
             // Everything else (command_execution, file_change, mcp_tool_call,
-            // web_search, …) is surfaced as a tool activity.
+            // web_search, …) is surfaced as a tool activity — with a human
+            // summary of what it actually did, not just the wire-type name (so
+            // the Codex feed isn't a wall of identical "command_execution").
             Some(other) => {
                 let _ = self
                     .events_tx
                     .send(AgentEvent::ToolCall {
                         agent,
                         turn,
-                        name: other.to_string(),
+                        name: codex_tool_summary(other, item),
                         input: item.clone(),
                     })
                     .await;
@@ -378,8 +387,125 @@ impl Manager {
 async fn stderr_task(stderr: tokio::process::ChildStderr, agent: AgentId) {
     let mut lines = BufReader::new(stderr).lines();
     while let Ok(Some(line)) = lines.next_line().await {
-        if !line.trim().is_empty() {
-            tracing::warn!(%agent, "codex stderr: {line}");
+        let t = line.trim();
+        if t.is_empty() {
+            continue;
         }
+        // Codex prints benign banners and (user-side) MCP transport chatter to
+        // stderr that are NOT turn failures. Logging them at `warn` makes them
+        // read like Tales errored — and on a shared console they interleave into
+        // the discussion. Demote the known-benign ones to `debug`.
+        if is_benign_codex_noise(t) {
+            tracing::debug!(%agent, "codex: {t}");
+        } else {
+            tracing::warn!(%agent, "codex stderr: {t}");
+        }
+    }
+}
+
+/// True for Codex stderr lines that are noise relative to the turn — its
+/// non-interactive banner and chatter from the user's own MCP servers (e.g. an
+/// unauthenticated remote MCP), neither of which means the turn failed.
+fn is_benign_codex_noise(line: &str) -> bool {
+    const NOISE: &[&str] = &[
+        "Reading additional input from stdin",
+        "rmcp::transport",
+        "worker quit with fatal",
+        "Transport channel closed",
+        "AuthRequired",
+        "oauth-protected-resource",
+    ];
+    NOISE.iter().any(|n| line.contains(n))
+}
+
+/// Build a human-readable summary of a Codex `item.completed` tool event, so the
+/// feed shows what it did (`command_execution: git diff --stat`) instead of a
+/// wall of identical wire-type names. Falls back to the type name if no useful
+/// field is present, so an unexpected payload shape never regresses.
+fn codex_tool_summary(kind: &str, item: &Value) -> String {
+    const KEYS: &[&str] = &[
+        "command",
+        "cmd",
+        "parsed_cmd",
+        "path",
+        "query",
+        "tool",
+        "name",
+        "aggregated_output",
+    ];
+    for k in KEYS {
+        if let Some(v) = item.get(k) {
+            if let Some(s) = value_brief(v) {
+                let s = s.trim();
+                if !s.is_empty() {
+                    return format!("{kind}: {}", truncate(s, 80));
+                }
+            }
+        }
+    }
+    kind.to_string()
+}
+
+/// First useful single line from a JSON value: a string's first line, or a
+/// string array joined (e.g. Codex's `["bash","-lc","git diff"]`).
+fn value_brief(v: &Value) -> Option<String> {
+    if let Some(s) = v.as_str() {
+        return Some(s.lines().next().unwrap_or(s).to_string());
+    }
+    if let Some(arr) = v.as_array() {
+        let parts: Vec<&str> = arr.iter().filter_map(Value::as_str).collect();
+        if !parts.is_empty() {
+            return Some(parts.join(" "));
+        }
+    }
+    None
+}
+
+/// Truncate to `max` chars with an ellipsis, on a char boundary.
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn tool_summary_uses_real_command_not_wire_type() {
+        let item =
+            json!({ "type": "command_execution", "command": ["bash", "-lc", "git diff --stat"] });
+        assert_eq!(
+            codex_tool_summary("command_execution", &item),
+            "command_execution: bash -lc git diff --stat"
+        );
+        // file_change → the path.
+        let fc = json!({ "type": "file_change", "path": "src/main.rs" });
+        assert_eq!(
+            codex_tool_summary("file_change", &fc),
+            "file_change: src/main.rs"
+        );
+    }
+
+    #[test]
+    fn tool_summary_falls_back_to_kind_when_no_useful_field() {
+        let item = json!({ "type": "mystery", "weird": 1 });
+        assert_eq!(codex_tool_summary("mystery", &item), "mystery");
+    }
+
+    #[test]
+    fn benign_noise_is_classified() {
+        assert!(is_benign_codex_noise(
+            "Reading additional input from stdin..."
+        ));
+        assert!(is_benign_codex_noise(
+            "ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(...)"
+        ));
+        assert!(!is_benign_codex_noise("error: rate limit exceeded"));
     }
 }

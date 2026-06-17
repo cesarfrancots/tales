@@ -29,7 +29,9 @@ pub enum OrchestratorEvent {
     UserMessage { text: String },
     /// An agent invoked a tool (edit, bash, …).
     ToolActivity { agent: AgentId, summary: String },
-    /// An agent finished a turn; `cost_usd` is the cumulative reported cost.
+    /// An agent finished a turn. `cost_usd` is the session-cumulative cost as
+    /// reported by the tool (Claude), or `None` when the tool reports no machine
+    /// cost (Codex, Open Code) — so it is a running total, not a per-turn delta.
     TurnComplete {
         agent: AgentId,
         cost_usd: Option<f64>,

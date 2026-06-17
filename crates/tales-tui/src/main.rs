@@ -17,6 +17,7 @@ mod theme;
 
 use std::io::Stdout;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use clap::Parser;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
@@ -335,10 +336,20 @@ async fn run_ui(
     let commands = bus.commands();
 
     loop {
+        app.tick(); // advance the smooth-reveal + spinner animation
         terminal.draw(|f| draw(f, &app))?;
         if app.should_quit {
             break;
         }
+
+        // Wake at ~30fps while text is animating (so reveal stays smooth even
+        // when no events arrive), and idle slowly otherwise. Keys/events still
+        // wake the loop immediately.
+        let frame = if app.is_animating() {
+            Duration::from_millis(33)
+        } else {
+            Duration::from_millis(200)
+        };
 
         tokio::select! {
             maybe_key = keys.next() => {
@@ -362,7 +373,14 @@ async fn run_ui(
                         }
                         (KeyCode::Backspace, _) => { app.input.pop(); }
                         (KeyCode::Esc, _) => { app.input.clear(); }
-                        (KeyCode::Char(c), _) => { app.input.push(c); }
+                        // At the gate, a bare digit picks that executor; otherwise type it.
+                        (KeyCode::Char(c), _) => {
+                            if let Some(cmd) = app.gate_pick(c) {
+                                let _ = commands.send(cmd).await;
+                            } else {
+                                app.input.push(c);
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -374,6 +392,7 @@ async fn run_ui(
                     Err(RecvError::Closed) => {}
                 }
             }
+            _ = tokio::time::sleep(frame) => {}
         }
     }
     Ok(())
@@ -558,7 +577,9 @@ mod render_tests {
             rationale: "best at writing the code".into(),
         });
         app.phase = "awaitingconfirmation".into();
+        app.awaiting = true;
         app.input = "focus on abuse cases".into();
+        app.advance(10.0); // reveal the buffered message bodies
 
         let mut term = ratatui::Terminal::new(TestBackend::new(74, 22)).unwrap();
         term.draw(|f| draw(f, &app)).unwrap();

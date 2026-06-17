@@ -1,164 +1,154 @@
-# Tales
+<div align="center">
 
-A lightweight multi-agent AI coding orchestrator. It drives multiple AI coding
-CLIs (Claude Code, Codex, Open Code) as subprocesses so they can collaborate on
-the **same project** in real time — debate a plan, code in isolated git
-worktrees, then **recommend who should execute** while requiring **your
-confirmation** before anything runs.
+# ❯ tales
 
-The unified console *is* the tool — it works like any other AI terminal (Claude
-Code, Codex, Warp), you just have more than one model in the room. Just type
-`tales`: it opens a terminal workspace with Tales as the default pane, plus
-sibling panes for shells and agent CLIs.
+### two AIs, one terminal, you on the trigger
 
-## Why CLIs, not the desktop apps
+**Tales** runs **Claude Code** and **Codex** (and **Open Code**) side by side in your terminal.
+They argue out a plan, recommend who should execute — and **nothing runs until you say so.**
 
-The desktop apps expose no way for another program to read their stream or inject
-messages. The CLIs are built for exactly this:
+[![MIT](https://img.shields.io/badge/license-MIT-2dd4bf?style=flat-square)](LICENSE)
+[![Rust](https://img.shields.io/badge/built%20with-Rust-c08cff?style=flat-square)](https://www.rust-lang.org)
+[![size](https://img.shields.io/badge/binary-1.2%20MB-5cb0ff?style=flat-square)](#weighs-almost-nothing)
+[![telemetry](https://img.shields.io/badge/telemetry-none-7ee0a3?style=flat-square)](#weighs-almost-nothing)
 
-- **Claude Code** — `claude -p --input-format stream-json --output-format
-  stream-json --include-partial-messages --verbose`: bidirectional realtime
-  streaming. Inject messages mid-turn, read tokens as they arrive.
-- **Codex** — `codex exec --json` (turn-based) + `codex exec resume`.
+[**Documentation**](https://cesarfrancots.github.io/tales/docs.html) · [**Website**](https://cesarfrancots.github.io/tales/) · [**Quickstart**](#quickstart)
 
-The asymmetry (Claude streams mid-turn, Codex works in discrete turns) is hidden
-behind a single capability flag, `AgentCaps::midturn_injection`. The engine and
-UI never branch on *which* tool — only on capabilities.
+</div>
+
+```console
+❯ tales "add OAuth login"
+
+  ▌ Claude Code  DRAFTER
+    middleware layer — passport.js + the Google strategy, wired into the
+    existing session store. small, isolated change.
+
+  ▌ Codex  CRITIC
+    approach is right. Claude has the better read on the current auth flow —
+    let it execute. I'll review the diff after.
+
+  ★ recommend  Claude Code
+  ▸ pick executor   [1] Claude Code   [2] Codex      ← you decide
+
+  You ▸ 1
+  ✓ Claude Code executing in an isolated git worktree…
+  ✓ done — clean diff ready for your review.
+```
+
+---
+
+## Why two?
+
+> One model has one opinion. **Two models have an argument.**
+
+A single agent commits to its first framing and runs with it. Tales puts two strong
+models with different priors in the same room: **one drafts, the other critiques**, and
+the disagreement surfaces the assumptions a solo run would have buried — *before* the diff,
+not after.
+
+This isn't a hunch; the field keeps re-discovering it:
+
+- **[OpenRouter model fusion](https://openrouter.ai)** blends several models for a stronger single answer.
+- **[AWS Kiro](https://kiro.dev)** splits spec-then-build across agents.
+
+Tales applies the same bet — *combine more than one model instead of trusting one* — where you
+already work: **your terminal.** It does it for **planning** (the live drafter/critic discussion)
+and gives you the tools to do it for **execution** (git-worktree isolation), with a human on
+the gate the whole time.
+
+| | |
+|---|---|
+| **drafter** | proposes the approach, writes the plan |
+| **critic** | pokes holes, asks the questions, names the trade-offs |
+| **you** | read the debate and pick the executor — a hard gate, nothing auto-runs |
+
+## Mix the room, tier the cost
+
+Tales isn't locked to two models or one vendor. **Any AI coding CLI can join** behind one
+small adapter — Claude Code, Codex, and Open Code today — and the room doesn't have to be
+uniform.
+
+The payoff is **tiered execution**: run your *smart, expensive* models on the part that
+matters — the plan and the argument — then hand the agreed plan to a *cheaper, faster* model
+to implement. You pay top dollar for judgment, not for typing.
+
+```sh
+# two strong models plan + argue, a cheap/fast one implements
+tales run "add OAuth login" \
+  --drafter claude --drafter-model opus \
+  --critic  codex  --critic-model  gpt-5 \
+  --execute opencode --execute-model <cheap-fast-model>
+```
+
+Live today in `tales run` via `--execute-model`. The core is already model- and tool-agnostic;
+bigger rooms (N planners) and same-tool tiering are what the CLI is growing into next.
+
+## Weighs almost nothing
+
+No Electron, no cloud, no account. The whole thing is small, native Rust.
+
+| | |
+|--:|:--|
+| **1.2 MB** | the `tales-tui` binary (size-optimized, statically built) |
+| **~7.9k** | lines of Rust across a UI-agnostic core + three frontends |
+| **0** | telemetry, cloud calls, or background daemons — runs on your machine, your keys |
+| **∞** | models, eventually — add an `AgentAdapter`, add a row, done |
+
+## Quickstart
+
+```sh
+# 1. build (needs Rust + the claude / codex CLIs installed & authenticated)
+git clone https://github.com/cesarfrancots/tales && cd tales
+cargo build --release          # → target/release: tales, tales-tui, tales-web
+
+# 2. open the terminal — connect your tools, then plan
+tales
+
+# 3. or go straight in, scriptable:
+tales run "add OAuth login" --drafter claude --critic codex --execute claude
+```
+
+Try the whole flow with **no API calls**: `tales-tui --demo`.
+
+## The flow
+
+1. **Connect** — pick which CLIs join: Claude Code, Codex, Open Code. Bring two; bring three.
+2. **Plan** *(default)* — they discuss in a live chat. Type to interject — you're a participant.
+3. **Pick** — they recommend an executor; you confirm, override (`/confirm <n>`), or reject. **This gate can't be skipped.**
+4. **Execute** — the chosen tool builds the plan in an isolated git worktree. You get a clean, reviewable diff.
+
+`/tales` from inside Claude Code or Codex opens the same terminal with that tool pre-connected.
 
 ## Architecture
 
-A Cargo workspace enforces a UI-agnostic core:
+A Cargo workspace with a strictly UI-agnostic core — frontends talk to it only through the bus.
 
-- **`tales-core`** — orchestration. Cannot depend on any frontend.
-  - `agent/` — the `AgentAdapter` trait + the Claude / Codex / Open Code
-    adapters, plus `KNOWN_TOOLS` + `make_adapter` (one registry the picker, the
-    CLI, and the orchestrator all read from).
-  - `event.rs` / `bus.rs` — the only core↔frontend contract (broadcast events,
-    mpsc commands), so a web dashboard drops in later with zero core changes.
-  - `supervisor.rs` — process lifecycle / zombie prevention.
-- **`tales-cli`** — the `tales` binary: bare `tales` or `tales term` opens the
-  terminal workspace; `solo` / `discuss` / `run` are the scriptable counterparts.
-- **`tales-tui`** — the `tales-tui` binary: the interactive terminal workspace
-  with a default Tales orchestrator pane and sibling shell/agent panes.
-- **`tales-web`** — the `tales-web` binary: a browser live chat (axum + WebSocket).
+- **`tales-core`** — the orchestrator. Every tool is one `AgentAdapter` emitting normalized
+  `AgentEvent`s; the wildly different CLIs (Claude's bidirectional `stream-json` vs Codex's
+  turn-based `exec`/`resume`) differ only through `AgentCaps` flags — never an `if claude {…}`.
+- **`tales-cli`** — the `tales` binary: bare `tales` opens the interactive terminal; `run` / `discuss` / `solo` are the scriptable counterparts.
+- **`tales-tui`** — the interactive terminal: connect → plan → pick → execute.
+- **`tales-web`** — a local browser view (axum + WebSocket) of the same session.
 
-All three frontends talk to the core *only* through the bus — adding `tales-web`
-needed zero changes to `tales-core`.
+Adding a tool (Gemini, Aider, …) is one adapter impl + one row in `KNOWN_TOOLS`; the picker,
+CLI, and orchestrator all read that registry. Full details in the
+[**documentation**](https://cesarfrancots.github.io/tales/docs.html).
+
+## Built by Tales
+
+This repo dogfoods itself. The [`landing/`](landing/) website *and* its
+[documentation](https://cesarfrancots.github.io/tales/docs.html) were produced **with Tales** —
+Claude Code and Codex drafting and reviewing each other through `tales discuss`, finalized
+against the source. Eat your own cooking.
 
 ## Status
 
-| Milestone | What | State |
-|---|---|---|
-| M0 | Workspace + event/command bus + stub frontend | ✅ done |
-| M1 | Process supervisor + Claude stream-json adapter (live tokens, tool calls, clean reaping) | ✅ done |
-| M2 | Codex adapter (exec + resume) behind the same trait | ✅ done |
-| M3 | Worktree manager (per-agent isolation, diffs) — *integration-tested* | ✅ done |
-| M4 | Orchestrator + discussion loop (drafter/critic) — *mock-tested + live Claude↔Codex* | ✅ done |
-| M5 | Recommendation stage + required confirmation gate — *gate-tested* | ✅ done |
-| M6 | Gated execution + git-worktree isolation + merge (`tales run --worktree`) | ✅ done |
-| M7 | **Live chat TUI** — watch + interject + decide (human-in-the-loop) | ✅ done |
-| M8 | Hardening — per-turn timeout, cancellable graceful-then-kill shutdown | ✅ core (`tales-web` future) |
-| — | Launcher skill (Claude Code + Codex commands) | ✅ done |
-| — | Interactive terminal workspace (Tales default pane, shell/agent panes, plan handoff) + Open Code adapter | ✅ done |
+`M0–M8` done: live multi-agent discussion, recommendation + a hard confirmation gate,
+git-worktree execution & merge, the interactive terminal workspace, and an Open Code adapter.
+Hardened against deadlocks and zombie processes; the test suite stays green on every change.
 
-Two adversarial-review passes (run as multi-agent Workflows) found **17 real
-bugs** total — 12 in the core (a Codex `turn.failed` deadlock, worktree merge
-misclassification, branch collisions, …) and 5 in the worktree/shutdown code
-(worktree+task leaks on error paths, per-turn-timeout not terminating the stuck
-agent, process-group kill for tool/MCP grandchildren, …) — all fixed.
+---
 
-### Watch in your browser (easiest)
-
-```sh
-cargo build
-./target/debug/tales-web "Design and build a rate limiter"   # then open http://127.0.0.1:7878
-./target/debug/tales-web "demo" --demo                        # no API calls
-```
-
-A local web page streams the Claude↔Codex chat live; type to interject, and
-click **Approve & run** (or **Reject**) at the gate. Nothing executes until you do.
-
-### The interactive terminal workspace (just type `tales`)
-
-```sh
-cargo build --release
-tales                       # opens Tales as the default terminal pane
-tales term                  # same as bare tales
-tales-tui --demo            # try the whole flow with no API calls
-tales-tui --classic         # old connect → prompt → plan screen
-```
-
-`tales` with no subcommand opens the terminal workspace:
-
-1. **Tales pane** — the default pane is the Tales orchestrator. Type the planning
-   prompt and press `Enter`; Claude/Codex discuss and draft the plan in place.
-2. **Terminal panes** — `Ctrl-N` opens a shell, `Ctrl-X` opens Codex, `Ctrl-L`
-   opens Claude Code, and `Ctrl-O` opens Open Code. `Tab` switches focus.
-3. **Observe / intervene** — focused agent panes receive your keystrokes
-   directly. `Ctrl-A` sends an explicit approval only when that pane is waiting.
-4. **Execute / hand off** — at the gate, `Enter` or `/confirm <n>` launches the
-   selected executor in its own live pane and sends it the Tales plan. You can
-   also focus any existing agent pane and press `Ctrl-S` to send the plan there.
-
-The legacy single-pane planner is still available with `tales-tui --classic`:
-connect tools, type a task, interject with chat commands, then confirm or reject
-the recommended executor.
-
-Launch from inside a harness via the bundled skill — `/tales` opens this same
-terminal with the harness you're in pre-connected: a Claude Code command
-(`.claude/commands/tales.md`) and a Codex prompt (`codex/prompts/tales.md`).
-See `skill/tales/SKILL.md`.
-
-You can also pre-connect / pre-fill explicitly, or pass a task to skip setup:
-
-```sh
-tales-tui --connect claude --connect codex
-tales-tui --connect claude --prefill "Design a rate limiter"
-tales-tui "Design and build a rate limiter" --drafter claude --critic codex  # immediate
-```
-
-### Non-interactive pipeline & the dogfood
-
-`tales run` is the scriptable full pipeline (discuss → recommend → auto-confirm
-an executor → execute):
-
-```sh
-tales run "Build X" --drafter codex --critic claude --execute claude --turns 2
-```
-
-**This project's own `landing/` page was built by Tales** using exactly that
-command — Codex drafted the plan, Claude critiqued it, both voted, and Claude
-Code executed it into `landing/index.html` + `landing/style.css`. Open
-`landing/index.html` in a browser. The executor is restricted to file-writing
-tools so it can't stall on an unapproved shell prompt in headless mode.
-
-Add `--worktree` to run the executor inside its own `git worktree` and merge the
-result back into the current branch (clean diff + reviewable hand-off):
-
-```sh
-tales run "Add a /health endpoint" --execute claude --worktree
-```
-
-### Try the live discussion (M4)
-
-```sh
-cargo build
-./target/debug/tales discuss --drafter claude --critic codex --turns 2 \
-  --drafter-model sonnet --sandbox read-only \
-  "Design a minimal rate limiter for a public REST API. Keep it to 5 bullet points."
-```
-
-Claude drafts, Codex critiques in real time, relayed through the orchestrator
-and streamed to your console.
-
-Full design: see the plan at
-`~/.claude/plans/i-want-to-create-lazy-willow.md`.
-
-## Try it (M1)
-
-```sh
-cargo build
-./target/debug/tales solo --model sonnet "Reply with exactly: hello from tales"
-```
-
-Requires the `claude` CLI installed and authenticated.
+<div align="center">
+<sub>two models, one terminal, you on the trigger · <a href="LICENSE">MIT</a></sub>
+</div>

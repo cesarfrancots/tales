@@ -32,8 +32,12 @@ A Cargo workspace enforces a UI-agnostic core:
   - `event.rs` / `bus.rs` — the only core↔frontend contract (broadcast events,
     mpsc commands), so a web dashboard drops in later with zero core changes.
   - `supervisor.rs` — process lifecycle / zombie prevention.
-- **`tales-cli`** — the `tales` binary; an M1 stub frontend driving one turn.
-- *(later)* `tales-tui` (ratatui) and `tales-web` (axum + WebSocket) as peers.
+- **`tales-cli`** — the `tales` binary (`solo` / `discuss` / `run`).
+- **`tales-tui`** — the `tales-tui` binary: the terminal live chat.
+- **`tales-web`** — the `tales-web` binary: a browser live chat (axum + WebSocket).
+
+All three frontends talk to the core *only* through the bus — adding `tales-web`
+needed zero changes to `tales-core`.
 
 ## Status
 
@@ -56,10 +60,20 @@ misclassification, branch collisions, …) and 5 in the worktree/shutdown code
 (worktree+task leaks on error paths, per-turn-timeout not terminating the stuck
 agent, process-group kill for tool/MCP grandchildren, …) — all fixed.
 
-### Live chat — watch Claude & Codex collaborate, and steer them
+### Watch in your browser (easiest)
 
 ```sh
 cargo build
+./target/debug/tales-web "Design and build a rate limiter"   # then open http://127.0.0.1:7878
+./target/debug/tales-web "demo" --demo                        # no API calls
+```
+
+A local web page streams the Claude↔Codex chat live; type to interject, and
+click **Approve & run** (or **Reject**) at the gate. Nothing executes until you do.
+
+### Live chat in the terminal
+
+```sh
 # real run (talk to them, decide the executor):
 ./target/debug/tales-tui "Design and build a rate limiter" --drafter claude --critic codex
 # try the UI with no API calls:

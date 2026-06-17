@@ -39,6 +39,16 @@ length), `--sandbox read-only|workspace-write` (Codex write policy), `--cwd PATH
 
 ## Start the live chat
 
+**Browser (easiest to watch):**
+
+```bash
+tales-web "Design and implement a rate limiter for our API"
+# then open http://127.0.0.1:7878 — watch the chat, type to interject,
+# click "Approve & run" at the gate. Add --demo for a no-API tour.
+```
+
+**Terminal:**
+
 ```bash
 # From the Tales repo (or anywhere the binaries are on PATH):
 tales-tui "Design and implement a rate limiter for our API" \

@@ -93,6 +93,11 @@
     content: "▌"; color: var(--dim); animation: blink 1s steps(2) infinite; margin-left: 1px;
   }
   @keyframes blink { 50% { opacity: 0; } }
+  /* thinking takes precedence over the cursor while the body is still empty */
+  .block.thinking .body::after {
+    content: "thinking…"; color: var(--dim); font-style: italic;
+    animation: blink 1.4s ease-in-out infinite; margin-left: 0;
+  }
   /* system lines — minimal, no card */
   .sys { color: var(--dim); font-size: 11.5px; padding: 1px 4px; display: flex; gap: 7px; }
   .sys .bullet { color: var(--faint); }
@@ -191,6 +196,11 @@
   function append(node) { const s = nearBottom(); stream.appendChild(node); if (s) toBottom(); }
 
   function displayOf(id) { return (names[id] && names[id].display) || '?'; }
+  function idByLabel(label) {
+    const L = (label || '').toLowerCase();
+    for (const id in names) if (names[id].label.toLowerCase() === L) return id;
+    return null;
+  }
   function classOf(label) {
     const l = (label || '').toLowerCase();
     return l === 'claude' ? 'claude' : l === 'codex' ? 'codex' : '';
@@ -241,7 +251,17 @@
         if (m.level === 'task') { taskEl.textContent = m.msg; document.title = 'tales · ' + m.msg; break; }
         if (m.level === 'done') { sys('session finished'); break; }
         const sp = /^(\S+) speaking as (\w+)/.exec(m.msg);
-        if (sp) { roleByLabel[sp[1].toLowerCase()] = sp[2]; break; }   // captured silently
+        if (sp) {
+          roleByLabel[sp[1].toLowerCase()] = sp[2];
+          const id = idByLabel(sp[1]);                 // show "thinking…" until output lands
+          if (id && !streaming[id]) {
+            const el = makeBlock(id, sp[1].toLowerCase());
+            el.classList.add('streaming', 'thinking');
+            append(el);
+            streaming[id] = el.querySelector('.body');
+          }
+          break;
+        }
         if (/executing with/.test(m.msg)) { sys(m.msg, 'rec'); break; }
         sys(m.msg, m.level === 'warn' ? 'warn' : '');
         break;
@@ -267,6 +287,7 @@
           body = el.querySelector('.body');
           streaming[m.agent] = body;
         }
+        body.parentElement.classList.remove('thinking');
         const s = nearBottom();
         body.textContent += m.text;
         if (s) toBottom();
@@ -281,7 +302,7 @@
           break;
         }
         if (body) {
-          body.parentElement.classList.remove('streaming');
+          body.parentElement.classList.remove('streaming', 'thinking');
           body.textContent = m.text;
           delete streaming[m.agent];
         } else {
@@ -298,12 +319,19 @@
         break;
       }
       case 'tool': sys('⚙ ' + displayOf(m.agent) + ' · ' + m.summary); break;
-      case 'turn_done':
-        if (streaming[m.agent]) { streaming[m.agent].parentElement.classList.remove('streaming'); delete streaming[m.agent]; }
+      case 'turn_done': {
+        const body = streaming[m.agent];
+        if (body) {
+          const block = body.parentElement;
+          if (block.classList.contains('thinking') && !body.textContent) block.remove();
+          else block.classList.remove('streaming', 'thinking');
+          delete streaming[m.agent];
+        }
         if (m.cost != null && lastBlock[m.agent] && lastBlock[m.agent].isConnected) {
           lastBlock[m.agent].querySelector('.meta').textContent = '$' + Number(m.cost).toFixed(4);
         }
         break;
+      }
       case 'recommendation': {
         recommended = m.executor;
         const disp = PRETTY[m.executor.toLowerCase()] || m.executor;

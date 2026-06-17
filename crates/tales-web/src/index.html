@@ -67,7 +67,18 @@
     font-size: 9.5px; color: var(--dim); border: 1px solid var(--border);
     border-radius: 4px; padding: 1px 5px; text-transform: uppercase; letter-spacing: .6px;
   }
-  .block .meta { margin-left: auto; font-size: 10.5px; color: var(--faint); }
+  .block .head { cursor: pointer; }
+  .block .caret { color: var(--faint); font-size: 9px; width: 8px; flex: none; transition: transform .12s; }
+  .block.collapsed .caret { transform: rotate(-90deg); }
+  .block.collapsed .body { display: none; }
+  .block .actions { margin-left: auto; display: flex; align-items: center; gap: 9px; }
+  .block .meta { font-size: 10.5px; color: var(--faint); }
+  .block .copy {
+    color: var(--faint); cursor: pointer; font-size: 10px; opacity: 0;
+    transition: opacity .12s, color .12s; user-select: none;
+  }
+  .block:hover .copy { opacity: 1; }
+  .block .copy:hover { color: var(--text); }
   .block .body { white-space: pre-wrap; color: var(--text); word-break: break-word; }
   .block.claude { border-left-color: var(--claude); }
   .block.claude .dot { background: var(--claude); } .block.claude .name { color: var(--claude); }
@@ -163,6 +174,7 @@
   const names = {};       // agentId -> { label, display }
   const roleByLabel = {}; // label -> "Drafter" | "Critic"
   const streaming = {};   // agentId -> body text node being streamed
+  const lastBlock = {};   // agentId -> most recent block element
   const seenCounts = {};  // base display name -> count (for duplicates)
   const candidates = [];  // labels available to execute
   let recommended = null;
@@ -191,12 +203,26 @@
     const display = who === 'you' ? 'You' : displayOf(id);
     const role = roleByLabel[(label || '').toLowerCase()];
     el.innerHTML =
-      '<div class="head"><span class="dot"></span>' +
+      '<div class="head"><span class="caret">▾</span><span class="dot"></span>' +
       '<span class="name"></span>' +
       (role ? '<span class="role"></span>' : '') +
-      '<span class="meta"></span></div><div class="body"></div>';
+      '<span class="actions"><span class="meta"></span><span class="copy">copy</span></span>' +
+      '</div><div class="body"></div>';
     el.querySelector('.name').textContent = display;
     if (role) el.querySelector('.role').textContent = role;
+    // Click the header to collapse/expand (navigable units, Warp-style).
+    el.querySelector('.head').addEventListener('click', (e) => {
+      if (e.target.classList.contains('copy')) return;
+      el.classList.toggle('collapsed');
+    });
+    // Per-block copy action.
+    el.querySelector('.copy').addEventListener('click', (e) => {
+      e.stopPropagation();
+      const t = el.querySelector('.body').textContent;
+      navigator.clipboard && navigator.clipboard.writeText(t);
+      const c = e.target; c.textContent = 'copied'; setTimeout(() => (c.textContent = 'copy'), 1100);
+    });
+    if (id) lastBlock[id] = el;
     return el;
   }
   function sys(text, extra) {
@@ -274,6 +300,9 @@
       case 'tool': sys('⚙ ' + displayOf(m.agent) + ' · ' + m.summary); break;
       case 'turn_done':
         if (streaming[m.agent]) { streaming[m.agent].parentElement.classList.remove('streaming'); delete streaming[m.agent]; }
+        if (m.cost != null && lastBlock[m.agent] && lastBlock[m.agent].isConnected) {
+          lastBlock[m.agent].querySelector('.meta').textContent = '$' + Number(m.cost).toFixed(4);
+        }
         break;
       case 'recommendation': {
         recommended = m.executor;

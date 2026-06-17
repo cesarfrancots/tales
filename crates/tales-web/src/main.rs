@@ -169,9 +169,16 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     }
     forwarder.abort();
 
-    // Last client out → shut the session down so no agent processes linger.
+    // Last client out → shut the session down so no agent processes linger,
+    // but allow a short grace for a transient reconnect (the page auto-retries).
     if state.clients.fetch_sub(1, Ordering::SeqCst) == 1 {
-        let _ = state.bus.commands().send(UserCommand::Shutdown).await;
+        let state = state.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            if state.clients.load(Ordering::SeqCst) == 0 {
+                let _ = state.bus.commands().send(UserCommand::Shutdown).await;
+            }
+        });
     }
 }
 

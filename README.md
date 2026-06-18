@@ -108,29 +108,37 @@ A **fair** test on a hard, execution-heavy task: implement a **regex engine**
 escapes), scored against **400 hidden cases** with Python's `re` as the oracle (solutions
 may not `import re`). Every condition **plans first, then executes** — apples-to-apples:
 
-| Condition (plan → execute) | Quality | What it actually cost |
+| Condition (plan → execute) | Quality | Cost |
 |---|:--:|---|
-| Codex — solo (high reasoning) | **100%** (400/400) | ~5 min wall-clock; the Codex CLI reports no USD |
-| Claude Opus 4.8 — solo (ultrathink) | **100%** (400/400) | the whole task on Opus — **~60k Opus tokens** |
-| **Tales** — Opus + Codex plan → **Haiku** executes | **100%** (400/400) | Opus planning **$0.47 (billed)** + the 347-line build on **~41k Haiku tokens** |
+| Codex — solo (gpt-5.5, high reasoning) | **100%** (400/400) | **$0.98** — measured from its token ledger (498K total: 85.5K uncached + 401K cached input, 11.7K output) |
+| Claude Opus 4.8 — solo (ultrathink) | **100%** (400/400) | **~$1–3** *(est.)* — whole task on Opus, ~60k blended tokens, no in/out split |
+| **Tales** — Opus + Codex plan → **Haiku** exec | **100%** (400/400) | **~$1.0** — Opus plan **$0.47** (billed) + Codex plan **$0.40** (measured) + Haiku build **~$0.12** *(est.)* |
 
 - **Quality is a flat tie.** Handed the Opus+Codex plan, the *cheap* Haiku executor wrote a
   flawless ~350-line engine — matching both strong solo models, zero failures on 400 cases.
-- **Tales runs the expensive thinking once, then writes cheap.** The bounded planning cost is
-  the only Opus spend ($0.47 billed); the bulk — the 347-line implementation — runs at **Haiku**
-  rates, whose output tokens are **~15× cheaper** than Opus. Opus-solo writes those 347 lines at
-  Opus rates. At list prices that puts Tales near **~$0.6–0.8** for this task vs **~$1–3** for
-  Opus-solo — same answer, lower bill.
-- **Tales is *not* faster.** The planning discussion adds latency; tiering buys cost and a
-  second opinion, not speed.
+- **The cost win is narrower than it looks — and only against the priciest model.** Tales runs
+  **two** frontier planners (Opus $0.47 + Codex $0.40 = $0.87) before the cheap Haiku executor
+  (~$0.12), landing at **~$1.0** — about the same as **Codex-solo's $0.98**, and below Opus-solo's
+  ~$1–3. On a task this size the double-planning overhead roughly cancels the cheap-executor
+  savings. Tiering pulls clearly ahead on cost only against an expensive solo model, or once the
+  implementation is big enough that running it on Haiku instead of a frontier model saves more
+  than two planners cost.
+- **Tales is *not* faster.** The planning discussion adds latency; tiering buys a second opinion
+  and (in the right regime) cost, not speed.
 
-> Honesty notes: the one hard USD figure is Tales' Opus planning, **$0.47**, from Tales' own cost
-> printer. Codex's CLI emits no USD, and the Opus-solo / Haiku figures are token counts converted
-> at list prices (Opus ≈ $15/$75, Haiku ≈ $1/$5 per M in/out) — so treat the dollar *ranges* as
-> estimates, not bills. Quality (100% / 100% / 100%) and the token counts are measured.
+> Honesty notes: **Codex is now priced precisely** — from its own per-call token ledger
+> (`~/.codex/sessions` rollout: 498,522 total tokens for the solo run, 52,202 for the Tales
+> critic) × **gpt-5.5 metered API rates** ($5 input / $0.50 cached input / $30 output per 1M,
+> cross-checked across OpenAI's developer docs, OpenRouter, and pricing aggregators). Tales' Opus
+> planning ($0.47) is from Tales' own cost printer. The Opus-solo (~60k blended tokens) and Haiku
+> (~41k tokens) figures lack an input/output split, so they stay estimates. Quality (100% / 100% /
+> 100%) and every token count are measured. These are metered API prices; usage run through a
+> ChatGPT/Claude subscription is bundled into the flat fee, not billed per-token.
 
-The honest takeaway: on a well-specified task a single strong model already aces, tiering just
-adds latency. Where it pays off is **execution-heavy** work — *same quality, lower cost.*
+The honest takeaway: on a well-specified task a single strong model already aces — and once you
+price all the planners, tiering doesn't undercut a *cheap* strong solo run. Where it pays off is
+**execution-heavy** work (where the cheap executor writes most of the tokens) and against
+**expensive** solo models — *same quality, lower bill in that regime, just not faster.*
 
 ## Quickstart
 

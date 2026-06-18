@@ -97,7 +97,7 @@ No Electron, no cloud, no account. The whole thing is small, native Rust.
 | | |
 |--:|:--|
 | **1.4 MB** | the `tales-tui` binary (size-optimized, statically built; `tales` 1.6 MB, `tales-web` 1.4 MB) |
-| **~9.0k** | lines of Rust across a UI-agnostic core + three frontends |
+| **~9.7k** | lines of Rust across a UI-agnostic core + three frontends |
 | **0** | telemetry, cloud calls, or background daemons — runs on your machine, your keys |
 | **∞** | models, eventually — add an `AgentAdapter`, add a row, done |
 
@@ -139,6 +139,23 @@ The honest takeaway: on a well-specified task a single strong model already aces
 price all the planners, tiering doesn't undercut a *cheap* strong solo run. Where it pays off is
 **execution-heavy** work (where the cheap executor writes most of the tokens) and against
 **expensive** solo models — *same quality, lower bill in that regime, just not faster.*
+
+### Closing the speed gap (parallel planning)
+
+That benchmark exposed two costs in the planning phase: the two planners ran **sequentially**
+(latency = the *sum* of their turns) and each turn **re-pasted the whole transcript** (redundant
+input tokens). Both are now fixed:
+
+- **Parallel rounds** — planners draft **concurrently** (round 1 independent, then one
+  synthesizes a merged plan while the other cross-reviews), so a round costs `max`, not `sum`.
+  Default for `tales run`/`discuss` (`--sequential` opts out); the live TUI stays sequential.
+- **Delta-only context** — adapters that resume their session (Codex/Claude/Open Code keep their
+  own history server-side) are sent only the *unseen* tail each turn, not the whole transcript —
+  a direct input-token cut.
+
+Synthetic proof (two stub planners, 4 turns @ 1s each): **2.88s parallel vs 4.28s sequential**.
+With real frontier models (30–60s/turn) the round-level `sum→max` saving scales up. A full live
+re-benchmark to put new end-to-end numbers here is the next step.
 
 ## Quickstart
 

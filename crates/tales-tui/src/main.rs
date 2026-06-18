@@ -44,7 +44,7 @@ use tales_core::event::{OrchestratorEvent, UserCommand};
 use tales_core::orchestrator::Orchestrator;
 
 use crate::app::App;
-use crate::connect::ConnectScreen;
+use crate::connect::{ConnectScreen, ToolChoice};
 use crate::prompt::{PromptOutcome, PromptScreen};
 use crate::theme::{ACCENT, DIM, TEXT};
 
@@ -76,6 +76,12 @@ struct Args {
     /// Model for the critic (optional).
     #[arg(long)]
     critic_model: Option<String>,
+    /// Reasoning effort for the drafter (e.g. Codex low|medium|high).
+    #[arg(long)]
+    drafter_effort: Option<String>,
+    /// Reasoning effort for the critic (e.g. Codex low|medium|high).
+    #[arg(long)]
+    critic_effort: Option<String>,
     /// Total discussion turns before the recommendation.
     #[arg(long, default_value_t = 4)]
     turns: usize,
@@ -100,20 +106,23 @@ struct Connection {
     tool: String,
     role: Role,
     model: Option<String>,
+    effort: Option<String>,
 }
 
-/// A two-agent roster (drafter, critic) by tool key, models defaulted.
+/// A two-agent roster (drafter, critic) by tool key, models/efforts defaulted.
 fn fixed_roster(drafter: &str, critic: &str) -> Vec<Connection> {
     vec![
         Connection {
             tool: drafter.to_string(),
             role: Role::Drafter,
             model: None,
+            effort: None,
         },
         Connection {
             tool: critic.to_string(),
             role: Role::Critic,
             model: None,
+            effort: None,
         },
     ]
 }
@@ -164,11 +173,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     tool: args.drafter.clone(),
                     role: Role::Drafter,
                     model: args.drafter_model.clone(),
+                    effort: args.drafter_effort.clone(),
                 },
                 Connection {
                     tool: args.critic.clone(),
                     role: Role::Critic,
                     model: args.critic_model.clone(),
+                    effort: args.critic_effort.clone(),
                 },
             ],
             task,
@@ -224,20 +235,22 @@ async fn interactive_setup(
     let mut prefill = args.prefill.clone().unwrap_or_default();
 
     loop {
-        let connected = match run_connect(terminal, keys, &preselect).await? {
+        let chosen = match run_connect(terminal, keys, &preselect).await? {
             Some(c) => c,
             None => return Ok(None),
         };
-        preselect = connected.clone();
-        match run_prompt(terminal, keys, &connected, &prefill).await? {
+        let keys_only: Vec<String> = chosen.iter().map(|c| c.key.clone()).collect();
+        preselect = keys_only.clone();
+        match run_prompt(terminal, keys, &keys_only, &prefill).await? {
             PromptOutcome::Start(task) => {
-                let roster = connected
+                let roster = chosen
                     .iter()
                     .enumerate()
-                    .map(|(i, k)| Connection {
-                        tool: k.clone(),
+                    .map(|(i, c)| Connection {
+                        tool: c.key.clone(),
                         role: if i == 0 { Role::Drafter } else { Role::Critic },
-                        model: None,
+                        model: c.model.clone(),
+                        effort: c.effort.clone(),
                     })
                     .collect();
                 return Ok(Some((roster, task)));
@@ -257,7 +270,7 @@ async fn run_connect(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     keys: &mut EventStream,
     preselect: &[String],
-) -> Result<Option<Vec<String>>, Box<dyn std::error::Error>> {
+) -> Result<Option<Vec<ToolChoice>>, Box<dyn std::error::Error>> {
     let mut screen = ConnectScreen::new(preselect);
     loop {
         terminal.draw(|f| screen.draw(f))?;
@@ -273,6 +286,8 @@ async fn run_connect(
                     (KeyCode::Up, _) | (KeyCode::Char('k'), _) => screen.up(),
                     (KeyCode::Down, _) | (KeyCode::Char('j'), _) => screen.down(),
                     (KeyCode::Char(' '), _) => screen.toggle(),
+                    (KeyCode::Char('m'), _) => screen.cycle_model(),
+                    (KeyCode::Char('e'), _) => screen.cycle_effort(),
                     (KeyCode::Enter, _) => {
                         if let Some(chosen) = screen.confirm() {
                             return Ok(Some(chosen));
@@ -490,8 +505,8 @@ async fn run_session(
                 .get(1)
                 .map(|c| c.tool.clone())
                 .unwrap_or_else(|| "codex".into());
-            orch.add_agent(Box::new(drafter), ctx(Uuid::new_v4(), &d_label, &cwd, None, &sandbox), Role::Drafter).await?;
-            orch.add_agent(Box::new(critic), ctx(Uuid::new_v4(), &c_label, &cwd, None, &sandbox), Role::Critic).await?;
+            orch.add_agent(Box::new(drafter), ctx(Uuid::new_v4(), &d_label, &cwd, None, None, &sandbox), Role::Drafter).await?;
+            orch.add_agent(Box::new(critic), ctx(Uuid::new_v4(), &c_label, &cwd, None, None, &sandbox), Role::Critic).await?;
         } else {
             let keys: Vec<String> = roster.iter().map(|c| c.tool.clone()).collect();
             validate_roster(&keys)?;
@@ -499,7 +514,14 @@ async fn run_session(
                 let adapter = make_adapter(&c.tool)?;
                 orch.add_agent(
                     adapter,
-                    ctx(Uuid::new_v4(), &c.tool, &cwd, c.model.clone(), &sandbox),
+                    ctx(
+                        Uuid::new_v4(),
+                        &c.tool,
+                        &cwd,
+                        c.model.clone(),
+                        c.effort.clone(),
+                        &sandbox,
+                    ),
                     c.role,
                 )
                 .await?;
@@ -520,12 +542,20 @@ async fn run_session(
     orch.shutdown().await;
 }
 
-fn ctx(agent: Uuid, label: &str, cwd: &Path, model: Option<String>, sandbox: &str) -> SpawnCtx {
+fn ctx(
+    agent: Uuid,
+    label: &str,
+    cwd: &Path,
+    model: Option<String>,
+    effort: Option<String>,
+    sandbox: &str,
+) -> SpawnCtx {
     SpawnCtx {
         agent,
         label: label.to_string(),
         cwd: cwd.to_path_buf(),
         model,
+        effort,
         permission_mode: "acceptEdits".to_string(),
         sandbox: sandbox.to_string(),
         allowed_tools: None,

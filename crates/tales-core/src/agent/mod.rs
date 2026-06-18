@@ -16,6 +16,7 @@ use crate::{AgentId, Result};
 
 pub mod claude;
 pub mod codex;
+pub mod generic;
 pub mod mock;
 pub mod opencode;
 
@@ -144,6 +145,9 @@ pub struct SpawnCtx {
     pub cwd: PathBuf,
     /// Model alias/id, or `None` for the CLI default.
     pub model: Option<String>,
+    /// Reasoning-effort level (e.g. Codex `low` | `medium` | `high`), or `None`
+    /// for the tool default. Only adapters whose tool advertises efforts use it.
+    pub effort: Option<String>,
     /// Pre-authorized permission mode (Claude) so headless runs never hang on a
     /// prompt. Ignored by adapters that don't use it.
     pub permission_mode: String,
@@ -156,9 +160,26 @@ pub struct SpawnCtx {
     pub allowed_tools: Option<Vec<String>>,
 }
 
-/// A tool Tales knows how to drive: its key, display name, CLI binary, and a
-/// one-line hint for installing it. Frontends use this to present a "connect
-/// your tools" picker without hard-coding the roster.
+/// Which built-in adapter drives a tool. Tools with a bespoke adapter name it
+/// here; everything else rides the stateless [`generic`] adapter, configured
+/// from the registry row — so hooking a new CLI is a data change, not new code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AdapterKind {
+    /// Claude Code — persistent bidirectional stream-json.
+    Claude,
+    /// Codex — turn-based `codex exec --json`.
+    Codex,
+    /// Open Code — turn-based `opencode run`, cwd-keyed session continuity.
+    OpenCode,
+    /// Any other turn-based CLI that prints its reply to stdout, driven by the
+    /// [`generic`] adapter via the row's `run_args` / `model_flag` / `prompt_flag`.
+    Generic,
+}
+
+/// A tool Tales knows how to drive: its key, display name, CLI binary, install
+/// hint, which adapter runs it, and the knobs a picker can offer (models,
+/// efforts). Frontends use this to present a "connect your tools" picker without
+/// hard-coding the roster. Adding a turn-based CLI is just a new row here.
 #[derive(Clone, Copy, Debug)]
 pub struct ToolInfo {
     /// Lowercase key used everywhere as the agent label (e.g. `"claude"`).
@@ -169,11 +190,31 @@ pub struct ToolInfo {
     pub bin: &'static str,
     /// How to install it, shown when it isn't found.
     pub install: &'static str,
+    /// Which built-in adapter drives this tool.
+    pub kind: AdapterKind,
+    /// Suggested model ids/aliases a picker can cycle through. Advisory — a user
+    /// can still pass any model string; empty means "no suggestions, type one".
+    pub models: &'static [&'static str],
+    /// Reasoning-effort levels this tool understands (e.g. Codex
+    /// `low`/`medium`/`high`), or empty if it has no effort knob.
+    pub efforts: &'static [&'static str],
+    /// `Generic` only: fixed args before the prompt (e.g. `["run"]` for a
+    /// `<bin> run <prompt>` CLI). Ignored by bespoke adapters.
+    pub run_args: &'static [&'static str],
+    /// `Generic` only: the flag that selects a model (e.g. `"--model"` / `"-m"`),
+    /// or `""` if the tool takes no model flag.
+    pub model_flag: &'static str,
+    /// `Generic` only: the flag the prompt is passed with (e.g. `"-p"`), or `""`
+    /// when the prompt is the trailing positional argument.
+    pub prompt_flag: &'static str,
 }
 
-/// Every tool Tales can connect, in display order. Adding a tool is a matter of
-/// implementing one [`AgentAdapter`] and adding a row here — the picker, the
-/// CLI, and the orchestrator all read from this list.
+/// Every tool Tales can connect, in display order. Tools with a bespoke adapter
+/// (`Claude` / `Codex` / `OpenCode`) name it via [`AdapterKind`]; the rest ride
+/// the stateless `Generic` adapter, so adding a turn-based CLI that prints to
+/// stdout is just a new row — the picker, the CLI, and the orchestrator all read
+/// from this list. The `Generic` rows below encode a best-effort non-interactive
+/// invocation; tweak `run_args`/`model_flag`/`prompt_flag` if a CLI differs.
 pub const KNOWN_TOOLS: &[ToolInfo] = &[
     ToolInfo {
         key: "claude",
@@ -181,18 +222,72 @@ pub const KNOWN_TOOLS: &[ToolInfo] = &[
         bin: "claude",
         install:
             "https://docs.anthropic.com/en/docs/claude-code  (npm i -g @anthropic-ai/claude-code)",
+        kind: AdapterKind::Claude,
+        models: &["opus", "sonnet", "haiku"],
+        efforts: &[],
+        run_args: &[],
+        model_flag: "",
+        prompt_flag: "",
     },
     ToolInfo {
         key: "codex",
         pretty: "Codex",
         bin: "codex",
         install: "npm i -g @openai/codex",
+        kind: AdapterKind::Codex,
+        models: &["gpt-5-codex", "gpt-5"],
+        efforts: &["low", "medium", "high"],
+        run_args: &[],
+        model_flag: "",
+        prompt_flag: "",
     },
     ToolInfo {
         key: "opencode",
         pretty: "Open Code",
         bin: "opencode",
         install: "npm i -g opencode-ai   (or: brew install sst/tap/opencode)",
+        kind: AdapterKind::OpenCode,
+        models: &[],
+        efforts: &[],
+        run_args: &["run"],
+        model_flag: "--model",
+        prompt_flag: "",
+    },
+    ToolInfo {
+        key: "gemini",
+        pretty: "Gemini CLI",
+        bin: "gemini",
+        install: "npm i -g @google/gemini-cli",
+        kind: AdapterKind::Generic,
+        models: &["gemini-2.5-pro", "gemini-2.5-flash"],
+        efforts: &[],
+        run_args: &[],
+        model_flag: "-m",
+        prompt_flag: "-p",
+    },
+    ToolInfo {
+        key: "glm",
+        pretty: "GLM",
+        bin: "glm",
+        install: "see your GLM/Zhipu CLI vendor for install",
+        kind: AdapterKind::Generic,
+        models: &[],
+        efforts: &[],
+        run_args: &[],
+        model_flag: "-m",
+        prompt_flag: "",
+    },
+    ToolInfo {
+        key: "kimi",
+        pretty: "Kimi",
+        bin: "kimi",
+        install: "see Moonshot Kimi CLI for install",
+        kind: AdapterKind::Generic,
+        models: &[],
+        efforts: &[],
+        run_args: &[],
+        model_flag: "-m",
+        prompt_flag: "",
     },
 ];
 
@@ -269,17 +364,27 @@ pub fn validate_roster(tool_keys: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Construct the adapter for a tool key (`claude` | `codex` | `opencode`). The
-/// single home for this mapping — frontends and the CLI all call it.
+/// Construct the adapter for a known tool key. Dispatches on the row's
+/// [`AdapterKind`]: bespoke adapters for Claude/Codex/Open Code, and the
+/// stateless [`generic`] adapter — configured from the row — for everything
+/// else. The single home for this mapping; frontends and the CLI all call it.
 pub fn make_adapter(name: &str) -> Result<Box<dyn AgentAdapter>> {
-    match name.to_lowercase().as_str() {
-        "claude" => Ok(Box::new(claude::ClaudeAdapter::new())),
-        "codex" => Ok(Box::new(codex::CodexAdapter::new())),
-        "opencode" => Ok(Box::new(opencode::OpenCodeAdapter::new())),
-        other => Err(crate::TalesError::Other(format!(
-            "unknown agent '{other}' (expected: claude | codex | opencode)"
-        ))),
-    }
+    let Some(info) = tool_info(name) else {
+        let known = KNOWN_TOOLS
+            .iter()
+            .map(|t| t.key)
+            .collect::<Vec<_>>()
+            .join(" | ");
+        return Err(crate::TalesError::Other(format!(
+            "unknown agent '{name}' (known: {known})"
+        )));
+    };
+    Ok(match info.kind {
+        AdapterKind::Claude => Box::new(claude::ClaudeAdapter::new()),
+        AdapterKind::Codex => Box::new(codex::CodexAdapter::new()),
+        AdapterKind::OpenCode => Box::new(opencode::OpenCodeAdapter::new()),
+        AdapterKind::Generic => Box::new(generic::GenericAdapter::from_info(info)),
+    })
 }
 
 /// The uniform interface over every AI tool.
@@ -320,5 +425,31 @@ mod registry_tests {
     fn make_adapter_knows_opencode() {
         assert!(make_adapter("opencode").is_ok());
         assert!(make_adapter("nope").is_err());
+    }
+
+    #[test]
+    fn make_adapter_builds_generic_tools() {
+        // Generic-kind rows (e.g. gemini) construct via the generic adapter.
+        assert!(make_adapter("gemini").is_ok());
+        assert!(make_adapter("glm").is_ok());
+    }
+
+    #[test]
+    fn every_known_tool_constructs() {
+        for t in KNOWN_TOOLS {
+            assert!(make_adapter(t.key).is_ok(), "{} failed to build", t.key);
+        }
+    }
+
+    #[test]
+    fn generic_rows_have_an_adapter_kind_and_bin() {
+        for t in KNOWN_TOOLS {
+            assert!(!t.bin.is_empty(), "{} has no bin", t.key);
+            if t.kind == AdapterKind::Generic {
+                // Generic rows must encode an invocation: a prompt is either the
+                // trailing positional (empty prompt_flag) or passed via a flag.
+                assert!(t.efforts.is_empty(), "{}: generic + efforts unsupported", t.key);
+            }
+        }
     }
 }

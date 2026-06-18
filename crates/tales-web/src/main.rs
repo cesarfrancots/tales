@@ -283,6 +283,7 @@ fn ctx(
         label: label.to_string(),
         cwd: cwd.to_path_buf(),
         model,
+        effort: None,
         permission_mode: "acceptEdits".to_string(),
         sandbox: sandbox.to_string(),
         allowed_tools,

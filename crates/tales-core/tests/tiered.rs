@@ -17,6 +17,7 @@ fn ctx(agent: Uuid, label: &str) -> SpawnCtx {
         label: label.to_string(),
         cwd: PathBuf::from("."),
         model: None,
+        effort: None,
         permission_mode: "default".to_string(),
         sandbox: "read-only".to_string(),
         allowed_tools: None,

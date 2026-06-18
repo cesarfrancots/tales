@@ -89,6 +89,15 @@ enum Command {
         /// on. Only valid when `--execute` isn't one of `--drafter`/`--critic`.
         #[arg(long)]
         execute_model: Option<String>,
+        /// Reasoning effort for the drafter (e.g. Codex low|medium|high).
+        #[arg(long)]
+        drafter_effort: Option<String>,
+        /// Reasoning effort for the critic (e.g. Codex low|medium|high).
+        #[arg(long)]
+        critic_effort: Option<String>,
+        /// Reasoning effort for a separate executor (e.g. Codex low|medium|high).
+        #[arg(long)]
+        execute_effort: Option<String>,
         #[arg(long, default_value_t = 4)]
         turns: usize,
         #[arg(long)]
@@ -295,6 +304,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             drafter_model,
             critic_model,
             execute_model,
+            drafter_effort,
+            critic_effort,
+            execute_effort,
             turns,
             cwd,
             sandbox,
@@ -308,6 +320,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 drafter_model,
                 critic_model,
                 execute_model,
+                drafter_effort,
+                critic_effort,
+                execute_effort,
                 turns,
                 cwd,
                 sandbox,
@@ -355,6 +370,7 @@ async fn run_solo(
         label: agent_name.clone(),
         cwd,
         model,
+        effort: None,
         permission_mode: "acceptEdits".to_string(),
         sandbox,
         allowed_tools: None,
@@ -450,6 +466,7 @@ async fn run_discuss(
         label: drafter.clone(),
         cwd: cwd.clone(),
         model: drafter_model,
+        effort: None,
         permission_mode: "acceptEdits".to_string(),
         sandbox: sandbox.clone(),
         allowed_tools: None,
@@ -459,6 +476,7 @@ async fn run_discuss(
         label: critic.clone(),
         cwd,
         model: critic_model,
+        effort: None,
         permission_mode: "acceptEdits".to_string(),
         sandbox,
         allowed_tools: None,
@@ -540,6 +558,7 @@ fn mk_ctx(
     label: &str,
     cwd: &std::path::Path,
     model: Option<String>,
+    effort: Option<String>,
     sandbox: &str,
     permission_mode: &str,
     allowed_tools: Option<Vec<String>>,
@@ -549,6 +568,7 @@ fn mk_ctx(
         label: label.to_string(),
         cwd: cwd.to_path_buf(),
         model,
+        effort,
         permission_mode: permission_mode.to_string(),
         sandbox: sandbox.to_string(),
         allowed_tools,
@@ -574,6 +594,9 @@ async fn run_pipeline(
     drafter_model: Option<String>,
     critic_model: Option<String>,
     execute_model: Option<String>,
+    drafter_effort: Option<String>,
+    critic_effort: Option<String>,
+    execute_effort: Option<String>,
     turns: usize,
     cwd: Option<String>,
     sandbox: String,
@@ -591,6 +614,13 @@ async fn run_pipeline(
         return Err(format!(
             "--execute-model is only valid when --execute ('{execute}') is a different tool \
              from --drafter/--critic (same-tool tiering isn't supported yet)"
+        )
+        .into());
+    }
+    if !separate_executor && execute_effort.is_some() {
+        return Err(format!(
+            "--execute-effort is only valid when --execute ('{execute}') is a different tool \
+             from --drafter/--critic"
         )
         .into());
     }
@@ -680,6 +710,7 @@ async fn run_pipeline(
                 &drafter,
                 &drafter_cwd,
                 drafter_model,
+                drafter_effort,
                 &sandbox,
                 "acceptEdits",
                 tools_for(&drafter),
@@ -694,6 +725,7 @@ async fn run_pipeline(
                 &critic,
                 &critic_cwd,
                 critic_model,
+                critic_effort,
                 &sandbox,
                 "acceptEdits",
                 tools_for(&critic),
@@ -712,6 +744,7 @@ async fn run_pipeline(
                     &execute,
                     &executor_cwd,
                     execute_model.clone(),
+                    execute_effort.clone(),
                     &sandbox,
                     "acceptEdits",
                     tools_for(&execute),

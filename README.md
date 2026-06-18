@@ -76,12 +76,19 @@ to implement. You pay top dollar for judgment, not for typing.
 # two strong models plan + argue, a cheap/fast one implements
 tales run "add OAuth login" \
   --drafter claude --drafter-model opus \
-  --critic  codex  --critic-model  gpt-5 \
-  --execute opencode --execute-model <cheap-fast-model>
+  --critic  codex  --critic-model  gpt-5  --critic-effort high \
+  --execute gemini --execute-model gemini-2.5-flash
 ```
 
-Live today in `tales run` via `--execute-model`. The core is already model- and tool-agnostic;
-bigger rooms (N planners) and same-tool tiering are what the CLI is growing into next.
+**Pick the model and the effort per seat.** Every participant takes its own `--<role>-model`
+and `--<role>-effort` (e.g. Codex `low`/`medium`/`high`), and in the interactive terminal the
+connect screen cycles both inline — `m` for model, `e` for effort.
+
+**Hooking a new tool is a row, not an adapter.** Tools with bespoke wiring (Claude Code, Codex,
+Open Code) name their adapter; any other turn-based CLI that prints its reply to stdout rides one
+shared *generic* adapter, configured from a registry row (`run_args` / `model_flag` /
+`prompt_flag`). Gemini, GLM, and Kimi ship as rows today; the connect screen auto-detects which
+CLIs are actually installed on every run. Adding Kiro, Aider, or your own is a one-line change.
 
 ## Weighs almost nothing
 
@@ -89,8 +96,8 @@ No Electron, no cloud, no account. The whole thing is small, native Rust.
 
 | | |
 |--:|:--|
-| **1.3 MB** | the `tales-tui` binary (size-optimized, statically built; `tales` 1.5 MB, `tales-web` 1.4 MB) |
-| **~8.3k** | lines of Rust across a UI-agnostic core + three frontends |
+| **1.4 MB** | the `tales-tui` binary (size-optimized, statically built; `tales` 1.6 MB, `tales-web` 1.4 MB) |
+| **~9.0k** | lines of Rust across a UI-agnostic core + three frontends |
 | **0** | telemetry, cloud calls, or background daemons — runs on your machine, your keys |
 | **∞** | models, eventually — add an `AgentAdapter`, add a row, done |
 

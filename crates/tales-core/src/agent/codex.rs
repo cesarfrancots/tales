@@ -154,6 +154,12 @@ impl Manager {
             args.push("-m".into());
             args.push(model.clone());
         }
+        // Reasoning effort is a config override (`-c key=value`), an exec-level
+        // flag, so it must precede the `resume` subcommand below.
+        if let Some(effort) = &self.ctx.effort {
+            args.push("-c".into());
+            args.push(format!("model_reasoning_effort={effort}"));
+        }
         // Images are attached with -i; Codex doesn't take PDFs this way, but the
         // prompt text already names every attachment.
         for a in attachments {
@@ -507,5 +513,48 @@ mod tests {
             "ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(...)"
         ));
         assert!(!is_benign_codex_noise("error: rate limit exceeded"));
+    }
+
+    fn mgr_with(model: Option<&str>, effort: Option<&str>) -> Manager {
+        let (tx, _rx) = mpsc::channel(8);
+        Manager {
+            bin: "codex".into(),
+            ctx: SpawnCtx {
+                agent: uuid::Uuid::new_v4(),
+                label: "codex".into(),
+                cwd: PathBuf::from("/tmp"),
+                model: model.map(String::from),
+                effort: effort.map(String::from),
+                permission_mode: "acceptEdits".into(),
+                sandbox: "workspace-write".into(),
+                allowed_tools: None,
+            },
+            events_tx: tx,
+            thread_id: None,
+            announced_session: false,
+            turn: 0,
+            pending: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn build_args_wires_model_and_effort() {
+        let m = mgr_with(Some("gpt-5-codex"), Some("high"));
+        let args = m.build_args("do the thing", &[]);
+        // model via -m
+        let mi = args.iter().position(|a| a == "-m").expect("-m present");
+        assert_eq!(args[mi + 1], "gpt-5-codex");
+        // effort via -c model_reasoning_effort=high, before the trailing prompt
+        let ci = args.iter().position(|a| a == "-c").expect("-c present");
+        assert_eq!(args[ci + 1], "model_reasoning_effort=high");
+        assert_eq!(args.last().map(String::as_str), Some("do the thing"));
+    }
+
+    #[test]
+    fn build_args_omits_effort_when_unset() {
+        let m = mgr_with(None, None);
+        let args = m.build_args("hi", &[]);
+        assert!(!args.iter().any(|a| a == "-c"));
+        assert!(!args.iter().any(|a| a == "-m"));
     }
 }

@@ -667,6 +667,7 @@ impl TalesPane {
                 tool: key.clone(),
                 role: if i == 0 { Role::Drafter } else { Role::Critic },
                 model: None,
+                effort: None,
             })
             .collect::<Vec<_>>();
 

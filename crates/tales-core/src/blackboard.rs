@@ -30,8 +30,15 @@ impl Blackboard {
 
     /// The whole discussion, formatted for feeding back to an agent.
     pub fn transcript_text(&self) -> String {
+        self.transcript_text_from(0)
+    }
+
+    /// The discussion from utterance `from` onward, formatted for an agent — the
+    /// "delta" a resumable agent hasn't seen yet (its own earlier turns already
+    /// live in its server-side session, so only the tail need be re-sent).
+    pub fn transcript_text_from(&self, from: usize) -> String {
         let mut out = String::new();
-        for u in &self.transcript {
+        for u in self.transcript.iter().skip(from) {
             out.push_str(&format!("[{} — {:?}]\n{}\n\n", u.label, u.role, u.text));
         }
         out

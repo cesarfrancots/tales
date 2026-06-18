@@ -73,6 +73,18 @@ pub struct Orchestrator {
     /// Agents shut down after a turn timeout — never scheduled again (sending to
     /// a dead command channel would otherwise abort the whole run).
     terminated: std::collections::HashSet<AgentId>,
+    /// Whether each agent's adapter resumes its session across turns (so its own
+    /// history lives server-side and need not be re-pasted into every prompt).
+    /// Captured from `AgentCaps::resumable` at enrollment; absent ⇒ false.
+    resumable: HashMap<AgentId, bool>,
+    /// How many transcript utterances each agent has already been shown, so a
+    /// resumable agent receives only the new tail (delta) — not the whole
+    /// transcript — each turn. Used by the sequential planning loop.
+    last_seen: HashMap<AgentId, usize>,
+    /// Run the planning discussion as parallel rounds (planners speak
+    /// concurrently) instead of sequential ping-pong. Off by default; the
+    /// human-in-the-loop `run_interactive` stays sequential regardless.
+    parallel_rounds: bool,
 }
 
 impl Orchestrator {
@@ -92,6 +104,9 @@ impl Orchestrator {
             media_delivered: HashMap::new(),
             skills: HashMap::new(),
             terminated: std::collections::HashSet::new(),
+            resumable: HashMap::new(),
+            last_seen: HashMap::new(),
+            parallel_rounds: false,
         }
     }
 
@@ -137,6 +152,19 @@ impl Orchestrator {
         self.turn_timeout = timeout;
     }
 
+    /// Whether this agent's adapter resumes its session across turns. Absent ⇒
+    /// false (the safe, full-context fallback used by stateless adapters).
+    fn is_resumable(&self, agent: AgentId) -> bool {
+        *self.resumable.get(&agent).unwrap_or(&false)
+    }
+
+    /// Run the planning discussion as parallel rounds — planners speak
+    /// concurrently, so a round costs `max` latency instead of `sum`. Off by
+    /// default; the human-in-the-loop path stays sequential regardless.
+    pub fn set_parallel_rounds(&mut self, on: bool) {
+        self.parallel_rounds = on;
+    }
+
     /// The current phase.
     pub fn phase(&self) -> Phase {
         self.phase
@@ -164,8 +192,11 @@ impl Orchestrator {
         }
         let agent = ctx.agent;
         let label = ctx.label.clone();
+        // Capture caps BEFORE spawn moves the adapter — drives delta/lean prompts.
+        let resumable = adapter.caps().resumable;
         let cmd_tx = adapter.spawn(ctx, self.events_tx.clone()).await?;
         self.cmd_txs.insert(agent, cmd_tx);
+        self.resumable.insert(agent, resumable);
         self.roster.push(RosterEntry {
             agent,
             label: label.clone(),
@@ -189,6 +220,17 @@ impl Orchestrator {
     pub async fn run_discussion(&mut self, task: &str, max_turns: usize) -> Result<String> {
         self.blackboard.task = task.to_string();
         self.set_phase(Phase::Planning);
+        if self.parallel_rounds {
+            self.run_discussion_parallel(task, max_turns).await?;
+        } else {
+            self.run_discussion_sequential(task, max_turns).await?;
+        }
+        Ok(self.blackboard.transcript_text())
+    }
+
+    /// Sequential ping-pong (drafter→critic→…). Resumable planners get only the
+    /// unseen delta each turn; stateless ones get the full transcript.
+    async fn run_discussion_sequential(&mut self, task: &str, max_turns: usize) -> Result<()> {
         let mut conductor = RuleConductor::new(self.roster.clone(), max_turns);
 
         while let Some(plan) = conductor.next_turn(&self.blackboard) {
@@ -197,15 +239,23 @@ impl Orchestrator {
             if self.terminated.contains(&plan.agent) {
                 continue;
             }
-            let prompt = compose_prompt(plan.role, task, &self.blackboard);
+            let resumable = self.is_resumable(plan.agent);
+            let seen = *self.last_seen.get(&plan.agent).unwrap_or(&0);
+            let first_time = !self.last_seen.contains_key(&plan.agent);
+            let delta = self.blackboard.transcript_text_from(seen);
+            let prompt = compose_prompt(plan.role, task, &self.blackboard, resumable, &delta, first_time);
             self.bus.emit(OrchestratorEvent::Log {
                 level: "info".to_string(),
                 msg: format!("→ {} speaking as {:?}", plan.label, plan.role),
             });
 
-            let tx = self.cmd_txs.get(&plan.agent).ok_or_else(|| {
-                TalesError::Other(format!("no command channel for {}", plan.agent))
-            })?;
+            let tx = self
+                .cmd_txs
+                .get(&plan.agent)
+                .ok_or_else(|| {
+                    TalesError::Other(format!("no command channel for {}", plan.agent))
+                })?
+                .clone();
             tx.send(AgentCommand::StartTurn {
                 prompt,
                 attachments: Vec::new(),
@@ -216,9 +266,212 @@ impl Orchestrator {
             let text = self.collect_turn(plan.agent).await?;
             self.blackboard
                 .record(plan.label.clone(), plan.role, no_output_placeholder(text));
+            // The agent has now seen everything up to and including its own turn.
+            self.last_seen
+                .insert(plan.agent, self.blackboard.transcript.len());
+        }
+        Ok(())
+    }
+
+    /// Parallel rounds: planners speak CONCURRENTLY, so a round costs `max`
+    /// latency, not `sum`. Round 1 = independent drafts; later rounds = the
+    /// roster-first planner SYNTHESIZES a merged plan while the other(s) run an
+    /// adversarial cross-review. Results are recorded in roster order so the
+    /// transcript stays deterministic regardless of who finished first.
+    async fn run_discussion_parallel(&mut self, task: &str, max_turns: usize) -> Result<()> {
+        let rounds = self.round_count(max_turns);
+        let mut prev: HashMap<AgentId, String> = HashMap::new();
+        for round in 0..rounds {
+            if self.active_planner_count() == 0 {
+                break;
+            }
+            prev = self.run_one_round(task, round, &prev).await?;
+        }
+        Ok(())
+    }
+
+    /// Rounds to run in the parallel path: keep ~the same contributions per
+    /// planner as the sequential default (4 turns / 2 planners = 2 each → 2
+    /// rounds), but always ≥2 so there is a draft round and a synthesis round.
+    fn round_count(&self, max_turns: usize) -> usize {
+        let n = self
+            .roster
+            .iter()
+            .filter(|r| r.role.is_planner())
+            .count()
+            .max(1);
+        (max_turns / n).clamp(2, 6)
+    }
+
+    /// Planners still in play (not timed out) — when this hits zero the rounds
+    /// loop stops.
+    fn active_planner_count(&self) -> usize {
+        self.roster
+            .iter()
+            .filter(|r| r.role.is_planner() && !self.terminated.contains(&r.agent))
+            .count()
+    }
+
+    /// Run ONE parallel planning round: fire every active planner concurrently
+    /// (round 0 = independent drafts; later rounds = roster-first SYNTHESIZES a
+    /// merged plan while the rest cross-review), collect them off the shared
+    /// stream via [`Self::collect_round`], and record in deterministic roster
+    /// order. Returns this round's per-planner output to feed the next round's
+    /// delta. Shared by the batch (`run_discussion`) and interactive paths.
+    async fn run_one_round(
+        &mut self,
+        task: &str,
+        round: usize,
+        prev: &HashMap<AgentId, String>,
+    ) -> Result<HashMap<AgentId, String>> {
+        let active: Vec<RosterEntry> = self
+            .roster
+            .iter()
+            .filter(|r| r.role.is_planner() && !self.terminated.contains(&r.agent))
+            .cloned()
+            .collect();
+        if active.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let synth = active.first().map(|e| e.agent);
+
+        for entry in &active {
+            let resumable = self.is_resumable(entry.agent);
+            let prompt = if round == 0 {
+                compose_round1_prompt(task)
+            } else {
+                let others: String = active
+                    .iter()
+                    .filter(|o| o.agent != entry.agent)
+                    .filter_map(|o| prev.get(&o.agent))
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("\n\n---\n\n");
+                let own = prev.get(&entry.agent).cloned().unwrap_or_default();
+                compose_round_synth_prompt(task, &others, Some(entry.agent) == synth, resumable, &own)
+            };
+            self.bus.emit(OrchestratorEvent::TurnStarted {
+                agent: entry.agent,
+                role: format!("{:?}", entry.role),
+            });
+            let attachments = self.media_for(entry.agent);
+            let tx = self
+                .cmd_txs
+                .get(&entry.agent)
+                .ok_or_else(|| {
+                    TalesError::Other(format!("no command channel for {}", entry.agent))
+                })?
+                .clone();
+            tx.send(AgentCommand::StartTurn {
+                prompt,
+                attachments,
+            })
+            .await
+            .map_err(|e| TalesError::Other(format!("send to agent failed: {e}")))?;
         }
 
-        Ok(self.blackboard.transcript_text())
+        let active_ids: Vec<AgentId> = active.iter().map(|e| e.agent).collect();
+        let finals = self.collect_round(&active_ids).await;
+
+        // Record in roster order (deterministic) regardless of completion race,
+        // and return outputs for the next round's delta.
+        let mut out: HashMap<AgentId, String> = HashMap::new();
+        for entry in &active {
+            let text = no_output_placeholder(finals.get(&entry.agent).cloned().unwrap_or_default());
+            out.insert(entry.agent, text.clone());
+            self.blackboard.record(entry.label.clone(), entry.role, text);
+            self.last_seen
+                .insert(entry.agent, self.blackboard.transcript.len());
+        }
+        Ok(out)
+    }
+
+    /// Collect a whole PARALLEL round from the single shared event stream by
+    /// demultiplexing on each event's agent UUID into per-agent buffers — never
+    /// dropping a sibling's output the way `collect_turn` does. One absolute
+    /// deadline bounds the round; any planner that hasn't finished by then is
+    /// shut down, terminated, and reported, so a stuck agent can't hang the run.
+    async fn collect_round(&mut self, members: &[AgentId]) -> HashMap<AgentId, String> {
+        use std::collections::HashSet;
+        let mut pending: HashSet<AgentId> = members.iter().copied().collect();
+        let mut finals: HashMap<AgentId, String> = HashMap::new();
+        let deadline = tokio::time::Instant::now() + self.turn_timeout;
+
+        while !pending.is_empty() {
+            let event = match tokio::time::timeout_at(deadline, self.events_rx.recv()).await {
+                Ok(Some(e)) => e,
+                Ok(None) => break, // all senders dropped
+                Err(_elapsed) => {
+                    // Round budget exhausted — fail exactly the laggards.
+                    for a in pending.drain() {
+                        self.bus.emit(OrchestratorEvent::Log {
+                            level: "error".to_string(),
+                            msg: format!(
+                                "turn timed out after {:?}; terminating this agent",
+                                self.turn_timeout
+                            ),
+                        });
+                        if let Some(tx) = self.cmd_txs.get(&a) {
+                            let _ = tx.send(AgentCommand::Shutdown).await;
+                        }
+                        self.terminated.insert(a);
+                        self.bus
+                            .emit(OrchestratorEvent::TurnComplete { agent: a, cost_usd: None });
+                    }
+                    break;
+                }
+            };
+
+            let aid = event_agent(&event);
+            match event {
+                // Skill discovery can arrive for any agent — handle it regardless
+                // of round membership.
+                AgentEvent::Skills { agent, skills } => self.record_skills(agent, skills),
+                AgentEvent::TokenDelta { agent, text, .. } if pending.contains(&aid) => {
+                    self.bus.emit(OrchestratorEvent::Token { agent, text });
+                }
+                AgentEvent::MessageFinal { agent, text, .. } if pending.contains(&aid) => {
+                    finals.insert(agent, text.clone());
+                    self.bus.emit(OrchestratorEvent::Message { agent, text });
+                }
+                AgentEvent::ToolCall { agent, name, .. } if pending.contains(&aid) => {
+                    self.bus
+                        .emit(OrchestratorEvent::ToolActivity { agent, summary: name });
+                }
+                AgentEvent::TurnComplete {
+                    agent, cost_usd, ..
+                } if pending.contains(&aid) => {
+                    self.bus
+                        .emit(OrchestratorEvent::TurnComplete { agent, cost_usd });
+                    pending.remove(&agent);
+                }
+                AgentEvent::Error {
+                    agent,
+                    message,
+                    fatal,
+                } if pending.contains(&aid) => {
+                    self.bus.emit(OrchestratorEvent::Log {
+                        level: if fatal { "error" } else { "warn" }.to_string(),
+                        msg: message,
+                    });
+                    if fatal {
+                        self.bus
+                            .emit(OrchestratorEvent::TurnComplete { agent, cost_usd: None });
+                        pending.remove(&agent);
+                    }
+                }
+                AgentEvent::Exited { agent, code } if pending.contains(&aid) => {
+                    self.bus
+                        .emit(OrchestratorEvent::AgentExited { agent, code });
+                    self.bus
+                        .emit(OrchestratorEvent::TurnComplete { agent, cost_usd: None });
+                    pending.remove(&agent);
+                }
+                // Stray from a finished/foreign agent, or SessionReady/TurnStarted.
+                _ => {}
+            }
+        }
+        finals
     }
 
     /// Drain the shared event stream until the active agent finishes its turn,
@@ -446,6 +699,21 @@ impl Orchestrator {
             .cloned()
             .collect();
 
+        if self.parallel_rounds {
+            // Parallel rounds: planners speak concurrently each round, with human
+            // notes folded BETWEEN rounds (next-round, not next-speaker, semantics).
+            let rounds = self.round_count(max_turns);
+            let mut prev: HashMap<AgentId, String> = HashMap::new();
+            for round in 0..rounds {
+                if self.drain_user_notes(commands) {
+                    return Ok(RunOutcome::Aborted);
+                }
+                if self.active_planner_count() == 0 {
+                    break;
+                }
+                prev = self.run_one_round(task, round, &prev).await?;
+            }
+        } else {
         let mut turn_idx = 0;
         while turn_idx < max_turns && !planners.is_empty() {
             // Fold any pending human interjections into the conversation first.
@@ -458,7 +726,12 @@ impl Orchestrator {
                 turn_idx += 1;
                 continue;
             }
-            let prompt = compose_prompt(entry.role, task, &self.blackboard);
+            let resumable = self.is_resumable(entry.agent);
+            let seen = *self.last_seen.get(&entry.agent).unwrap_or(&0);
+            let first_time = !self.last_seen.contains_key(&entry.agent);
+            let delta = self.blackboard.transcript_text_from(seen);
+            let prompt =
+                compose_prompt(entry.role, task, &self.blackboard, resumable, &delta, first_time);
             self.bus.emit(OrchestratorEvent::TurnStarted {
                 agent: entry.agent,
                 role: format!("{:?}", entry.role),
@@ -468,20 +741,27 @@ impl Orchestrator {
                 msg: format!("{} speaking as {:?}", entry.label, entry.role),
             });
             let attachments = self.media_for(entry.agent);
+            let agent_id = entry.agent;
+            let label = entry.label.clone();
+            let role = entry.role;
             let tx = self
                 .cmd_txs
-                .get(&entry.agent)
-                .ok_or_else(|| TalesError::Other(format!("no channel for {}", entry.agent)))?;
+                .get(&agent_id)
+                .ok_or_else(|| TalesError::Other(format!("no channel for {agent_id}")))?
+                .clone();
             tx.send(AgentCommand::StartTurn {
                 prompt,
                 attachments,
             })
             .await
             .map_err(|e| TalesError::Other(format!("send failed: {e}")))?;
-            let text = self.collect_turn(entry.agent).await?;
+            let text = self.collect_turn(agent_id).await?;
             self.blackboard
-                .record(entry.label.clone(), entry.role, no_output_placeholder(text));
+                .record(label, role, no_output_placeholder(text));
+            self.last_seen
+                .insert(agent_id, self.blackboard.transcript.len());
             turn_idx += 1;
+        }
         }
 
         let _recommendation = self.run_recommendation().await?;
@@ -651,8 +931,57 @@ fn compose_vote_prompt(task: &str, candidates: &[String]) -> String {
     )
 }
 
-/// Build the prompt for a turn from its role and the discussion so far.
-fn compose_prompt(role: Role, task: &str, bb: &Blackboard) -> String {
+/// Build the prompt for a SEQUENTIAL planning turn. A *resumable* adapter keeps
+/// its own prior turns in its session, so it is sent only the role intro (the
+/// first time it speaks) plus the unseen `delta` — never the whole transcript
+/// re-pasted. A stateless adapter has no cross-turn memory, so it falls back to
+/// the full-context prompt below. `delta` is the transcript tail the agent
+/// hasn't been shown yet; `first_time` is whether it has spoken before.
+fn compose_prompt(
+    role: Role,
+    task: &str,
+    bb: &Blackboard,
+    resumable: bool,
+    delta: &str,
+    first_time: bool,
+) -> String {
+    if !resumable {
+        return compose_prompt_full(role, task, bb);
+    }
+    let delta = delta.trim();
+    match role {
+        Role::Drafter if first_time => format!(
+            "You are the DRAFTER collaborating with a critic.\n\
+             Task: {task}\n\n\
+             Write a first, concise draft of the plan/solution. \
+             Keep it tight — bullet points are fine."
+        ),
+        Role::Drafter => format!(
+            "The critic responded:\n{delta}\n\n\
+             Revise your draft to address these points. \
+             Be concise; show only the updated draft."
+        ),
+        Role::Critic if first_time => format!(
+            "You are the CRITIC reviewing a draft.\n\
+             Task: {task}\n\n\
+             Latest draft:\n{delta}\n\n\
+             List the concrete problems and the clarifying questions you'd \
+             ask. Be specific and brief — no preamble."
+        ),
+        Role::Critic => format!(
+            "The drafter revised:\n{delta}\n\n\
+             Critique the update — list the remaining problems and gaps. \
+             Be specific and brief."
+        ),
+        Role::Human | Role::Executor => task.to_string(),
+    }
+}
+
+/// The full-context prompt: re-sends the whole discussion and restates the role
+/// every turn. Used for stateless adapters (no session to resume), and it is the
+/// exact behavior the engine had before delta context — so the sequential path
+/// with a stateless adapter is byte-for-byte unchanged.
+fn compose_prompt_full(role: Role, task: &str, bb: &Blackboard) -> String {
     match role {
         Role::Drafter => {
             if bb.transcript.is_empty() {
@@ -686,5 +1015,140 @@ fn compose_prompt(role: Role, task: &str, bb: &Blackboard) -> String {
         // planning and run via `run_execution`. Neither is scheduled here — this
         // arm is a safe fallback, not a code path, so it must never panic.
         Role::Human | Role::Executor => task.to_string(),
+    }
+}
+
+/// Round-1 prompt for the PARALLEL path: each planner drafts INDEPENDENTLY (it
+/// hasn't seen the other yet), so a round costs `max(planners)` latency, not the
+/// sum. Two independent proposals then cross-pollinate — as good or better than
+/// serial drafter→critic, and far faster.
+fn compose_round1_prompt(task: &str) -> String {
+    format!(
+        "You are one of two expert planners working the SAME task in parallel.\n\
+         Task: {task}\n\n\
+         Produce your own concise, COMPLETE plan/solution — specific enough to \
+         implement directly. You'll be shown the other planner's proposal next to \
+         compare against. Bullet points are fine; no preamble."
+    )
+}
+
+/// Round-2+ prompt for the PARALLEL path. The synthesizer merges into one plan;
+/// the other planner runs an adversarial cross-review (preserving a real critique
+/// pass). `others` is the competing proposal(s) from the previous round; for a
+/// stateless adapter `own` (its own prior output) is included since it can't
+/// recall it.
+fn compose_round_synth_prompt(
+    task: &str,
+    others: &str,
+    synthesize: bool,
+    resumable: bool,
+    own: &str,
+) -> String {
+    let context = if resumable || own.trim().is_empty() {
+        format!("The other planner proposed:\n{}", others.trim())
+    } else {
+        format!(
+            "Your proposal:\n{}\n\nThe other planner proposed:\n{}",
+            own.trim(),
+            others.trim()
+        )
+    };
+    if synthesize {
+        format!(
+            "Task: {task}\n\n{context}\n\n\
+             Identify the concrete defects and missing edge cases in the competing \
+             proposal, then produce the SINGLE merged plan — resolve every conflict \
+             and keep the strongest ideas from both. Output only the final merged plan."
+        )
+    } else {
+        format!(
+            "Task: {task}\n\n{context}\n\n\
+             Adversarially review the competing proposal: list its concrete \
+             problems, risks, and missing edge cases an implementer must handle. \
+             Be specific and brief."
+        )
+    }
+}
+
+/// The agent an [`AgentEvent`] belongs to — used to demux a parallel round's
+/// interleaved events on the single shared stream.
+fn event_agent(e: &AgentEvent) -> AgentId {
+    match e {
+        AgentEvent::SessionReady { agent, .. }
+        | AgentEvent::Skills { agent, .. }
+        | AgentEvent::TurnStarted { agent, .. }
+        | AgentEvent::TokenDelta { agent, .. }
+        | AgentEvent::MessageFinal { agent, .. }
+        | AgentEvent::ToolCall { agent, .. }
+        | AgentEvent::TurnComplete { agent, .. }
+        | AgentEvent::Error { agent, .. }
+        | AgentEvent::Exited { agent, .. } => *agent,
+    }
+}
+
+#[cfg(test)]
+mod prompt_tests {
+    use super::*;
+
+    fn bb_with(items: &[(&str, Role, &str)]) -> Blackboard {
+        let mut bb = Blackboard::default();
+        for (label, role, text) in items {
+            bb.record(label.to_string(), *role, text.to_string());
+        }
+        bb
+    }
+
+    #[test]
+    fn resumable_revision_sends_only_the_delta_not_role_or_own_history() {
+        // A resumable drafter on a later turn: prompt carries the critic's delta,
+        // NOT the "You are the DRAFTER" intro and NOT its own earlier draft.
+        let bb = bb_with(&[
+            ("claude", Role::Drafter, "MY-OWN-DRAFT"),
+            ("codex", Role::Critic, "CRITIC-DELTA"),
+        ]);
+        let p = compose_prompt(Role::Drafter, "task", &bb, true, "CRITIC-DELTA", false);
+        assert!(p.contains("CRITIC-DELTA"), "delta missing: {p}");
+        assert!(!p.contains("You are the DRAFTER"), "re-sent role intro: {p}");
+        assert!(!p.contains("MY-OWN-DRAFT"), "re-pasted own history: {p}");
+    }
+
+    #[test]
+    fn resumable_first_turn_introduces_role() {
+        let bb = Blackboard::default();
+        let p = compose_prompt(Role::Critic, "task", &bb, true, "THE-DRAFT", true);
+        assert!(p.contains("You are the CRITIC"), "{p}");
+        assert!(p.contains("THE-DRAFT"), "{p}");
+    }
+
+    #[test]
+    fn stateless_adapter_keeps_full_context_behavior() {
+        // resumable=false → role restated and full transcript re-sent (unchanged
+        // pre-delta behavior), so existing stateless flows are byte-compatible.
+        let bb = bb_with(&[("claude", Role::Drafter, "EARLIER-DRAFT")]);
+        let p = compose_prompt(Role::Drafter, "task", &bb, false, "ignored", false);
+        assert!(p.contains("You are the DRAFTER"), "{p}");
+        assert!(p.contains("EARLIER-DRAFT"), "full transcript expected: {p}");
+    }
+
+    #[test]
+    fn round2_synth_merges_and_review_critiques() {
+        let synth = compose_round_synth_prompt("task", "OTHER-PLAN", true, true, "OWN");
+        assert!(synth.contains("OTHER-PLAN"));
+        assert!(synth.to_lowercase().contains("merged"));
+        // resumable synth doesn't re-paste its own proposal.
+        assert!(!synth.contains("OWN"), "{synth}");
+
+        let review = compose_round_synth_prompt("task", "OTHER-PLAN", false, true, "OWN");
+        assert!(review.to_lowercase().contains("review"));
+        assert!(review.contains("OTHER-PLAN"));
+    }
+
+    #[test]
+    fn stateless_round2_includes_own_proposal() {
+        // A stateless planner can't recall its round-1 output, so it must be
+        // re-sent alongside the competitor's.
+        let p = compose_round_synth_prompt("task", "OTHER-PLAN", true, false, "MY-PLAN");
+        assert!(p.contains("MY-PLAN"), "{p}");
+        assert!(p.contains("OTHER-PLAN"), "{p}");
     }
 }

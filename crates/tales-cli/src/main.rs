@@ -108,6 +108,11 @@ enum Command {
         /// into the current branch (requires a git repo).
         #[arg(long)]
         worktree: bool,
+        /// Plan sequentially (drafter→critic ping-pong) instead of the default
+        /// parallel rounds (both planners draft concurrently, then synthesize) —
+        /// the parallel path is faster and cuts per-turn re-sent context.
+        #[arg(long)]
+        sequential: bool,
     },
     /// Run a live drafter/critic discussion between two agents.
     Discuss {
@@ -134,6 +139,9 @@ enum Command {
         /// Codex sandbox policy.
         #[arg(long, default_value = "read-only")]
         sandbox: String,
+        /// Plan sequentially instead of the default parallel rounds.
+        #[arg(long)]
+        sequential: bool,
     },
     /// Open the terminal workspace in a NEW window — for harnesses with no TTY
     /// (the `/tales` command shells out to this). Deterministic: no AI reasoning
@@ -311,6 +319,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             cwd,
             sandbox,
             worktree,
+            sequential,
         } => {
             run_pipeline(
                 prompt,
@@ -327,6 +336,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 cwd,
                 sandbox,
                 worktree,
+                sequential,
             )
             .await
         }
@@ -339,6 +349,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             critic_model,
             cwd,
             sandbox,
+            sequential,
         } => {
             run_discuss(
                 prompt,
@@ -349,6 +360,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 critic_model,
                 cwd,
                 sandbox,
+                sequential,
             )
             .await
         }
@@ -450,6 +462,7 @@ async fn run_discuss(
     critic_model: Option<String>,
     cwd: Option<String>,
     sandbox: String,
+    sequential: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     tales_core::agent::validate_roster(&[drafter.clone(), critic.clone()])?;
     let cwd = cwd.map(PathBuf::from).unwrap_or(std::env::current_dir()?);
@@ -460,6 +473,8 @@ async fn run_discuss(
     let printer = spawn_printer(&bus);
 
     let mut orch = Orchestrator::new(bus.clone());
+    // Parallel rounds by default — planners draft concurrently, then synthesize.
+    orch.set_parallel_rounds(!sequential);
 
     let drafter_ctx = SpawnCtx {
         agent: Uuid::new_v4(),
@@ -601,6 +616,7 @@ async fn run_pipeline(
     cwd: Option<String>,
     sandbox: String,
     worktree: bool,
+    sequential: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let exec_lc = execute.to_lowercase();
     let exec_is_drafter = drafter.to_lowercase() == exec_lc;
@@ -703,6 +719,9 @@ async fn run_pipeline(
     // printer task and prune the executor's worktree (its on-disk dir + branch).
     let run_result: Result<RunOutcome, Box<dyn std::error::Error>> = async {
         let mut orch = Orchestrator::new(bus.clone());
+        // Parallel planning rounds by default (faster, less re-sent context); the
+        // round-2 synthesizer still runs a real cross-review. `--sequential` opts out.
+        orch.set_parallel_rounds(!sequential);
         orch.add_agent(
             make_adapter(&drafter)?,
             mk_ctx(

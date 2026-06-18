@@ -131,6 +131,7 @@
       <a href="#terminal">The interactive terminal</a>
       <a href="#commands">Scriptable commands</a>
       <a href="#tiered">Tiered execution</a>
+      <a href="#thesis">The bet &amp; benchmark</a>
     </div>
     <div class="grp">
       <div class="grp-h">Reference</div>
@@ -230,6 +231,35 @@
       <div class="note"><span class="ic">i</span><div>Live today in <code>tales run</code>. Bigger rooms (N planners) and same-tool tiering are on the roadmap; the core is already model- and tool-agnostic.</div></div>
     </section>
 
+    <section id="thesis">
+      <h2>The bet &amp; benchmark</h2>
+      <p>A single frontier model is the bar. <b>The bet behind Tales is that an orchestrated team of <i>cheaper</i> models can reach for it</b> — two strong-but-not-top models argue out the plan, a cheap fast model does the typing, a human holds the trigger. The aim is <b>frontier-class results at a lower blended cost</b>, <i>approaching</i> a model like Claude Fable&nbsp;5 — not a claim to beat it (Fable&nbsp;5 wasn't available to benchmark against). Here is the honest evidence so far.</p>
+
+      <h3>A fair, end-to-end test</h3>
+      <p>Implement a <b>regex engine</b> (<code>fullmatch(pattern, text)</code> over literals, <code>.</code>, <code>* + ?</code>, <code>|</code>, groups, character classes, escapes), scored against <b>400 hidden cases</b> with Python's <code>re</code> as the oracle (no <code>import re</code>). Two conditions, each producing a real <code>solution.py</code> that gets scored:</p>
+      <table>
+        <thead><tr><th>Condition</th><th>Wall-clock</th><th>Cost</th><th>Quality</th></tr></thead>
+        <tbody>
+          <tr><td><b>Opus 4.8 — solo</b> (plans + executes)</td><td>355s</td><td>$1.53</td><td>100%</td></tr>
+          <tr><td><b>Tales</b> — Opus+Codex plan → Haiku executes</td><td>481s</td><td>$1.74</td><td>100%</td></tr>
+        </tbody>
+      </table>
+      <p>On <i>this</i> task the single model won on every axis — <b>36% faster, 13% cheaper, same quality.</b> The reason is the point: a regex engine's difficulty lives <i>in the implementation</i>, not in separable boilerplate, so the cheap executor either shipped a systematic bug (43.8% blind) or iterated against tests until green (100%, but 47 rounds and ~4.6M cached tokens) — the iteration ate its per-token cost advantage. A frontier model just wrote it correctly in one pass.</p>
+
+      <h3>Where Tales beats a single model — and where it doesn't</h3>
+      <p>The deciding factor is the <b>shape</b> of the work, not its size:</p>
+      <ul>
+        <li><b>✅ Mechanically voluminous execution</b> — boilerplate, repetitive endpoints, broad migrations. The two-planner cost is roughly fixed and amortizes; the cheap executor applies its cheap rate to a lot of volume it doesn't need to be <i>smart</i> about. Bigger helps Tales here.</li>
+        <li><b>✅ Ambiguous, architecture-defining work</b> with no known-correct answer — two strong models arguing, plus a human gate, catch a bad design before it becomes a costly diff. A quality/risk play more than a cost/speed one.</li>
+        <li><b>❌ Algorithmically hard, self-contained tasks</b> where correctness <i>is</i> the implementation. The cheap executor's capability gap and the lossy plan handoff compound — bigger makes it worse, and one frontier model wins.</li>
+      </ul>
+
+      <h3>Parallel planning</h3>
+      <p>Planning used to run the two models <b>sequentially</b> (latency = the sum of their turns) and re-paste the whole transcript each turn. Both are fixed: planners now draft <b>concurrently</b> (round&nbsp;1 independent, then one synthesizes a merged plan while the other cross-reviews), and resumable adapters get only the unseen tail each turn. Live A/B on the same planning task: <b>250.8s sequential → 176.5s parallel — a 30% speedup</b> (the synthesis step adds some Opus output, so parallel runs ~20% pricier — a speed-for-cost trade). Default for <code>tales run</code>/<code>discuss</code>; <code>--sequential</code> opts out.</p>
+
+      <div class="note"><span class="ic">i</span><div><b>Honesty.</b> Single trial per arm — the <i>direction</i> is structural; exact percentages wobble. Costs are each tool's own meter at list prices (Opus 4.8 $5/$25, Haiku 4.5 $1/$5 per&nbsp;M; Codex from its token ledger × gpt-5.5 rates). We have <b>not</b> benchmarked against Fable&nbsp;5 — "frontier-class" is the target we're chasing, not a measured result.</div></div>
+    </section>
+
     <section id="tools">
       <h2>Supported tools</h2>
       <p>Tales is tool-agnostic — each tool is one small <code>AgentAdapter</code> + a registry row. These ship today and are valid values for <code>--agent</code> / <code>--drafter</code> / <code>--critic</code> / <code>--execute</code> and the connect screen:</p>
@@ -281,6 +311,7 @@
     <a href="#terminal">The terminal</a>
     <a href="#commands">Commands</a>
     <a href="#tiered">Tiered execution</a>
+    <a href="#thesis">The bet &amp; benchmark</a>
     <a href="#tools">Supported tools</a>
     <a href="#architecture">Architecture</a>
     <a href="#troubleshooting">Troubleshooting</a>

@@ -89,10 +89,41 @@ No Electron, no cloud, no account. The whole thing is small, native Rust.
 
 | | |
 |--:|:--|
-| **1.2 MB** | the `tales-tui` binary (size-optimized, statically built) |
-| **~7.9k** | lines of Rust across a UI-agnostic core + three frontends |
+| **1.3 MB** | the `tales-tui` binary (size-optimized, statically built; `tales` 1.5 MB, `tales-web` 1.4 MB) |
+| **~8.3k** | lines of Rust across a UI-agnostic core + three frontends |
 | **0** | telemetry, cloud calls, or background daemons — runs on your machine, your keys |
 | **∞** | models, eventually — add an `AgentAdapter`, add a row, done |
+
+## Benchmark — does tiering actually hold up?
+
+A **fair** test on a hard, execution-heavy task: implement a **regex engine**
+(`fullmatch(pattern, text)` over literals, `.`, `* + ?`, `|`, groups, character classes,
+escapes), scored against **400 hidden cases** with Python's `re` as the oracle (solutions
+may not `import re`). Every condition **plans first, then executes** — apples-to-apples:
+
+| Condition (plan → execute) | Quality | What it actually cost |
+|---|:--:|---|
+| Codex — solo (high reasoning) | **100%** (400/400) | ~5 min wall-clock; the Codex CLI reports no USD |
+| Claude Opus 4.8 — solo (ultrathink) | **100%** (400/400) | the whole task on Opus — **~60k Opus tokens** |
+| **Tales** — Opus + Codex plan → **Haiku** executes | **100%** (400/400) | Opus planning **$0.47 (billed)** + the 347-line build on **~41k Haiku tokens** |
+
+- **Quality is a flat tie.** Handed the Opus+Codex plan, the *cheap* Haiku executor wrote a
+  flawless ~350-line engine — matching both strong solo models, zero failures on 400 cases.
+- **Tales runs the expensive thinking once, then writes cheap.** The bounded planning cost is
+  the only Opus spend ($0.47 billed); the bulk — the 347-line implementation — runs at **Haiku**
+  rates, whose output tokens are **~15× cheaper** than Opus. Opus-solo writes those 347 lines at
+  Opus rates. At list prices that puts Tales near **~$0.6–0.8** for this task vs **~$1–3** for
+  Opus-solo — same answer, lower bill.
+- **Tales is *not* faster.** The planning discussion adds latency; tiering buys cost and a
+  second opinion, not speed.
+
+> Honesty notes: the one hard USD figure is Tales' Opus planning, **$0.47**, from Tales' own cost
+> printer. Codex's CLI emits no USD, and the Opus-solo / Haiku figures are token counts converted
+> at list prices (Opus ≈ $15/$75, Haiku ≈ $1/$5 per M in/out) — so treat the dollar *ranges* as
+> estimates, not bills. Quality (100% / 100% / 100%) and the token counts are measured.
+
+The honest takeaway: on a well-specified task a single strong model already aces, tiering just
+adds latency. Where it pays off is **execution-heavy** work — *same quality, lower cost.*
 
 ## Quickstart
 

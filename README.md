@@ -9,7 +9,7 @@ They argue out a plan, recommend who should execute — and **nothing runs until
 
 [![MIT](https://img.shields.io/badge/license-MIT-2dd4bf?style=flat-square)](LICENSE)
 [![Rust](https://img.shields.io/badge/built%20with-Rust-c08cff?style=flat-square)](https://www.rust-lang.org)
-[![size](https://img.shields.io/badge/binary-1.2%20MB-5cb0ff?style=flat-square)](#weighs-almost-nothing)
+[![size](https://img.shields.io/badge/binary-1.4%20MB-5cb0ff?style=flat-square)](#weighs-almost-nothing)
 [![telemetry](https://img.shields.io/badge/telemetry-none-7ee0a3?style=flat-square)](#weighs-almost-nothing)
 
 [**Documentation**](https://cesarfrancots.github.io/tales/docs.html) · [**Website**](https://cesarfrancots.github.io/tales/) · [**Quickstart**](#quickstart)
@@ -101,61 +101,77 @@ No Electron, no cloud, no account. The whole thing is small, native Rust.
 | **0** | telemetry, cloud calls, or background daemons — runs on your machine, your keys |
 | **∞** | models, eventually — add an `AgentAdapter`, add a row, done |
 
-## Benchmark — does tiering actually hold up?
+## The bet
 
-A **fair** test on a hard, execution-heavy task: implement a **regex engine**
-(`fullmatch(pattern, text)` over literals, `.`, `* + ?`, `|`, groups, character classes,
-escapes), scored against **400 hidden cases** with Python's `re` as the oracle (solutions
-may not `import re`). Every condition **plans first, then executes** — apples-to-apples:
+A single frontier model — the best one money can buy — is the bar. **The bet behind Tales is that
+an orchestrated team of *cheaper* models can reach for that bar**: two strong-but-not-top models
+argue out the plan, a cheap fast model does the typing, and a human holds the trigger. The aim is
+**frontier-class results at a lower blended cost** — *approaching* a model like Claude Fable 5,
+not a claim to beat it (we haven't benchmarked against Fable 5 — it wasn't available). What
+follows is the honest evidence so far: where this already pays off, and where one strong model is
+still the better tool.
 
-| Condition (plan → execute) | Quality | Cost |
-|---|:--:|---|
-| Codex — solo (gpt-5.5, high reasoning) | **100%** (400/400) | **$0.98** — measured from its token ledger (498K total: 85.5K uncached + 401K cached input, 11.7K output) |
-| Claude Opus 4.8 — solo (ultrathink) | **100%** (400/400) | **~$1–3** *(est.)* — whole task on Opus, ~60k blended tokens, no in/out split |
-| **Tales** — Opus + Codex plan → **Haiku** exec | **100%** (400/400) | **~$1.0** — Opus plan **$0.47** (billed) + Codex plan **$0.40** (measured) + Haiku build **~$0.12** *(est.)* |
+## Benchmark — where tiering helps, and where it doesn't
 
-- **Quality is a flat tie.** Handed the Opus+Codex plan, the *cheap* Haiku executor wrote a
-  flawless ~350-line engine — matching both strong solo models, zero failures on 400 cases.
-- **The cost win is narrower than it looks — and only against the priciest model.** Tales runs
-  **two** frontier planners (Opus $0.47 + Codex $0.40 = $0.87) before the cheap Haiku executor
-  (~$0.12), landing at **~$1.0** — about the same as **Codex-solo's $0.98**, and below Opus-solo's
-  ~$1–3. On a task this size the double-planning overhead roughly cancels the cheap-executor
-  savings. Tiering pulls clearly ahead on cost only against an expensive solo model, or once the
-  implementation is big enough that running it on Haiku instead of a frontier model saves more
-  than two planners cost.
-- **Tales is *not* faster.** The planning discussion adds latency; tiering buys a second opinion
-  and (in the right regime) cost, not speed.
+A **fair, end-to-end** test: implement a **regex engine** (`fullmatch(pattern, text)` over
+literals, `.`, `* + ?`, `|`, groups, character classes, escapes), scored against **400 hidden
+cases** with Python's `re` as the oracle (no `import re`). Two conditions, each producing a real
+`solution.py` that gets scored:
 
-> Honesty notes: **Codex is now priced precisely** — from its own per-call token ledger
-> (`~/.codex/sessions` rollout: 498,522 total tokens for the solo run, 52,202 for the Tales
-> critic) × **gpt-5.5 metered API rates** ($5 input / $0.50 cached input / $30 output per 1M,
-> cross-checked across OpenAI's developer docs, OpenRouter, and pricing aggregators). Tales' Opus
-> planning ($0.47) is from Tales' own cost printer. The Opus-solo (~60k blended tokens) and Haiku
-> (~41k tokens) figures lack an input/output split, so they stay estimates. Quality (100% / 100% /
-> 100%) and every token count are measured. These are metered API prices; usage run through a
-> ChatGPT/Claude subscription is bundled into the flat fee, not billed per-token.
+| Condition | Wall-clock | Cost | Quality |
+|---|--:|--:|:--:|
+| **Opus 4.8 — solo** (plans + executes) | **355s** | **$1.53** | 100% |
+| **Tales** — Opus+Codex plan → Haiku executes | 481s | $1.74 | 100% |
+| └ planning (two smart models, in parallel) | 176s | $1.00 | |
+| └ Haiku execution (iterates against `re` until green) | 304s | $0.74 | |
 
-The honest takeaway: on a well-specified task a single strong model already aces — and once you
-price all the planners, tiering doesn't undercut a *cheap* strong solo run. Where it pays off is
-**execution-heavy** work (where the cheap executor writes most of the tokens) and against
-**expensive** solo models — *same quality, lower bill in that regime, just not faster.*
+On *this* task the single model won on every axis — **36% faster, 13% cheaper, same quality.**
+The cheap-executor thesis lost here, and the reason is the point.
 
-### Closing the speed gap (parallel planning)
+**Why it lost.** A regex engine's difficulty lives *in the implementation* (greedy backtracking,
+empty-match termination, edge cases), not in separable boilerplate. So the cheap executor had two
+options, both bad: implement **blind** and ship a systematic bug (43.8%, 224 crashes), or
+**iterate against tests** until green — which it did (100%), but that took 47 tool-rounds and
+~4.6M cached tokens, $0.74 and 304s. The iteration-to-correctness ate the per-token cost
+advantage. Meanwhile Opus-solo wrote a correct ~350-line engine in one pass — and hit 100%
+*blind*, because the sandbox denied it a Python interpreter too.
 
-That benchmark exposed two costs in the planning phase: the two planners ran **sequentially**
-(latency = the *sum* of their turns) and each turn **re-pasted the whole transcript** (redundant
-input tokens). Both are now fixed:
+### Where Tales beats a single model — and where it doesn't
 
-- **Parallel rounds** — planners draft **concurrently** (round 1 independent, then one
-  synthesizes a merged plan while the other cross-reviews), so a round costs `max`, not `sum`.
-  Default for `tales run`/`discuss` (`--sequential` opts out); the live TUI stays sequential.
-- **Delta-only context** — adapters that resume their session (Codex/Claude/Open Code keep their
-  own history server-side) are sent only the *unseen* tail each turn, not the whole transcript —
-  a direct input-token cut.
+The deciding factor is the **shape** of the work, not its size:
 
-Synthetic proof (two stub planners, 4 turns @ 1s each): **2.88s parallel vs 4.28s sequential**.
-With real frontier models (30–60s/turn) the round-level `sum→max` saving scales up. A full live
-re-benchmark to put new end-to-end numbers here is the next step.
+- ✅ **Mechanically voluminous execution** — boilerplate, repetitive endpoints, broad migrations.
+  The two-planner cost is roughly fixed, so it amortizes; the cheap executor applies its cheap
+  rate to a lot of volume it doesn't need to be *smart* about. Here, bigger helps Tales.
+- ✅ **Ambiguous, architecture-defining work** with no known-correct answer — where two strong
+  models arguing, plus a human on the gate, catch a bad design before it becomes a costly diff.
+  A quality/risk play more than a cost/speed one.
+- ❌ **Algorithmically hard, self-contained tasks** where correctness *is* the implementation. The
+  cheap executor's capability gap and the lossy plan handoff both compound — bigger makes it
+  *worse*, and a single frontier model wins (our regex engine, scaled up).
+
+> Honesty notes: single trial per arm (the *direction* is structural; exact percentages wobble).
+> Costs are each tool's own meter — Opus/Haiku via Tales' cost printer at Anthropic list prices
+> (Opus 4.8 **$5/$25**, Haiku 4.5 **$1/$5** per M in/out), Codex from its `~/.codex/sessions`
+> token ledger × gpt-5.5 rates ($5 / $0.50 cached / $30). The Haiku executor ran through an agent
+> harness that re-sends context aggressively; a leaner executor iterates cheaper, but the dynamic
+> holds. Both models were denied a Python interpreter, so Opus-solo's one-pass 100% is *despite*
+> not being able to test.
+
+### The planning phase is now parallel
+
+That first run exposed two costs in planning: the two planners ran **sequentially** (latency = the
+*sum* of their turns) and each turn **re-pasted the whole transcript**. Both are fixed:
+
+- **Parallel rounds** — planners draft concurrently (round 1 independent, then one synthesizes a
+  merged plan while the other cross-reviews), so a round costs `max`, not `sum`.
+- **Delta-only context** — resumable adapters get only the *unseen* tail each turn, not the whole
+  transcript re-pasted.
+
+Live A/B on the same planning task (Opus drafter + Codex critic): **250.8s sequential → 176.5s
+parallel — a 30% speedup.** (The synthesis step adds some Opus output, so parallel planning runs
+~20% pricier — a speed-for-cost trade, tunable by moving the merge onto the cheaper model.)
+Default for `tales run`/`discuss`; `--sequential` opts out.
 
 ## Quickstart
 

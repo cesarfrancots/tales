@@ -11,26 +11,26 @@
     { kind: 'prompt', text: 'tales' },
     { kind: 'sys', text: '● two AI coders, one terminal — you stay on the trigger' },
     { kind: 'gap' },
-    { kind: 'tales', text: 'hey. I put Claude Code and Codex in the same room and let them' },
+    { kind: 'tales', text: 'hey. I put the AI coders you already use in the same room and let them' },
     { kind: 'tales', text: 'argue about your task before a single line gets written.' },
     { kind: 'tales', text: 'one drafts a plan. the other tears into it. they reach a verdict —' },
     { kind: 'tales', text: 'then you choose who runs it. watch:' },
     { kind: 'gap' },
     { kind: 'prompt', text: 'tales "add OAuth login"' },
     { kind: 'gap' },
-    { kind: 'head', cls: 'tl-cc', name: 'Claude Code', role: 'DRAFTER' },
+    { kind: 'head', cls: 'tl-cc', name: 'Agent A', role: 'DRAFTER' },
     { kind: 'line', cls: 'tl-cc', text: 'middleware layer — passport.js + the Google strategy, wired into' },
     { kind: 'line', cls: 'tl-cc', text: 'the existing session store. small, isolated change.' },
     { kind: 'gap' },
-    { kind: 'head', cls: 'tl-cx', name: 'Codex', role: 'CRITIC' },
-    { kind: 'line', cls: 'tl-cx', text: 'approach is right. Claude has the better read on the current auth' },
-    { kind: 'line', cls: 'tl-cx', text: "flow — let it execute. I'll review the diff after." },
+    { kind: 'head', cls: 'tl-cx', name: 'Agent B', role: 'CRITIC' },
+    { kind: 'line', cls: 'tl-cx', text: 'solid — and the drafter has the better read on the existing auth' },
+    { kind: 'line', cls: 'tl-cx', text: "flow. let it execute; I'll review the diff after." },
     { kind: 'gap' },
-    { kind: 'rec', text: 'recommend  Claude Code' },
+    { kind: 'rec', text: 'recommend  Agent A' },
     { kind: 'pick' },
     { kind: 'gap' },
     { kind: 'you', text: 'You ▸ 1' },
-    { kind: 'ok', text: '✓ Claude Code executing in an isolated git worktree…' },
+    { kind: 'ok', text: '✓ Agent A executing in an isolated git worktree…' },
     { kind: 'ok', text: '✓ done — clean diff ready for your review.' },
     { kind: 'gap' },
     { kind: 'tales', text: 'that’s it. two minds, your call, nothing runs behind your back.' },
@@ -109,9 +109,9 @@
           case 'pick': {
             const l = newLine('tl-rec indent');
             l.appendChild(span(null, '▸ pick executor   '));
-            l.appendChild(span('tl-cc', '[1] Claude Code'));
+            l.appendChild(span('tl-cc', '[1] Agent A'));
             l.appendChild(span('muted', '   '));
-            l.appendChild(span('tl-cx', '[2] Codex'));
+            l.appendChild(span('tl-cx', '[2] Agent B'));
             l.appendChild(span('tl-you', '      ← you decide'));
             await sleep(reduced ? 0 : 520);
             break;
@@ -140,7 +140,7 @@
         if (step.kind === 'head') { l.appendChild(span('lbl', '▌ ' + step.name)); l.appendChild(span('role', step.role)); }
         else if (step.kind === 'prompt') { l.appendChild(span('pc', '❯ ')); l.appendChild(document.createTextNode(step.text)); }
         else if (step.kind === 'rec') l.textContent = '★ ' + step.text;
-        else if (step.kind === 'pick') l.textContent = '▸ pick executor   [1] Claude Code   [2] Codex      ← you decide';
+        else if (step.kind === 'pick') l.textContent = '▸ pick executor   [1] Agent A   [2] Agent B      ← you decide';
         else l.textContent = step.text || '';
       }
       cursor.style.display = 'none';

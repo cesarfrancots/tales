@@ -3,16 +3,16 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Tales — two AIs, one terminal, you decide</title>
-  <meta name="description" content="Tales is a 1.2 MB terminal that runs Claude Code and Codex side by side: they debate a plan, you pick who executes, nothing runs without your go-ahead. Two models planning and executing in parallel beat one." />
+  <title>Tales — your AI coding tools, one terminal, you decide</title>
+  <meta name="description" content="Tales is a 1.2 MB terminal that runs the AI coding tools you already use side by side: they debate a plan, you pick who executes, nothing runs without your go-ahead. Two models planning and executing in parallel beat one." />
 
   <meta property="og:type"        content="website" />
   <meta property="og:url"         content="https://cesarfrancots.github.io/tales/" />
-  <meta property="og:title"       content="Tales — two AIs, one terminal, you decide" />
-  <meta property="og:description" content="A 1.2 MB terminal where Claude Code and Codex plan together and you choose who executes. Two models in parallel beat one." />
+  <meta property="og:title"       content="Tales — your AI coding tools, one terminal, you decide" />
+  <meta property="og:description" content="A 1.2 MB terminal where your AI coding tools plan together and you choose who executes. Two models in parallel beat one." />
   <meta name="twitter:card"        content="summary_large_image" />
-  <meta name="twitter:title"       content="Tales — two AIs, one terminal, you decide" />
-  <meta name="twitter:description" content="A 1.2 MB terminal where Claude Code and Codex plan together and you choose who executes." />
+  <meta name="twitter:title"       content="Tales — your AI coding tools, one terminal, you decide" />
+  <meta name="twitter:description" content="A 1.2 MB terminal where your AI coding tools plan together and you choose who executes." />
 
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -37,7 +37,7 @@
 <!-- ── Hero: the terminal narrates itself ──────────────────── -->
 <section class="hero">
   <div class="wrap">
-    <div class="term" id="term" role="img" aria-label="A Tales terminal session: Claude Code and Codex plan a task, then the human picks who executes.">
+    <div class="term" id="term" role="img" aria-label="A Tales terminal session: two AI coding tools plan a task, then the human picks who executes.">
       <div class="term-bar">
         <span class="tdot r"></span><span class="tdot y"></span><span class="tdot g"></span>
         <span class="term-name">tales — ~/your-project</span>
@@ -47,7 +47,7 @@
     </div>
 
     <p class="hero-static">
-      A terminal that runs <b class="cc">Claude&nbsp;Code</b> and <b class="cx">Codex</b> on the same task —
+      A terminal that runs <b>the AI coding tools you already use</b> on the same task —
       they argue out a plan, <b class="you">you</b> pick who executes.
     </p>
     <div class="hero-ctas">
@@ -103,10 +103,9 @@
     <p class="kicker">// not just two — and not just the expensive ones</p>
     <h2>Mix the room.<br/><span class="accent">Tier the cost.</span></h2>
     <p class="lead">
-      Tales isn't locked to two models or one vendor. Any AI coding CLI can join —
-      <b class="cc">Claude&nbsp;Code</b>, <b class="cx">Codex</b>, and
-      <b style="color:var(--amber)">Open&nbsp;Code</b> today, more behind a small adapter each.
-      Put the tools you trust in the room.
+      Tales isn't locked to two models or one vendor. <b>Bring any AI coding CLI you trust</b> —
+      connect two, connect three, mix vendors. Each tool plugs in behind a small adapter, so the
+      room is whatever you make it.
     </p>
     <p class="lead">
       And the room doesn't have to be uniform. Run your <b>smart, expensive</b> models on the
@@ -120,9 +119,9 @@
       </div>
       <pre class="code"><span class="c"># two strong models plan + argue, a cheap/fast one implements</span>
 <span class="p">tales</span> run <span class="s">"add OAuth login"</span> \
-  --drafter claude --drafter-model opus \
-  --critic  codex  --critic-model  gpt-5 \
-  --execute opencode --execute-model <span class="s">&lt;cheap-fast-model&gt;</span></pre>
+  --drafter <span class="s">&lt;tool-a&gt;</span> --drafter-model <span class="s">&lt;strong&gt;</span> \
+  --critic  <span class="s">&lt;tool-b&gt;</span> --critic-model  <span class="s">&lt;strong&gt;</span> \
+  --execute <span class="s">&lt;tool-c&gt;</span> --execute-model <span class="s">&lt;cheap-fast&gt;</span></pre>
     </div>
     <p class="receipts">
       Live today in <code>tales&nbsp;run</code> via <code>--execute-model</code>. The core is already
@@ -144,7 +143,7 @@
         <span class="run-n">1</span>
         <div>
           <div class="run-t">connect</div>
-          <p>Pick the tools to put in the room — Claude Code, Codex, Open Code. Bring two; bring three.</p>
+          <p>Pick the AI coding tools to put in the room — any CLI you already use. Bring two; bring three.</p>
         </div>
       </div>
       <div class="run-step">
@@ -217,7 +216,7 @@
         <span class="tdot r"></span><span class="tdot y"></span><span class="tdot g"></span>
         <span class="term-name">bash</span>
       </div>
-      <pre class="code"><span class="c"># build it (needs Rust + the claude / codex CLIs on PATH)</span>
+      <pre class="code"><span class="c"># build it (needs Rust + your AI coding CLIs on PATH)</span>
 <span class="p">git</span> clone https://github.com/cesarfrancots/tales && <span class="p">cd</span> tales
 <span class="p">cargo</span> build --release
 
@@ -225,7 +224,7 @@
 <span class="p">tales</span>
 
 <span class="c"># or go straight in, scriptable:</span>
-<span class="p">tales</span> run <span class="s">"add OAuth login"</span> --drafter claude --critic codex --execute claude</pre>
+<span class="p">tales</span> run <span class="s">"add OAuth login"</span> --drafter <span class="s">&lt;tool-a&gt;</span> --critic <span class="s">&lt;tool-b&gt;</span> --execute <span class="s">&lt;tool-a&gt;</span></pre>
     </div>
     <p class="start-foot">
       Full walkthrough in the <a href="docs.html">documentation</a> ·
@@ -244,7 +243,7 @@
       <span class="mit">MIT</span>
     </div>
   </div>
-  <div class="wrap foot-sig">two models, one terminal, you on the trigger.</div>
+  <div class="wrap foot-sig">your AI coders, one terminal, you on the trigger.</div>
 </footer>
 
 <script src="app.js" defer></script>

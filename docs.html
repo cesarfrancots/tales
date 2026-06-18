@@ -3,201 +3,320 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Tales — documentation</title>
-  <meta name="description" content="How Tales works: install, the interactive terminal, scriptable commands, architecture, and troubleshooting. Written and reviewed by Claude Code and Codex via Tales itself." />
+  <title>Tales docs — orchestrate your AI coding tools</title>
+  <meta name="description" content="Documentation for Tales: install, the interactive terminal, scriptable commands, tiered execution, architecture, and troubleshooting." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css?v=2" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
   <style>
-    .docs { display: grid; grid-template-columns: 220px 1fr; gap: 48px; padding: 48px 0 90px; align-items: start; }
-    .toc { position: sticky; top: 72px; font-size: .9rem; }
-    .toc-h { color: var(--accent); font-size: .72rem; letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 14px; }
-    .toc a { display: block; color: var(--dim); padding: 5px 0; border-left: 2px solid var(--line); padding-left: 14px; }
-    .toc a:hover { color: var(--text); border-color: var(--accent); text-decoration: none; }
-    .doc h2 { font-size: 1.5rem; margin: 48px 0 8px; padding-top: 12px; letter-spacing: -.3px; }
-    .doc h2:first-child { margin-top: 0; }
-    .doc h2 .n { color: var(--accent); margin-right: 10px; font-weight: 700; }
-    .doc h3 { font-size: 1.05rem; color: var(--text); margin: 28px 0 6px; }
-    .doc p { color: var(--dim); margin: 12px 0; }
-    .doc p b, .doc li b { color: var(--text); }
-    .doc ul { color: var(--dim); margin: 12px 0 12px 4px; list-style: none; }
-    .doc li { padding: 5px 0 5px 18px; position: relative; }
-    .doc li::before { content: "›"; color: var(--accent); position: absolute; left: 0; }
-    .doc code { background: var(--panel); border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; color: var(--cc); font-size: .86em; }
-    .doc pre { background: var(--bg-2); border: 1px solid var(--line); border-radius: 9px; padding: 16px 18px; overflow-x: auto; margin: 14px 0; font-size: .86rem; line-height: 1.7; color: var(--text); white-space: pre; }
-    .doc pre .c { color: var(--faint); font-style: italic; }
-    .doc pre .p { color: var(--accent); }
-    .doc table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: .88rem; }
-    .doc th, .doc td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); }
-    .doc th { color: var(--dim); font-weight: 500; }
-    .doc td code { color: var(--amber); }
-    .callout { border-left: 2px solid var(--accent); background: rgba(45,212,191,.05); padding: 12px 16px; border-radius: 0 8px 8px 0; margin: 16px 0; color: var(--dim); font-size: .92rem; }
-    .callout b { color: var(--accent); }
-    .doc-note { color: var(--faint); font-size: .82rem; border-top: 1px solid var(--line); margin-top: 50px; padding-top: 18px; }
-    @media (max-width: 760px) { .docs { grid-template-columns: 1fr; } .toc { position: static; } }
+    :root{
+      --bg:#0a0d13; --bg2:#0d1119; --panel:#11161f; --line:#1d2531; --line2:#283242;
+      --text:#e3e8f0; --body:#aeb6c4; --dim:#6b7483; --faint:#444d5a;
+      --accent:#2dd4bf; --accent-dim:#1d8a7e; --cc:#5cb0ff; --cx:#c08cff; --amber:#ffc777; --you:#7ee0a3; --err:#ff7a85;
+      --sans:'Inter',system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+      --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+      --sb:264px; --rail:208px;
+    }
+    *{box-sizing:border-box;margin:0;padding:0}
+    html{scroll-behavior:smooth}
+    body{background:var(--bg);color:var(--body);font-family:var(--sans);font-size:15.5px;line-height:1.7;-webkit-font-smoothing:antialiased}
+    a{color:var(--accent);text-decoration:none}
+    a:hover{text-decoration:underline;text-underline-offset:2px}
+    code{font-family:var(--mono);font-size:.86em;background:var(--panel);border:1px solid var(--line);border-radius:5px;padding:.5px 6px;color:#cdd6e4}
+    .cc{color:var(--cc)} .cx{color:var(--cx)} .am{color:var(--amber)} .ac{color:var(--accent)}
+
+    /* top bar */
+    header.top{position:sticky;top:0;z-index:30;height:54px;display:flex;align-items:center;gap:16px;
+      padding:0 20px;border-bottom:1px solid var(--line);background:rgba(10,13,19,.85);backdrop-filter:blur(10px)}
+    header.top .brand{font-family:var(--mono);font-weight:700;color:var(--text);letter-spacing:.3px}
+    header.top .brand .c{color:var(--accent)}
+    header.top .crumb{color:var(--dim);font-size:.85rem}
+    header.top .crumb b{color:var(--body);font-weight:500}
+    header.top .sp{flex:1}
+    header.top nav a{color:var(--dim);font-size:.85rem;margin-left:18px}
+    header.top nav a:hover{color:var(--text);text-decoration:none}
+    header.top nav a.gh{color:var(--accent)}
+
+    /* layout */
+    .shell{max-width:1340px;margin:0 auto;display:grid;grid-template-columns:var(--sb) minmax(0,1fr) var(--rail);align-items:start}
+    /* sidebar */
+    aside.nav{position:sticky;top:54px;height:calc(100vh - 54px);overflow-y:auto;padding:26px 18px 60px;border-right:1px solid var(--line)}
+    aside.nav .grp{margin-bottom:22px}
+    aside.nav .grp-h{font-size:.7rem;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);font-weight:600;padding:0 10px;margin-bottom:8px}
+    aside.nav a{display:block;color:var(--body);font-size:.88rem;padding:6px 10px;border-radius:7px;border-left:2px solid transparent;line-height:1.4}
+    aside.nav a:hover{background:var(--panel);color:var(--text);text-decoration:none}
+    aside.nav a.active{color:var(--accent);background:rgba(45,212,191,.07);border-left-color:var(--accent);font-weight:500}
+
+    /* content */
+    main{padding:40px 52px 120px;min-width:0}
+    main .eyebrow{color:var(--accent);font-family:var(--mono);font-size:.74rem;letter-spacing:.1em;text-transform:uppercase;margin-bottom:10px}
+    main h1{font-size:2.05rem;font-weight:700;color:var(--text);letter-spacing:-.02em;line-height:1.15}
+    main .sub{font-size:1.06rem;color:var(--dim);margin-top:12px;max-width:62ch}
+    main section{scroll-margin-top:74px;padding-top:40px;margin-top:8px}
+    main section + section{border-top:1px solid var(--line);margin-top:32px}
+    main h2{font-size:1.42rem;font-weight:700;color:var(--text);letter-spacing:-.01em;margin-bottom:6px}
+    main h3{font-size:1.05rem;font-weight:600;color:var(--text);margin:30px 0 6px}
+    main p{margin:12px 0;max-width:68ch}
+    main p b,main li b{color:var(--text);font-weight:600}
+    main ul{list-style:none;margin:14px 0;max-width:68ch}
+    main li{position:relative;padding:5px 0 5px 22px}
+    main li::before{content:"›";position:absolute;left:2px;color:var(--accent);font-weight:700}
+    main hr{border:0;border-top:1px solid var(--line);margin:30px 0}
+
+    /* code blocks */
+    pre{position:relative;background:var(--bg2);border:1px solid var(--line);border-radius:10px;padding:16px 18px;
+      overflow-x:auto;margin:16px 0;font-family:var(--mono);font-size:.82rem;line-height:1.75;color:#d6deea;max-width:72ch}
+    pre .c{color:var(--faint);font-style:italic} pre .p{color:var(--accent)} pre .s{color:var(--you)} pre .k{color:var(--cx)}
+    pre .copy{position:absolute;top:8px;right:8px;font-family:var(--sans);font-size:.68rem;color:var(--dim);
+      background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:3px 8px;cursor:pointer;opacity:0;transition:opacity .15s}
+    pre:hover .copy{opacity:1} pre .copy:hover{color:var(--text);border-color:var(--accent2,var(--accent))}
+    pre .copy.done{color:var(--you);border-color:var(--you)}
+
+    /* tables */
+    table{width:100%;border-collapse:collapse;margin:18px 0;font-size:.9rem;max-width:72ch}
+    th,td{text-align:left;padding:9px 14px;border-bottom:1px solid var(--line)}
+    thead th{color:var(--dim);font-weight:600;font-size:.78rem;letter-spacing:.04em;text-transform:uppercase}
+    td code{color:var(--amber)}
+    tbody tr:hover{background:rgba(255,255,255,.015)}
+
+    /* callouts */
+    .note{display:flex;gap:12px;border:1px solid var(--line);border-left:3px solid var(--accent);background:rgba(45,212,191,.05);
+      border-radius:0 9px 9px 0;padding:13px 16px;margin:18px 0;max-width:72ch;font-size:.92rem;color:var(--body)}
+    .note.warn{border-left-color:var(--amber);background:rgba(255,199,119,.05)}
+    .note .ic{color:var(--accent);font-weight:700;flex:none}
+    .note.warn .ic{color:var(--amber)}
+    .note b{color:var(--text)}
+
+    /* pills */
+    .pill{display:inline-block;font-family:var(--mono);font-size:.66rem;letter-spacing:.06em;text-transform:uppercase;
+      border:1px solid var(--line);border-radius:999px;padding:2px 9px;color:var(--dim);vertical-align:middle;margin-left:8px}
+    .pill.new{color:var(--accent);border-color:var(--accent-dim)}
+
+    /* on this page */
+    .rail{position:sticky;top:54px;height:calc(100vh - 54px);overflow-y:auto;padding:40px 20px;font-size:.82rem}
+    .rail .h{color:var(--dim);font-size:.68rem;letter-spacing:.12em;text-transform:uppercase;font-weight:600;margin-bottom:12px}
+    .rail a{display:block;color:var(--dim);padding:4px 0 4px 12px;border-left:2px solid var(--line);line-height:1.45}
+    .rail a:hover{color:var(--text);text-decoration:none}
+    .rail a.active{color:var(--accent);border-left-color:var(--accent)}
+
+    .foot{border-top:1px solid var(--line);margin-top:50px;padding-top:22px;color:var(--faint);font-size:.84rem}
+
+    @media(max-width:1100px){:root{--rail:0px}.rail{display:none}.shell{grid-template-columns:var(--sb) minmax(0,1fr)}}
+    @media(max-width:820px){:root{--sb:0px}aside.nav{display:none}.shell{grid-template-columns:1fr}main{padding:28px 22px 90px}}
   </style>
 </head>
 <body>
 
-<header class="topbar">
-  <div class="wrap topbar-inner">
-    <a href="index.html" class="brand"><span class="brand-caret">❯</span> tales</a>
-    <nav class="topnav">
-      <a href="index.html">home</a>
-      <a href="index.html#run">run it</a>
-      <a href="docs.html" style="color:var(--text)">docs</a>
-      <a href="https://github.com/cesarfrancots/tales" target="_blank" rel="noopener" class="gh">github ↗</a>
-    </nav>
-  </div>
+<header class="top">
+  <a href="index.html" class="brand"><span class="c">❯</span> tales</a>
+  <span class="crumb">/ <b>Docs</b></span>
+  <span class="sp"></span>
+  <nav>
+    <a href="index.html">Home</a>
+    <a href="https://github.com/cesarfrancots/tales" target="_blank" rel="noopener" class="gh">GitHub ↗</a>
+  </nav>
 </header>
 
-<div class="wrap">
-  <div class="docs">
-    <aside class="toc">
-      <div class="toc-h">documentation</div>
-      <a href="#what">What Tales is</a>
-      <a href="#install">Install</a>
-      <a href="#terminal">The terminal</a>
-      <a href="#scriptable">Scriptable commands</a>
+<div class="shell">
+  <!-- ── sidebar ─────────────────────────────────────────── -->
+  <aside class="nav">
+    <div class="grp">
+      <div class="grp-h">Getting started</div>
+      <a href="#overview">Overview</a>
+      <a href="#install">Install &amp; prerequisites</a>
+      <a href="#quickstart">Quickstart</a>
+    </div>
+    <div class="grp">
+      <div class="grp-h">Guides</div>
+      <a href="#terminal">The interactive terminal</a>
+      <a href="#commands">Scriptable commands</a>
+      <a href="#tiered">Tiered execution</a>
+    </div>
+    <div class="grp">
+      <div class="grp-h">Reference</div>
+      <a href="#tools">Supported tools</a>
       <a href="#architecture">Architecture</a>
       <a href="#troubleshooting">Troubleshooting</a>
-    </aside>
+    </div>
+  </aside>
 
-    <main class="doc">
+  <!-- ── content ─────────────────────────────────────────── -->
+  <main>
+    <p class="eyebrow">Documentation</p>
+    <h1>Orchestrate your AI coding tools</h1>
+    <p class="sub">Tales runs the AI coding CLIs you already use as collaborators on one task: they debate a plan in a live terminal, recommend who executes, and <b>you</b> confirm before anything runs.</p>
 
-      <h2 id="what"><span class="n">01</span>What Tales is</h2>
-      <p>Tales is a lightweight Rust orchestrator that runs AI coding CLIs — <b class="cc">Claude&nbsp;Code</b>, <b class="cx">Codex</b>, and <b style="color:var(--amber)">Open&nbsp;Code</b> — as subprocesses so they collaborate on the <i>same</i> project. They debate a plan in a live terminal, each emits a recommendation for who should execute it, and <b>no editing or execution hand-off starts until you confirm.</b></p>
-      <p>It's not a model or an API wrapper. It drives the CLIs you already have installed and authenticated, normalizes their very different I/O into one event stream, and puts a human at the decision gate.</p>
-
+    <section id="overview">
+      <h2>Overview</h2>
+      <p>Tales is a lightweight Rust orchestrator that drives AI coding CLIs as subprocesses so they collaborate on the <i>same</i> project. They discuss a plan, each emits a recommendation for who should implement it, and <b>no editing or execution hand-off starts until you confirm.</b></p>
+      <p>It isn't a model or an API wrapper. It drives the tools you already have installed and authenticated, normalizes their very different I/O into one event stream, and keeps a human at the decision gate.</p>
       <h3>Two strong models beat one</h3>
-      <p>A single model commits to its first framing and rarely escapes it. Tales puts two models with different priors in the same room: one drafts, the other critiques across alternating turns, and the disagreement surfaces assumptions a solo run buries.</p>
-      <p>The analogy to <a href="https://openrouter.ai" target="_blank" rel="noopener">OpenRouter's model fusion</a> and <a href="https://kiro.dev" target="_blank" rel="noopener">AWS Kiro</a> is narrow and deliberate: combine the strengths of more than one model instead of betting everything on one — fusion blends answers across models, Kiro splits spec-then-build across agents. Tales applies the idea to <b>planning</b> (the live drafter/critic discussion) and gives you the tools to apply it to <b>execution</b> too (isolated git worktrees), with a human on the gate.</p>
-      <p>It's deliberately <b>model- and tool-agnostic</b>: any AI coding CLI can join behind one small adapter (Claude Code, Codex, Open Code today), and the room doesn't have to be uniform. You can <b>tier</b> it — strong, expensive models do the planning, a cheaper/faster model implements the agreed plan (see <a href="#scriptable"><code>--execute-model</code></a>). Spend on judgment, not on typing.</p>
-      <p>What you get:</p>
-      <ul>
-        <li>A <b>drafter/critic discussion</b> you can read as it streams and interject into.</li>
-        <li>A <b>confidence-weighted recommendation</b> of who should execute — advisory, never automatic.</li>
-        <li><b>Git-worktree isolation</b> for the executor, so a result is always a reviewable diff.</li>
-      </ul>
-      <p>What it is <i>not</i>: an autonomous agent that ships code on its own. The recommendation is a suggestion; the gate is yours.</p>
+      <p>A single model commits to its first framing and rarely escapes it. Tales puts two (or more) models with different priors in the same room: one drafts, the other critiques, and the disagreement surfaces assumptions a solo run buries. The analogy to <a href="https://openrouter.ai" target="_blank" rel="noopener">OpenRouter's model fusion</a> and <a href="https://kiro.dev" target="_blank" rel="noopener">AWS Kiro</a> is deliberate: combine the strengths of more than one model instead of betting on one.</p>
+      <p>It's <b>model- and tool-agnostic</b> by design — any AI coding CLI joins behind one small adapter — and the room doesn't have to be uniform. You can <a href="#tiered">tier</a> it: strong, expensive models plan; a cheaper, faster model implements. Spend on judgment, not on typing.</p>
+      <div class="note"><span class="ic">i</span><div>What Tales is <b>not</b>: an autonomous agent that ships code on its own. The recommendation is a suggestion; the gate is yours.</div></div>
+    </section>
 
-      <h2 id="install"><span class="n">02</span>Install &amp; prerequisites</h2>
+    <section id="install">
+      <h2>Install &amp; prerequisites</h2>
       <ul>
         <li><b>Rust toolchain</b> (stable) to build the workspace.</li>
         <li>Developed and tested on <b>macOS and Linux</b>. <code>tales open</code> (the new-window launcher) is macOS-only; the other commands are Unix-oriented.</li>
-        <li>At least one agent CLI on your <code>PATH</code>, installed and authenticated. The default discussion pairs two, so for a single tool you pass explicit flags (see below).</li>
+        <li>At least one AI coding CLI on your <code>PATH</code>, installed and authenticated. The default discussion pairs two, so for a single tool you pass explicit flags (see <a href="#troubleshooting">Troubleshooting</a>).</li>
       </ul>
+      <p>Tales detects which tools are on <code>PATH</code> and shows the connectable ones — you only need the ones you intend to use. See <a href="#tools">Supported tools</a> for the adapters that ship today.</p>
+      <pre><button class="copy">copy</button><span class="c"># build → target/release: tales, tales-tui, tales-web</span>
+<span class="p">cargo</span> build --release
+<span class="c"># put target/release on your PATH, then open the terminal:</span>
+<span class="p">tales</span></pre>
+      <p>Try the whole flow with <b>no API calls</b>:</p>
+      <pre><button class="copy">copy</button><span class="p">tales-tui</span> --demo
+<span class="p">tales-web</span> <span class="s">"demo"</span> --demo</pre>
+    </section>
+
+    <section id="quickstart">
+      <h2>Quickstart</h2>
+      <p>Type <code>tales</code> — that opens the interactive terminal. Connect your tools, type a task, watch them plan, then pick who executes. Or go straight in, scriptable:</p>
+      <pre><button class="copy">copy</button><span class="c"># two tools plan + argue, you confirm who executes</span>
+<span class="p">tales</span> run <span class="s">"add a /health endpoint"</span> \
+  --drafter <span class="s">&lt;tool-a&gt;</span> --critic <span class="s">&lt;tool-b&gt;</span> --execute <span class="s">&lt;tool-a&gt;</span></pre>
+      <div class="note"><span class="ic">i</span><div>Replace <code>&lt;tool-a&gt;</code>/<code>&lt;tool-b&gt;</code> with any installed tool key (see <a href="#tools">Supported tools</a>).</div></div>
+    </section>
+
+    <section id="terminal">
+      <h2>The interactive terminal</h2>
+      <p>Type <code>tales</code> to open a multi-pane terminal workspace: a <b>Tales orchestrator pane</b> plus sibling shell and agent-CLI panes.</p>
+      <ul>
+        <li><b>Plan.</b> In the Tales pane, type your task and press <code>Enter</code>; the drafter and critic discuss and draft a plan in place, streamed token-by-token.</li>
+        <li><b>Open panes as needed.</b> <code>Ctrl-N</code> shell · <code>Ctrl-X</code>/<code>Ctrl-L</code>/<code>Ctrl-O</code> open agent panes · <code>Tab</code> switches focus.</li>
+        <li><b>Observe / intervene.</b> A focused agent pane receives your keystrokes directly. <code>Ctrl-A</code> sends an explicit approval, but only when that pane is waiting on one.</li>
+        <li><b>Confirm &amp; hand off.</b> After the discussion, agents emit recommendations and Tales surfaces the aggregated pick. At the gate, <code>Enter</code> or <code>/confirm &lt;n&gt;</code> launches the executor in its own live pane and sends it the plan.</li>
+      </ul>
+      <div class="note"><span class="ic">i</span><div><b>Two execution paths.</b> In the workspace, confirming hands the plan to a <i>live, interactive</i> CLI pane you watch and steer. The scriptable <code>tales run</code> and the classic planner run the executor <i>headlessly</i> through the core. Same plan, different driver.</div></div>
+      <div class="note warn"><span class="ic">!</span><div><b>Live panes share a directory.</b> Worktree isolation is automatic only for <code>tales run --worktree</code>. Live executor panes start in the same working dir, so if you open several to run in parallel, isolate them yourself (separate worktrees/branches).</div></div>
+      <p>Prefer one focused view? <code>tales-tui --classic</code> is the original connect → prompt → plan → confirm screen. Skip setup with pre-connect / pre-fill:</p>
+      <pre><button class="copy">copy</button><span class="p">tales-tui</span> --connect <span class="s">&lt;tool-a&gt;</span> --connect <span class="s">&lt;tool-b&gt;</span>
+<span class="p">tales-tui</span> --connect <span class="s">&lt;tool-a&gt;</span> --prefill <span class="s">"Design a rate limiter"</span></pre>
+    </section>
+
+    <section id="commands">
+      <h2>Scriptable commands</h2>
+      <p>The non-interactive counterparts — for scripts, CI, and dogfooding.</p>
+      <h3><code>tales solo</code> — one agent, one turn</h3>
+      <pre><button class="copy">copy</button><span class="p">tales</span> solo --model <span class="s">&lt;model&gt;</span> <span class="s">"Reply with exactly: hello from tales"</span>
+<span class="p">tales</span> solo --agent <span class="s">&lt;tool&gt;</span> --image diagram.png <span class="s">"Explain this architecture"</span></pre>
+      <p><code>--agent</code> · <code>--model</code> · <code>--cwd</code> · <code>--sandbox</code> · <code>--image</code> (repeatable). Image/PDF support varies by tool — see <a href="#tools">Supported tools</a>.</p>
+      <h3><code>tales discuss</code> — a live drafter/critic discussion, no execution</h3>
+      <pre><button class="copy">copy</button><span class="p">tales</span> discuss --drafter <span class="s">&lt;tool-a&gt;</span> --critic <span class="s">&lt;tool-b&gt;</span> --turns 2 \
+  --sandbox read-only <span class="s">"Design a minimal rate limiter. 5 bullets."</span></pre>
+      <h3><code>tales run</code> — the full pipeline: discuss → recommend → execute</h3>
+      <pre><button class="copy">copy</button><span class="p">tales</span> run <span class="s">"Build X"</span> --drafter <span class="s">&lt;tool-a&gt;</span> --critic <span class="s">&lt;tool-b&gt;</span> --execute <span class="s">&lt;tool-a&gt;</span></pre>
+      <p>The recommendation is computed and printed, but <b><code>--execute</code> decides who runs</b>. It can be one of the planners, or a different tool entirely (see <a href="#tiered">Tiered execution</a>). Add <code>--worktree</code> to run that executor in its own git worktree and merge back:</p>
+      <pre><button class="copy">copy</button><span class="p">tales</span> run <span class="s">"Add a /health endpoint"</span> --execute <span class="s">&lt;tool&gt;</span> --worktree</pre>
+      <div class="note"><span class="ic">i</span><div>This project's <code>landing/</code> page and these docs were drafted and reviewed <b>with Tales</b> via <code>tales discuss</code>, then finalized against the source.</div></div>
+    </section>
+
+    <section id="tiered">
+      <h2>Tiered execution <span class="pill new">new</span></h2>
+      <p>The room doesn't have to be uniform. When <code>--execute</code> names a tool that <i>isn't</i> a planner, Tales enrolls it as a separate executor that sits out the debate and implements the agreed plan with its own model via <code>--execute-model</code>. Strong models plan; a cheap, fast model runs.</p>
+      <pre><button class="copy">copy</button><span class="c"># two strong models plan + argue, a cheap/fast one implements</span>
+<span class="p">tales</span> run <span class="s">"add OAuth login"</span> \
+  --drafter <span class="s">&lt;tool-a&gt;</span> --drafter-model <span class="s">&lt;strong&gt;</span> \
+  --critic  <span class="s">&lt;tool-b&gt;</span> --critic-model  <span class="s">&lt;strong&gt;</span> \
+  --execute <span class="s">&lt;tool-c&gt;</span> --execute-model <span class="s">&lt;cheap-fast&gt;</span></pre>
+      <ul>
+        <li><code>--execute-model</code> is only valid for a <b>separate</b> executor; pointing <code>--execute</code> at one of the planners (same-tool tiering) is rejected for now.</li>
+        <li>The executor sits out the discussion and the vote, but it's still a valid recommendation candidate.</li>
+      </ul>
+      <div class="note"><span class="ic">i</span><div>Live today in <code>tales run</code>. Bigger rooms (N planners) and same-tool tiering are on the roadmap; the core is already model- and tool-agnostic.</div></div>
+    </section>
+
+    <section id="tools">
+      <h2>Supported tools</h2>
+      <p>Tales is tool-agnostic — each tool is one small <code>AgentAdapter</code> + a registry row. These ship today and are valid values for <code>--agent</code> / <code>--drafter</code> / <code>--critic</code> / <code>--execute</code> and the connect screen:</p>
       <table>
-        <thead><tr><th>Tool</th><th>Binary</th><th>Install</th></tr></thead>
+        <thead><tr><th>Tool</th><th>Key</th><th>Install</th></tr></thead>
         <tbody>
           <tr><td>Claude Code</td><td><code>claude</code></td><td><code>npm i -g @anthropic-ai/claude-code</code></td></tr>
           <tr><td>Codex</td><td><code>codex</code></td><td><code>npm i -g @openai/codex</code></td></tr>
           <tr><td>Open Code</td><td><code>opencode</code></td><td><code>npm i -g opencode-ai</code></td></tr>
         </tbody>
       </table>
-      <p>Tales checks <code>PATH</code> for each and shows which tools are connectable — you only need the ones you intend to use.</p>
-      <pre><span class="c"># build → target/release: tales, tales-tui, tales-web</span>
-<span class="p">cargo</span> build --release
-<span class="c"># put target/release on your PATH, then:</span>
-<span class="p">tales</span></pre>
-      <p>Try the whole flow with <b>no API calls</b>:</p>
-      <pre><span class="p">tales-tui</span> --demo
-<span class="p">tales-web</span> "demo" --demo</pre>
+      <p>Adding another is a small change: implement one <code>AgentAdapter</code>, add a <code>make_adapter</code> arm and a <code>KNOWN_TOOLS</code> row — the picker, CLI, and orchestrator all read that registry.</p>
+      <div class="note warn"><span class="ic">!</span><div><b>Roster rule.</b> A tool whose session continuity is keyed on the working directory (e.g. Open Code) can only be connected <b>once per run</b> — two would resume each other's session. Tales rejects this up front.</div></div>
+    </section>
 
-      <h2 id="terminal"><span class="n">03</span>The interactive terminal</h2>
-      <p>Type <code>tales</code> to open a multi-pane terminal workspace: a <b>Tales orchestrator pane</b> plus sibling shell and agent-CLI panes.</p>
-      <ul>
-        <li><b>Plan.</b> In the Tales pane, type your task and press <code>Enter</code>; the drafter and critic discuss and draft a plan in place, streamed token-by-token.</li>
-        <li><b>Open panes as needed.</b> <code>Ctrl-N</code> shell · <code>Ctrl-X</code> Codex · <code>Ctrl-L</code> Claude Code · <code>Ctrl-O</code> Open Code. <code>Tab</code> switches focus.</li>
-        <li><b>Observe / intervene.</b> A focused agent pane receives your keystrokes directly. <code>Ctrl-A</code> sends an explicit approval, but only when that pane is waiting on one.</li>
-        <li><b>Confirm &amp; hand off.</b> After the discussion, agents emit recommendations and Tales surfaces the aggregated pick. At the gate, <code>Enter</code> or <code>/confirm &lt;n&gt;</code> launches the executor in its own live CLI pane and sends it the plan; or focus an existing agent pane and press <code>Ctrl-S</code> to send the plan there.</li>
-      </ul>
-      <div class="callout"><b>Two execution paths.</b> In the workspace, confirming hands the plan to a <i>live, interactive</i> CLI pane you watch and steer. The scriptable <code>tales run</code> and the classic planner run the executor <i>headlessly</i> through the core. Same plan, different driver.</div>
-      <div class="callout"><b>Heads up — live panes share a directory.</b> Worktree isolation is automatic only for <code>tales run --worktree</code>. Live executor panes all start in the same working dir, so if you open several to run in parallel, isolate them yourself (separate worktrees/branches) to avoid clobbering.</div>
-      <p>Prefer one focused view? <code>tales-tui --classic</code> is the original connect → prompt → plan → confirm screen. Skip setup with pre-connect / pre-fill:</p>
-      <pre><span class="p">tales-tui</span> --connect claude --connect codex
-<span class="p">tales-tui</span> --connect claude --prefill "Design a rate limiter"
-<span class="p">tales-tui</span> "Design and build a rate limiter" --drafter claude --critic codex</pre>
-      <div class="callout"><b>Roster rule.</b> Connect Claude and Codex as many times as you like, but <b>Open Code only once per run</b> — its session continuity is keyed on the working directory, so two would resume each other's session. Tales rejects this roster up front.</div>
-
-      <h2 id="scriptable"><span class="n">04</span>Scriptable commands</h2>
-      <p>The non-interactive counterparts — for scripts, CI, and dogfooding.</p>
-
-      <h3><code>tales solo</code> — one agent, one turn</h3>
-      <pre><span class="p">tales</span> solo --model sonnet "Reply with exactly: hello from tales"
-<span class="p">tales</span> solo --agent codex --image diagram.png "Explain this architecture"</pre>
-      <p><code>--agent claude|codex|opencode</code> · <code>--model</code> · <code>--cwd</code> · <code>--sandbox</code> (Codex). <code>--image</code> (repeatable) attaches files: Claude receives images <b>and</b> PDFs; Codex receives images only; Open Code sees them named in the prompt text.</p>
-
-      <h3><code>tales discuss</code> — a live drafter/critic discussion, no execution</h3>
-      <pre><span class="p">tales</span> discuss --drafter claude --critic codex --turns 2 \
-  --drafter-model sonnet --sandbox read-only \
-  "Design a minimal rate limiter for a public REST API. 5 bullet points."</pre>
-
-      <h3><code>tales run</code> — the full pipeline: discuss → recommend → execute</h3>
-      <pre><span class="p">tales</span> run "Build X" --drafter codex --critic claude --execute claude --turns 2</pre>
-      <p>The recommendation is computed and printed, but <b><code>--execute</code> decides who runs</b> (default <code>claude</code>). It can be one of the planners, or <b>a different tool entirely</b>. That choice is queued before the gate and auto-confirmed when the gate opens — the non-interactive equivalent of <code>/confirm</code>. There is no "execute the recommended pick" mode in a single invocation; <code>--execute</code> always decides.</p>
-
-      <h4 style="color:var(--accent);margin:22px 0 6px;font-size:.95rem">Tiered execution — smart models plan, a cheap model runs</h4>
-      <p>When <code>--execute</code> names a tool that <i>isn't</i> a planner, Tales enrolls it as a separate executor that sits out the debate and implements the agreed plan with its own model via <code>--execute-model</code>. Spend on judgment, not on typing:</p>
-      <pre><span class="c"># two strong models plan + argue, a cheap/fast one implements</span>
-<span class="p">tales</span> run "add OAuth login" \
-  --drafter claude --drafter-model opus \
-  --critic  codex  --critic-model  gpt-5 \
-  --execute opencode --execute-model &lt;cheap-fast-model&gt;</pre>
-      <p><code>--execute-model</code> is only valid for a separate executor; pointing <code>--execute</code> at one of the planners (same-tool tiering) is rejected for now. The executor sits out the discussion and the vote, but it's still a valid recommendation candidate.</p>
-
-      <p>Add <code>--worktree</code> to run <b>that one executor</b> in its own git worktree and merge the result back into your current branch (requires a git repo; otherwise ignored with a note):</p>
-      <pre><span class="p">tales</span> run "Add a /health endpoint" --execute claude --worktree</pre>
-      <p>In headless mode the <b>Claude</b> executor is restricted to file-writing tools (<code>--allowedTools</code>) so it can't stall on an unapproved shell prompt; Codex runs under its own sandbox policy instead.</p>
-      <div class="callout">This project's own <code>landing/</code> page and these docs were built <b>with Tales</b>: Codex and Claude Code drafted and reviewed, via <code>tales discuss</code>.</div>
-
-      <h3><code>tales open</code> &amp; the browser view</h3>
-      <p><code>tales open</code> opens the workspace in a <i>new</i> macOS window (used by the <code>/tales</code> skill from inside a harness); <code>--connect &lt;tool&gt;</code> pre-connects and an optional task pre-fills the prompt. <code>tales-web</code> is a secondary local axum + WebSocket view that streams the discussion and exposes an approve/reject gate — it currently supports <b>Claude and Codex only</b>:</p>
-      <pre><span class="p">tales-web</span> "Design and build a rate limiter"   <span class="c"># → http://127.0.0.1:7878</span></pre>
-
-      <h2 id="architecture"><span class="n">05</span>Architecture</h2>
-      <p>A Cargo workspace with a strictly UI-agnostic core. Frontends exchange <i>runtime events and commands</i> with <code>tales-core</code> only through the bus — which is why the web frontend dropped in with zero changes to the engine.</p>
-
-      <h3><code>AgentAdapter</code> — the uniform interface over every tool</h3>
-      <p>Each CLI implements one trait: <code>spawn()</code> launches the process and pumps normalized <code>AgentEvent</code>s (<code>TokenDelta</code>, <code>MessageFinal</code>, <code>ToolCall</code>, <code>TurnComplete</code>, <code>Error</code>, …) into a channel, and returns a command sender driven with <code>AgentCommand</code>s (<code>StartTurn</code>, <code>InjectMessage</code>, <code>Shutdown</code>). The engine and frontends see only these enums — never the concrete tool.</p>
-      <p>The tools differ sharply: Claude is bidirectional <code>stream-json</code> (read tokens live, inject mid-turn); Codex is turn-based <code>exec</code> + <code>resume</code>. That asymmetry lives <b>only</b> in <code>AgentCaps</code> flags (<code>midturn_injection</code>, <code>structured_output</code>, <code>resumable</code>, <code>mcp</code>) — the orchestrator schedules around capabilities, never <code>if claude { … }</code>. Adding a tool = one <code>AgentAdapter</code> impl + one row in <code>KNOWN_TOOLS</code>; the picker, CLI, and orchestrator all read that registry.</p>
-
-      <h3>The bus — the one core↔frontend contract</h3>
-      <p><code>EventBus</code> owns a lossy <code>broadcast</code> channel for events (a slow frontend lags and recovers; it never blocks the engine) and an <code>mpsc</code> channel for commands (many interchangeable producers, one engine consumer). Clone it, hand a clone to each frontend, subscribe.</p>
-
+    <section id="architecture">
+      <h2>Architecture</h2>
+      <p>A Cargo workspace with a strictly UI-agnostic core. Frontends exchange runtime events and commands with <code>tales-core</code> only through the bus — which is why the web frontend dropped in with zero engine changes.</p>
+      <h3><code>AgentAdapter</code></h3>
+      <p>Each CLI implements one trait: <code>spawn()</code> launches the process and pumps normalized <code>AgentEvent</code>s (<code>TokenDelta</code>, <code>MessageFinal</code>, <code>ToolCall</code>, <code>TurnComplete</code>, <code>Error</code>) into a channel, and returns a command sender driven with <code>AgentCommand</code>s. The engine and frontends see only these enums — never the concrete tool. Differences between tools (e.g. bidirectional <code>stream-json</code> vs turn-based <code>exec</code>/<code>resume</code>) live only in <code>AgentCaps</code> flags, never an <code>if claude {…}</code>.</p>
+      <h3>The bus</h3>
+      <p><code>EventBus</code> owns a lossy <code>broadcast</code> channel for events (a slow frontend lags and recovers; it never blocks the engine) and an <code>mpsc</code> channel for commands (many interchangeable producers, one engine consumer).</p>
       <h3>Worktree isolation</h3>
-      <p><code>WorktreeManager</code> can give <i>each</i> agent its own git worktree on its own branch; the orchestrator surfaces each worktree's diff (<code>git diff --stat</code> + full patch). Today <code>tales run --worktree</code> uses this for the <b>single selected executor</b>: create one worktree, run the executor there, and on success merge that branch back — <code>Clean</code>, <code>NoChanges</code>, or <code>Conflict { files }</code> (which leaves the base mid-merge for you to resolve). The executor's worktree is pruned on every exit path.</p>
-
+      <p><code>WorktreeManager</code> can give each agent its own git worktree on its own branch. Today <code>tales run --worktree</code> uses it for the <b>single selected executor</b>: create one worktree, run there, and on success merge back — <code>Clean</code>, <code>NoChanges</code>, or <code>Conflict { files }</code>. The worktree is pruned on every exit path.</p>
       <h3>Recommendation &amp; gate</h3>
-      <p>After discussion, each agent emits a <b>JSON recommendation</b> — <code>recommended_executor</code> + <code>confidence</code> + <code>rationale</code> (tolerantly parsed from free-form model text). <code>aggregate</code> tallies confidence-weighted scores per candidate into a <code>Recommendation</code>, with a <code>confident</code> flag that's <code>false</code> when no real consensus emerged (so the UI can say "no clear pick" rather than fake one). The recommendation is <b>advisory</b>; execution begins only when you confirm interactively or via the queued <code>--execute</code> choice.</p>
+      <p>After discussion, each planner emits a JSON recommendation (<code>recommended_executor</code> + <code>confidence</code> + <code>rationale</code>, tolerantly parsed). <code>aggregate</code> tallies confidence-weighted scores into a <code>Recommendation</code> with a <code>confident</code> flag. The recommendation is <b>advisory</b>; execution begins only when you confirm.</p>
+    </section>
 
-      <h2 id="troubleshooting"><span class="n">06</span>Troubleshooting</h2>
+    <section id="troubleshooting">
+      <h2>Troubleshooting</h2>
       <ul>
         <li><b>Tool not connectable / "not found".</b> The CLI isn't on <code>PATH</code>. Install it, reopen; Tales re-checks <code>PATH</code> per run.</li>
-        <li><b>Auth failures.</b> Tales doesn't manage credentials — authenticate the underlying CLI directly (<code>claude</code>, <code>codex</code>, <code>opencode</code>) once, then retry.</li>
-        <li><b>"can't connect Open Code twice."</b> Expected — see the roster rule. Use it as a single participant.</li>
+        <li><b>Auth failures.</b> Tales doesn't manage credentials — authenticate the underlying CLI directly once, then retry.</li>
         <li><b>Only one tool installed.</b> The default discussion needs two participants; pass <code>--connect &lt;tool&gt;</code> (TUI) or explicit <code>--drafter</code>/<code>--critic</code> to run with a specific roster.</li>
-        <li><b><code>--worktree</code> ignored.</b> The cwd isn't a git repo; Tales prints a note and runs without isolation. Run inside a repo to enable it.</li>
-        <li><b>Merge left mid-merge (<code>Conflict</code>).</b> The executor's branch conflicts with your base; resolve and commit, or <code>git merge --abort</code>. A detached HEAD or dirty base can also block the merge.</li>
-        <li><b>Headless Claude executor seems limited.</b> By design it's restricted to file-writing tools; a plan needing shell/Bash should run interactively in a live pane where you can approve.</li>
+        <li><b><code>--worktree</code> ignored.</b> The cwd isn't a git repo; Tales prints a note and runs without isolation.</li>
+        <li><b>Merge left mid-merge (<code>Conflict</code>).</b> The executor's branch conflicts with your base; resolve and commit, or <code>git merge --abort</code>.</li>
+        <li><b>Can't connect a tool twice.</b> Expected for cwd-session tools — see the roster rule under <a href="#tools">Supported tools</a>.</li>
       </ul>
+      <p class="foot">These docs were drafted by one AI coder and reviewed by another through <code>tales discuss</code>, then finalized against the source. If a detail drifts from the code, the code wins — please <a href="https://github.com/cesarfrancots/tales/issues" target="_blank" rel="noopener">open an issue</a>.</p>
+    </section>
+  </main>
 
-      <p class="doc-note">These docs were drafted by Claude Code and reviewed by Codex through <code>tales discuss</code>, then finalized against the source. If a detail drifts from the code, the code wins — please open an issue.</p>
-    </main>
-  </div>
+  <!-- ── on this page ────────────────────────────────────── -->
+  <nav class="rail" id="rail">
+    <div class="h">On this page</div>
+    <a href="#overview">Overview</a>
+    <a href="#install">Install</a>
+    <a href="#quickstart">Quickstart</a>
+    <a href="#terminal">The terminal</a>
+    <a href="#commands">Commands</a>
+    <a href="#tiered">Tiered execution</a>
+    <a href="#tools">Supported tools</a>
+    <a href="#architecture">Architecture</a>
+    <a href="#troubleshooting">Troubleshooting</a>
+  </nav>
 </div>
 
-<footer class="foot">
-  <div class="wrap foot-inner">
-    <a href="index.html" class="brand"><span class="brand-caret">❯</span> tales</a>
-    <div class="foot-links">
-      <a href="index.html">home</a>
-      <a href="https://github.com/cesarfrancots/tales" target="_blank" rel="noopener">github</a>
-      <span class="mit">MIT</span>
-    </div>
-  </div>
-</footer>
-
+<script>
+(function(){
+  // copy buttons
+  document.querySelectorAll('pre .copy').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var pre = btn.closest('pre').cloneNode(true);
+      pre.querySelectorAll('.copy').forEach(function(c){c.remove()});
+      navigator.clipboard.writeText(pre.textContent.replace(/\n$/,'')).then(function(){
+        btn.textContent='copied'; btn.classList.add('done');
+        setTimeout(function(){btn.textContent='copy'; btn.classList.remove('done')},1400);
+      }).catch(function(){});
+    });
+  });
+  // active section highlight (sidebar + rail)
+  var ids = Array.from(document.querySelectorAll('main section[id]'));
+  var navLinks = {}, railLinks = {};
+  document.querySelectorAll('aside.nav a').forEach(function(a){var h=a.getAttribute('href');if(h&&h[0]==='#')navLinks[h.slice(1)]=a});
+  document.querySelectorAll('.rail a').forEach(function(a){railLinks[a.getAttribute('href').slice(1)]=a});
+  function setActive(id){
+    Object.values(navLinks).forEach(function(a){a.classList.remove('active')});
+    Object.values(railLinks).forEach(function(a){a.classList.remove('active')});
+    if(navLinks[id])navLinks[id].classList.add('active');
+    if(railLinks[id])railLinks[id].classList.add('active');
+  }
+  var io=new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting) setActive(e.target.id); });
+  },{rootMargin:'-60px 0px -70% 0px',threshold:0});
+  ids.forEach(function(s){io.observe(s)});
+  setActive('overview');
+})();
+</script>
 </body>
 </html>

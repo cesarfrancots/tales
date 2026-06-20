@@ -195,6 +195,13 @@ tales run "add OAuth login" --drafter claude --critic codex --execute claude
 tales eval compare "add OAuth login"
 ```
 
+Platform notes:
+
+- macOS/Linux: run `./target/release/tales` from the repo, or add `target/release` to `PATH`.
+- Windows PowerShell: run `.\target\release\tales.exe` from the repo, or add `target\release` to `PATH`.
+- `tales open` launches a new terminal window on macOS, Windows, and common Linux desktop terminals; plain `tales` works inside any existing terminal.
+- Release checks: `scripts/release-check.sh` on macOS/Linux, `.\scripts\release-check.ps1` on Windows.
+
 Try the whole flow with **no API calls**: `tales-tui --demo` or `tales-web --demo`.
 
 ## The flow

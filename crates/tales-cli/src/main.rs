@@ -337,9 +337,8 @@ enum Command {
         #[arg(long)]
         report_json_path: Option<PathBuf>,
     },
-    /// Open the terminal workspace in a NEW window — for harnesses with no TTY
-    /// (the `/tales` command shells out to this). Deterministic: no AI reasoning
-    /// is needed to launch. macOS only.
+    /// Open the terminal workspace in a NEW terminal window when the OS has a
+    /// known launcher. Deterministic: no AI reasoning is needed to launch.
     Open {
         /// Pre-connect a tool in the new window (repeatable): --connect claude.
         #[arg(long = "connect")]
@@ -488,6 +487,7 @@ fn launch_tui() -> ! {
 
 /// Single-quote a string for safe embedding in the generated bash `.command`
 /// (handles spaces, quotes, `$`, etc. — everything inside `'...'` is literal).
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 fn sh_quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('\'');
@@ -505,6 +505,7 @@ fn sh_quote(s: &str) -> String {
 /// Build the contents of the `.command` launcher: cd to the project, then exec
 /// `tales-tui` with the pre-connect/pre-fill flags. An empty/whitespace task is
 /// omitted so the prompt screen opens blank.
+#[cfg(any(target_os = "macos", test))]
 fn build_open_script(tui: &str, cwd: &str, connect: &[String], task: Option<&str>) -> String {
     let mut s = String::from("#!/bin/bash\n");
     s.push_str(&format!("cd {} || exit 1\n", sh_quote(cwd)));
@@ -525,21 +526,71 @@ fn build_open_script(tui: &str, cwd: &str, connect: &[String], task: Option<&str
     s
 }
 
-/// `tales open` — write a one-shot `.command` and hand it to macOS `open`, which
-/// launches it in a new Terminal window. Pure mechanics; no AI reasoning needed.
+#[cfg(any(target_os = "windows", test))]
+fn build_windows_open_command(
+    tui: &str,
+    cwd: &str,
+    connect: &[String],
+    task: Option<&str>,
+) -> String {
+    let mut s = format!("cd /d {} && {}", cmd_quote(cwd), cmd_quote(tui));
+    for c in connect {
+        s.push_str(" --connect ");
+        s.push_str(&cmd_quote(c));
+    }
+    if let Some(t) = task {
+        let t = t.trim();
+        if !t.is_empty() {
+            s.push_str(" --prefill ");
+            s.push_str(&cmd_quote(t));
+        }
+    }
+    s
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn cmd_quote(s: &str) -> String {
+    let escaped = s.replace('"', "\\\"");
+    format!("\"{escaped}\"")
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn build_linux_open_script(tui: &str, cwd: &str, connect: &[String], task: Option<&str>) -> String {
+    let mut s = String::new();
+    s.push_str(&format!(
+        "cd {} || exit 1; exec {}",
+        sh_quote(cwd),
+        sh_quote(tui)
+    ));
+    for c in connect {
+        s.push_str(" --connect ");
+        s.push_str(&sh_quote(c));
+    }
+    if let Some(t) = task {
+        let t = t.trim();
+        if !t.is_empty() {
+            s.push_str(" --prefill ");
+            s.push_str(&sh_quote(t));
+        }
+    }
+    s
+}
+
+/// `tales open` — open the TUI in a new terminal window where the OS exposes a
+/// known terminal launcher. Pure mechanics; no AI reasoning needed.
 fn run_open(connect: Vec<String>, task: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
     let tui = tui_path();
     let cwd = std::env::current_dir()?;
-    let script = build_open_script(
-        &tui.to_string_lossy(),
-        &cwd.to_string_lossy(),
-        &connect,
-        task.as_deref(),
-    );
 
     #[cfg(target_os = "macos")]
     {
         use std::os::unix::fs::PermissionsExt;
+        let script = build_open_script(
+            &tui.to_string_lossy(),
+            &cwd.to_string_lossy(),
+            &connect,
+            task.as_deref(),
+        );
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
@@ -555,14 +606,64 @@ fn run_open(connect: Vec<String>, task: Option<String>) -> Result<(), Box<dyn st
         println!("Tales terminal opening in a new window.");
         Ok(())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     {
-        let _ = script;
-        eprintln!(
-            "`tales open` opens a new macOS Terminal window. On this OS, run `tales` \
-             (or `tales-tui`) directly in a terminal instead."
+        let script = build_linux_open_script(
+            &tui.to_string_lossy(),
+            &cwd.to_string_lossy(),
+            &connect,
+            task.as_deref(),
         );
+        let attempts = [
+            ("x-terminal-emulator", vec!["-e", "sh", "-lc"]),
+            ("gnome-terminal", vec!["--", "sh", "-lc"]),
+            ("konsole", vec!["-e", "sh", "-lc"]),
+            ("xfce4-terminal", vec!["-e", "sh", "-lc"]),
+            ("xterm", vec!["-e", "sh", "-lc"]),
+        ];
+        let mut last_err = None;
+        for (bin, prefix) in attempts {
+            let mut cmd = std::process::Command::new(bin);
+            cmd.args(prefix).arg(&script);
+            match cmd.spawn() {
+                Ok(_) => {
+                    println!("Tales terminal opening in a new window.");
+                    return Ok(());
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    last_err = Some(e);
+                }
+                Err(e) => {
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(format!(
+            "could not find a supported Linux terminal launcher ({})",
+            last_err
+                .map(|e| e.to_string())
+                .unwrap_or_else(|| "no launchers tried".to_string())
+        )
+        .into())
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let command = build_windows_open_command(
+            &tui.to_string_lossy(),
+            &cwd.to_string_lossy(),
+            &connect,
+            task.as_deref(),
+        );
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", "cmd", "/K", &command])
+            .spawn()?;
+        println!("Tales terminal opening in a new window.");
         Ok(())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        let _ = (tui, cwd, connect, task);
+        Err("`tales open` does not know how to open a terminal window on this OS; run `tales` directly in a terminal instead.".into())
     }
 }
 
@@ -1184,7 +1285,7 @@ fn print_commands_reference() {
     println!("  tales solo <prompt>   Run one tool for one turn");
     println!("  tales discuss <task>  Run planner discussion only");
     println!("  tales run <task>      Plan, recommend, and execute non-interactively");
-    println!("  tales open [task]     Open Tales in a new macOS Terminal window");
+    println!("  tales open [task]     Open Tales in a new terminal window when supported");
     println!();
     println!("Known tools");
     for tool in KNOWN_TOOLS {
@@ -4105,6 +4206,42 @@ mod tests {
         assert!(!s.contains("--prefill"), "{s}");
         let s2 = build_open_script("tales-tui", "/p", &["codex".into()], None);
         assert!(!s2.contains("--prefill"), "{s2}");
+    }
+
+    #[test]
+    fn windows_open_command_quotes_paths_and_flags() {
+        let s = build_windows_open_command(
+            r#"C:\Program Files\Tales\tales-tui.exe"#,
+            r#"C:\Users\Cesar\My Repo"#,
+            &["claude".into()],
+            Some("build the thing"),
+        );
+
+        assert!(
+            s.starts_with(
+                r#"cd /d "C:\Users\Cesar\My Repo" && "C:\Program Files\Tales\tales-tui.exe""#
+            ),
+            "{s}"
+        );
+        assert!(s.contains(r#"--connect "claude""#), "{s}");
+        assert!(s.contains(r#"--prefill "build the thing""#), "{s}");
+    }
+
+    #[test]
+    fn linux_open_script_quotes_paths_and_flags() {
+        let s = build_linux_open_script(
+            "/opt/tales/tales-tui",
+            "/home/cesar/my repo",
+            &["codex".into()],
+            Some("build it's thing"),
+        );
+
+        assert!(
+            s.starts_with("cd '/home/cesar/my repo' || exit 1; exec '/opt/tales/tales-tui'"),
+            "{s}"
+        );
+        assert!(s.contains("--connect 'codex'"), "{s}");
+        assert!(s.contains("--prefill 'build it'\\''s thing'"), "{s}");
     }
 
     #[test]

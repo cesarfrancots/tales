@@ -21,7 +21,7 @@ Before tagging a release:
 
 1. Update the root `Cargo.toml` workspace version.
 2. Update `CHANGELOG.md`.
-3. Run `scripts/release-check.sh`.
+3. Run `scripts/release-check.sh` on macOS/Linux or `.\scripts\release-check.ps1` on Windows.
 4. Verify `tales --version`, `tales-tui --version`, and `tales-web --version`.
 5. Commit the version/changelog changes and tag the commit as `vX.Y.Z`.
 

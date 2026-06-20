@@ -6,6 +6,7 @@ Tales uses one lockstep SemVer version for the Rust workspace. The version lives
 
 ## Unreleased
 
+- Added Windows/Linux CI, a Windows PowerShell release check, and cross-platform `tales open` launcher support.
 - Added a technical `cd` path prompt to the startup workspace browser.
 - Added a startup workspace folder browser and permission prompt before the default Tales terminal opens.
 

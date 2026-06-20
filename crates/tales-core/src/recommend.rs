@@ -18,6 +18,7 @@ pub struct ExecutionVote {
     pub recommended_executor: String,
     pub confidence: f32,
     pub rationale: String,
+    pub parse_source: VoteParseSource,
 }
 
 /// The aggregated recommendation across all votes.
@@ -30,19 +31,43 @@ pub struct Recommendation {
     pub votes: Vec<ExecutionVote>,
     /// Human-readable summary of why.
     pub rationale: String,
-    /// `true` if at least one vote scored a candidate. When `false`, `executor`
-    /// is a fallback (first candidate) and the user should treat it as "no
-    /// clear recommendation" rather than a real consensus.
+    /// `true` only when a candidate has a positive, unique top score. When
+    /// `false`, `executor` is still the label Tales would preselect, but the
+    /// user should treat it as "please choose" rather than real consensus.
     pub confident: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VoteParseSource {
+    Json,
+    CandidateMention,
+}
+
+impl VoteParseSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::CandidateMention => "candidate_mention",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ParsedVote {
+    pub recommended_executor: String,
+    pub confidence: f32,
+    pub rationale: String,
+    pub source: VoteParseSource,
 }
 
 /// Shape an agent is asked to emit as JSON.
 #[derive(Debug, Deserialize)]
 struct RawVote {
+    #[serde(alias = "executor", alias = "agent", alias = "tool")]
     recommended_executor: String,
     #[serde(default = "default_confidence")]
     confidence: f32,
-    #[serde(default)]
+    #[serde(default, alias = "why", alias = "reason")]
     rationale: String,
 }
 
@@ -55,14 +80,87 @@ fn default_confidence() -> f32 {
 /// braces appearing later in the prose (which a naive first-`{`/last-`}` span
 /// would wrongly include).
 pub fn parse_vote(text: &str) -> Option<(String, f32, String)> {
+    parse_vote_json(text).map(|vote| (vote.recommended_executor, vote.confidence, vote.rationale))
+}
+
+pub fn parse_vote_lenient(text: &str, candidates: &[String]) -> Option<ParsedVote> {
+    if let Some(vote) = parse_vote_json(text) {
+        return Some(vote);
+    }
+    parse_single_candidate_mention(text, candidates)
+}
+
+fn parse_vote_json(text: &str) -> Option<ParsedVote> {
     let slice = first_json_object(text)?;
     let raw: RawVote = serde_json::from_str(slice).ok()?;
     let conf = raw.confidence.clamp(0.0, 1.0);
-    Some((
-        raw.recommended_executor.trim().to_string(),
-        conf,
-        raw.rationale,
-    ))
+    Some(ParsedVote {
+        recommended_executor: raw.recommended_executor.trim().to_string(),
+        confidence: conf,
+        rationale: raw.rationale,
+        source: VoteParseSource::Json,
+    })
+}
+
+fn parse_single_candidate_mention(text: &str, candidates: &[String]) -> Option<ParsedVote> {
+    let mentioned: Vec<&String> = candidates
+        .iter()
+        .filter(|candidate| mentions_candidate(text, candidate))
+        .collect();
+    if mentioned.len() != 1 {
+        return None;
+    }
+    Some(ParsedVote {
+        recommended_executor: mentioned[0].clone(),
+        confidence: 0.5,
+        rationale: format!("salvaged from prose vote: {}", compact_one_line(text, 180)),
+        source: VoteParseSource::CandidateMention,
+    })
+}
+
+fn mentions_candidate(text: &str, candidate: &str) -> bool {
+    let needle = candidate.trim().to_ascii_lowercase();
+    if needle.is_empty() {
+        return false;
+    }
+    let haystack = text.to_ascii_lowercase();
+    let mut offset = 0usize;
+    while let Some(found) = haystack[offset..].find(&needle) {
+        let start = offset + found;
+        let end = start + needle.len();
+        let before_ok = haystack[..start]
+            .chars()
+            .next_back()
+            .map(label_boundary)
+            .unwrap_or(true);
+        let after_ok = haystack[end..]
+            .chars()
+            .next()
+            .map(label_boundary)
+            .unwrap_or(true);
+        if before_ok && after_ok {
+            return true;
+        }
+        offset = end;
+    }
+    false
+}
+
+fn label_boundary(ch: char) -> bool {
+    !ch.is_ascii_alphanumeric() && ch != '_' && ch != '-'
+}
+
+fn compact_one_line(text: &str, max_chars: usize) -> String {
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut out = String::new();
+    for (idx, ch) in normalized.chars().enumerate() {
+        if idx == max_chars {
+            out.push_str("...");
+            break;
+        }
+        out.push(ch);
+    }
+    out
 }
 
 /// Return the substring of the first balanced `{...}` object, tracking string
@@ -105,6 +203,8 @@ fn norm(s: &str) -> String {
     s.trim().to_lowercase()
 }
 
+const SCORE_TIE_EPSILON: f32 = 1e-6;
+
 /// Tally confidence-weighted votes. `candidates` are the valid executor labels;
 /// a vote whose nomination doesn't match a candidate is matched by normalized
 /// label, and otherwise ignored for scoring (but kept in `votes`).
@@ -128,16 +228,23 @@ pub fn aggregate(votes: Vec<ExecutionVote>, candidates: &[String]) -> Option<Rec
         .first()
         .cloned()
         .unwrap_or((candidates[0].clone(), 0.0));
-    let confident = top.1 > 0.0;
-    // When no vote scored a candidate, fall back to the first candidate but flag
-    // it as not-confident so callers/UI don't present it as a real consensus.
+    let second_score = scores.get(1).map(|(_, score)| *score).unwrap_or(0.0);
+    let has_positive_leader = top.1 > 0.0;
+    let has_unique_leader = top.1 > second_score + SCORE_TIE_EPSILON;
+    let confident = has_positive_leader && has_unique_leader;
+    // When no vote scored a candidate, or the top score is tied, still return a
+    // deterministic executor but flag it as not-confident so callers/UI don't
+    // present roster-order fallback as consensus.
     let executor = top.0;
 
     let mut rationale = String::new();
-    if !confident {
-        rationale.push_str(
-            "(no parseable/decisive vote — defaulting to the first candidate; please choose)\n",
-        );
+    if !has_positive_leader {
+        rationale.push_str("(no scored vote — defaulting to the first candidate; please choose)\n");
+    } else if !has_unique_leader {
+        rationale.push_str(&format!(
+            "(tied executor vote at {score:.2} — preselecting {executor} by roster order; please choose)\n",
+            score = top.1
+        ));
     }
     for vote in &votes {
         rationale.push_str(&format!(
@@ -174,6 +281,54 @@ mod tests {
     }
 
     #[test]
+    fn parse_vote_accepts_common_executor_aliases_without_repair() {
+        let candidates = vec!["claude".to_string(), "codex".to_string()];
+        let vote = parse_vote_lenient(
+            r#"{"executor":"codex","confidence":0.7,"why":"cheap"}"#,
+            &candidates,
+        )
+        .unwrap();
+
+        assert_eq!(vote.recommended_executor, "codex");
+        assert!((vote.confidence - 0.7).abs() < f32::EPSILON);
+        assert_eq!(vote.rationale, "cheap");
+        assert_eq!(vote.source, VoteParseSource::Json);
+
+        let vote =
+            parse_vote_lenient(r#"{"agent":"claude","reason":"best code"}"#, &candidates).unwrap();
+        assert_eq!(vote.recommended_executor, "claude");
+        assert_eq!(vote.rationale, "best code");
+        assert_eq!(vote.source, VoteParseSource::Json);
+    }
+
+    #[test]
+    fn parse_vote_lenient_salvages_single_candidate_prose() {
+        let candidates = vec!["claude".to_string(), "codex".to_string()];
+        let vote = parse_vote_lenient(
+            "I would have Claude execute this because the patch is file-heavy.",
+            &candidates,
+        )
+        .unwrap();
+
+        assert_eq!(vote.recommended_executor, "claude");
+        assert_eq!(vote.source, VoteParseSource::CandidateMention);
+        assert!((vote.confidence - 0.5).abs() < f32::EPSILON);
+        assert!(vote.rationale.contains("salvaged from prose vote"));
+    }
+
+    #[test]
+    fn parse_vote_lenient_refuses_ambiguous_or_partial_mentions() {
+        let candidates = vec!["claude".to_string(), "codex".to_string()];
+        assert!(
+            parse_vote_lenient("Claude can do it, but Codex is cheaper.", &candidates).is_none()
+        );
+        assert!(
+            parse_vote_lenient("The claudean path is not a candidate mention.", &candidates)
+                .is_none()
+        );
+    }
+
+    #[test]
     fn aggregate_picks_highest_confidence_candidate() {
         let candidates = vec!["claude".to_string(), "codex".to_string()];
         let votes = vec![
@@ -183,6 +338,7 @@ mod tests {
                 recommended_executor: "Claude".into(), // case-insensitive match
                 confidence: 0.8,
                 rationale: "x".into(),
+                parse_source: VoteParseSource::Json,
             },
             ExecutionVote {
                 voter: Uuid::new_v4(),
@@ -190,11 +346,70 @@ mod tests {
                 recommended_executor: "claude".into(),
                 confidence: 0.6,
                 rationale: "y".into(),
+                parse_source: VoteParseSource::Json,
             },
         ];
         let rec = aggregate(votes, &candidates).unwrap();
         assert_eq!(rec.executor, "claude");
         assert_eq!(rec.scores[0].0, "claude");
         assert!((rec.scores[0].1 - 1.4).abs() < 1e-6);
+        assert!(rec.confident);
+    }
+
+    #[test]
+    fn aggregate_marks_tied_positive_votes_not_confident() {
+        let candidates = vec!["claude".to_string(), "codex".to_string()];
+        let votes = vec![
+            ExecutionVote {
+                voter: Uuid::new_v4(),
+                voter_label: "claude".into(),
+                recommended_executor: "claude".into(),
+                confidence: 0.7,
+                rationale: "strong local context".into(),
+                parse_source: VoteParseSource::Json,
+            },
+            ExecutionVote {
+                voter: Uuid::new_v4(),
+                voter_label: "codex".into(),
+                recommended_executor: "codex".into(),
+                confidence: 0.7,
+                rationale: "cheaper executor".into(),
+                parse_source: VoteParseSource::Json,
+            },
+        ];
+
+        let rec = aggregate(votes, &candidates).unwrap();
+        assert_eq!(rec.executor, "claude");
+        assert_eq!(rec.scores[0], ("claude".to_string(), 0.7));
+        assert_eq!(rec.scores[1], ("codex".to_string(), 0.7));
+        assert!(!rec.confident);
+        assert!(
+            rec.rationale.contains("tied executor vote"),
+            "{}",
+            rec.rationale
+        );
+        assert!(rec.rationale.contains("please choose"), "{}", rec.rationale);
+    }
+
+    #[test]
+    fn aggregate_marks_unmatched_votes_not_confident() {
+        let candidates = vec!["claude".to_string(), "codex".to_string()];
+        let votes = vec![ExecutionVote {
+            voter: Uuid::new_v4(),
+            voter_label: "claude".into(),
+            recommended_executor: "nonexistent".into(),
+            confidence: 0.9,
+            rationale: "typo".into(),
+            parse_source: VoteParseSource::Json,
+        }];
+
+        let rec = aggregate(votes, &candidates).unwrap();
+        assert_eq!(rec.executor, "claude");
+        assert!(!rec.confident);
+        assert!(
+            rec.rationale.contains("no scored vote"),
+            "{}",
+            rec.rationale
+        );
     }
 }

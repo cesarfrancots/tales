@@ -4,7 +4,7 @@
 
 ### two AIs, one terminal, you on the trigger
 
-**Tales** runs **Claude Code** and **Codex** (and **Open Code**) side by side in your terminal.
+**Tales** runs AI coding CLIs — **Claude Code**, **Codex**, **Open Code**, and generic CLI rows like Gemini — side by side in your terminal.
 They argue out a plan, recommend who should execute — and **nothing runs until you say so.**
 
 [![MIT](https://img.shields.io/badge/license-MIT-2dd4bf?style=flat-square)](LICENSE)
@@ -65,7 +65,7 @@ the gate the whole time.
 ## Mix the room, tier the cost
 
 Tales isn't locked to two models or one vendor. **Any AI coding CLI can join** behind one
-small adapter — Claude Code, Codex, and Open Code today — and the room doesn't have to be
+small adapter — Claude Code, Codex, Open Code, and generic CLI rows today — and the room doesn't have to be
 uniform.
 
 The payoff is **tiered execution**: run your *smart, expensive* models on the part that
@@ -96,8 +96,8 @@ No Electron, no cloud, no account. The whole thing is small, native Rust.
 
 | | |
 |--:|:--|
-| **1.4 MB** | the `tales-tui` binary (size-optimized, statically built; `tales` 1.6 MB, `tales-web` 1.4 MB) |
-| **~9.7k** | lines of Rust across a UI-agnostic core + three frontends |
+| **1.5 MB** | the `tales-tui` binary (size-optimized release build; `tales` 1.9 MB, `tales-web` 1.8 MB) |
+| **~18.9k** | lines of Rust across a UI-agnostic core + three frontends |
 | **0** | telemetry, cloud calls, or background daemons — runs on your machine, your keys |
 | **∞** | models, eventually — add an `AgentAdapter`, add a row, done |
 
@@ -180,18 +180,26 @@ Default for `tales run`/`discuss`; `--sequential` opts out.
 git clone https://github.com/cesarfrancots/tales && cd tales
 cargo build --release          # → target/release: tales, tales-tui, tales-web
 
-# 2. open the terminal — connect your tools, then plan
+# 2. check local tools and cached project context
+tales doctor --all
+tales context
+tales profile refresh
+
+# 3. open the terminal — connect your tools, then plan
 tales
 
-# 3. or go straight in, scriptable:
+# 4. or go straight in, scriptable:
 tales run "add OAuth login" --drafter claude --critic codex --execute claude
+
+# 5. compare collaboration shapes without model calls
+tales eval compare "add OAuth login"
 ```
 
-Try the whole flow with **no API calls**: `tales-tui --demo`.
+Try the whole flow with **no API calls**: `tales-tui --demo` or `tales-web --demo`.
 
 ## The flow
 
-1. **Connect** — pick which CLIs join: Claude Code, Codex, Open Code. Bring two; bring three.
+1. **Connect** — pick which CLIs join: Claude Code, Codex, Open Code, Gemini, GLM, Kimi, or another registry row. Bring two; bring three.
 2. **Plan** *(default)* — they discuss in a live chat. Type to interject — you're a participant.
 3. **Pick** — they recommend an executor; you confirm, override (`/confirm <n>`), or reject. **This gate can't be skipped.**
 4. **Execute** — the chosen tool builds the plan in an isolated git worktree. You get a clean, reviewable diff.
@@ -205,11 +213,15 @@ A Cargo workspace with a strictly UI-agnostic core — frontends talk to it only
 - **`tales-core`** — the orchestrator. Every tool is one `AgentAdapter` emitting normalized
   `AgentEvent`s; the wildly different CLIs (Claude's bidirectional `stream-json` vs Codex's
   turn-based `exec`/`resume`) differ only through `AgentCaps` flags — never an `if claude {…}`.
-- **`tales-cli`** — the `tales` binary: bare `tales` opens the interactive terminal; `run` / `discuss` / `solo` are the scriptable counterparts.
+- **`tales-cli`** — the `tales` binary: bare `tales` opens the interactive terminal; `run` / `discuss` / `solo` are the scriptable counterparts; `doctor`, `context`, `profile`, and `eval` preflight tools/cache/memory/evaluation state with no model calls.
 - **`tales-tui`** — the interactive terminal: connect → plan → pick → execute.
-- **`tales-web`** — a local browser view (axum + WebSocket) of the same session.
+- **`tales-web`** — a local browser view (axum + WebSocket) of the same session, with a pre-session workspace/task picker so you do not need to `cd` first.
 
-Adding a tool (Gemini, Aider, …) is one adapter impl + one row in `KNOWN_TOOLS`; the picker,
+Tales caches a compact repo map/manifest context outside the project and injects it into first planning prompts. It also keeps an opt-in local workspace profile under the Tales cache tree with metadata only: commands, preferred tools, warnings, report paths, and run summaries. Reports include prompt telemetry, provider token/cost data when adapters expose it, local-change handoff summaries, deterministic optimization hints, and recommendation inputs.
+
+The shared `SessionConfig` contract now describes task, cwd, seats, prompt budget, report paths, and the approval policy used by CLI/web preflight. `--dry-run --json` includes that config, workspace profile status, and deterministic smarter/faster/cheaper tool recommendation chips.
+
+Adding a tool (Gemini, Aider, …) is one adapter impl or one generic row in `KNOWN_TOOLS`; the picker,
 CLI, and orchestrator all read that registry. Full details in the
 [**documentation**](https://cesarfrancots.github.io/tales/docs.html).
 
@@ -222,9 +234,10 @@ against the source. Eat your own cooking.
 
 ## Status
 
-`M0–M8` done: live multi-agent discussion, recommendation + a hard confirmation gate,
-git-worktree execution & merge, the interactive terminal workspace, and an Open Code adapter.
-Hardened against deadlocks and zombie processes; the test suite stays green on every change.
+Live today: multi-agent discussion, parallel planning, cached project context, local workspace profiles, prompt forecasts, deterministic eval comparisons,
+recommendation + a hard confirmation gate, git-worktree execution & merge, the interactive
+terminal workspace, browser supervision UI with workspace picker and command palette, report writers, and bespoke/generic tool adapters.
+Hardened against deadlocks and zombie processes; the test suite and strict clippy pass before push.
 
 ---
 

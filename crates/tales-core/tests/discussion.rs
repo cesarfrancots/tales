@@ -76,14 +76,24 @@ async fn drafter_critic_relay_builds_transcript() {
 
     orch.shutdown().await;
 
-    // The conversation was mirrored onto the bus: collect the Message events.
+    // The conversation and discussion-only report were mirrored onto the bus.
     let mut messages = Vec::new();
+    let mut report = None;
     while let Ok(event) = events.try_recv() {
-        if let OrchestratorEvent::Message { text, .. } = event {
-            messages.push(text);
+        match event {
+            OrchestratorEvent::Message { text, .. } => messages.push(text),
+            OrchestratorEvent::SessionReport { markdown, summary } => {
+                assert_eq!(summary["kind"], "tales_session_summary");
+                assert_eq!(summary["outcome"]["status"], "discussed");
+                report = Some(markdown);
+            }
+            _ => {}
         }
     }
     assert!(messages.iter().any(|m| m == "draft-one"));
     assert!(messages.iter().any(|m| m == "critique-two"));
     assert!(messages.iter().any(|m| m == "revised-three"));
+    let report = report.expect("expected a discussion SessionReport on the bus");
+    assert!(report.contains("- status: discussed"), "{report}");
+    assert!(report.contains("build a widget"), "{report}");
 }

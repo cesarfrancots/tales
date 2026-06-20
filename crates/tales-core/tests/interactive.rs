@@ -99,16 +99,45 @@ async fn interactive_run_folds_human_note_then_executes_on_confirm() {
 
     orch.shutdown().await;
 
-    // The chat bus carried a UserMessage echo.
+    // The chat bus carried a UserMessage echo, handoff packet, and local report.
     let mut saw_user_msg = false;
+    let mut saw_execution_packet = false;
+    let mut saw_session_report = false;
     while let Ok(ev) = events.try_recv() {
-        if let OrchestratorEvent::UserMessage { text } = ev {
-            if text.contains("rate limits") {
+        match ev {
+            OrchestratorEvent::UserMessage { text } if text.contains("rate limits") => {
                 saw_user_msg = true;
             }
+            OrchestratorEvent::ExecutionPacket {
+                executor,
+                text,
+                included_in_prompt,
+            } => {
+                assert_eq!(executor, "claude");
+                assert!(included_in_prompt);
+                assert!(text.contains("Chosen executor: claude"), "{text}");
+                assert!(text.contains("rate limits"), "{text}");
+                saw_execution_packet = true;
+            }
+            OrchestratorEvent::SessionReport { markdown, summary } => {
+                assert!(markdown.contains("# Tales session report"), "{markdown}");
+                assert!(markdown.contains("- status: executed"), "{markdown}");
+                assert!(markdown.contains("- executor: claude"), "{markdown}");
+                assert!(markdown.contains("rate limits"), "{markdown}");
+                assert_eq!(summary["kind"], "tales_session_summary");
+                assert_eq!(summary["outcome"]["status"], "executed");
+                assert_eq!(summary["outcome"]["executor"], "claude");
+                saw_session_report = true;
+            }
+            _ => {}
         }
     }
     assert!(saw_user_msg, "expected a UserMessage on the bus");
+    assert!(
+        saw_execution_packet,
+        "expected an ExecutionPacket on the bus"
+    );
+    assert!(saw_session_report, "expected a SessionReport on the bus");
 }
 
 #[tokio::test]

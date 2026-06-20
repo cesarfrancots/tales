@@ -64,7 +64,10 @@ async fn parallel_rounds_collect_both_planners_in_roster_order() {
 
     // Both planners' output from BOTH rounds landed — none dropped on the floor.
     for needle in ["draft-A", "draft-B", "merged-plan", "review-notes"] {
-        assert!(transcript.contains(needle), "missing {needle} in: {transcript}");
+        assert!(
+            transcript.contains(needle),
+            "missing {needle} in: {transcript}"
+        );
     }
 
     let bb = orch.blackboard();
@@ -108,7 +111,9 @@ impl AgentAdapter for HangAdapter {
                     AgentCommand::StartTurn { .. } | AgentCommand::InjectMessage { .. } => {
                         turn += 1;
                         // Start the turn, then go silent forever (no TurnComplete).
-                        let _ = events_tx.send(AgentEvent::TurnStarted { agent, turn }).await;
+                        let _ = events_tx
+                            .send(AgentEvent::TurnStarted { agent, turn })
+                            .await;
                     }
                     AgentCommand::Shutdown => break,
                 }
@@ -214,7 +219,10 @@ async fn interactive_parallel_run_plans_in_rounds_then_executes() {
     // Both rounds' planning landed before the gate.
     let transcript = orch.blackboard().transcript_text();
     for needle in ["draft-A", "draft-B", "merged-plan", "review"] {
-        assert!(transcript.contains(needle), "missing {needle}: {transcript}");
+        assert!(
+            transcript.contains(needle),
+            "missing {needle}: {transcript}"
+        );
     }
     orch.shutdown().await;
 }

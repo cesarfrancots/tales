@@ -32,6 +32,40 @@ const MIN_CPS: f64 = 160.0;
 /// Seconds between spinner frames.
 const SPIN_INTERVAL: f64 = 0.09;
 
+fn recommendation_scores_line(scores: &[(String, f32)]) -> Option<String> {
+    if scores.is_empty() {
+        return None;
+    }
+    let mut parts = scores
+        .iter()
+        .take(4)
+        .map(|(executor, score)| format!("{}={score:.2}", pretty(executor)))
+        .collect::<Vec<_>>();
+    if scores.len() > 4 {
+        parts.push(format!("+{} more", scores.len() - 4));
+    }
+    Some(format!("scores: {}", parts.join(", ")))
+}
+
+pub fn help_message() -> &'static str {
+    "Tales help\n\
+     Type a normal message to add context while the planners are working.\n\
+     At the executor gate, press Enter to accept the recommendation or press 1-9 to pick a tool.\n\
+     The selected executor opens as a live CLI pane, so you can answer questions directly there.\n\
+     Type /commands for every Tales command."
+}
+
+pub fn commands_message() -> &'static str {
+    "Tales commands\n\
+     help or /help — show quick guidance\n\
+     commands or /commands — list available commands\n\
+     /attach <path> — send an image or PDF with your next message\n\
+     /confirm [agent|number] — approve execution with the recommendation or a chosen executor\n\
+     /reject — stop before execution\n\
+     /quit — leave Tales\n\
+     Ctrl-N shell · Ctrl-X Codex · Ctrl-L Claude · Ctrl-O Open Code · Ctrl-S send plan · Ctrl-A approve"
+}
+
 #[derive(Clone, Copy)]
 enum SysKind {
     Note,
@@ -173,7 +207,9 @@ impl App {
                 let label = self.label_of(&agent);
                 self.sys(format!("⚙ {} · {summary}", pretty(&label)), SysKind::Note);
             }
-            OrchestratorEvent::TurnComplete { agent, cost_usd } => {
+            OrchestratorEvent::TurnComplete {
+                agent, cost_usd, ..
+            } => {
                 // Mark done + stash the cost; the block (and its cost note) are
                 // emitted together when the reveal catches up, preserving order.
                 if self.partial.contains_key(&agent) {
@@ -196,11 +232,47 @@ impl App {
             OrchestratorEvent::RecommendationReady {
                 executor,
                 rationale,
+                confident,
+                scores,
             } => {
                 self.recommended = Some(executor.clone());
+                let confidence = if confident {
+                    "consensus"
+                } else {
+                    "needs your call"
+                };
+                let mut text = format!("recommend {} ({confidence})", pretty(&executor));
+                if let Some(scores) = recommendation_scores_line(&scores) {
+                    text.push('\n');
+                    text.push_str(&scores);
+                }
+                text.push('\n');
+                text.push_str(rationale.trim());
+                self.sys(text, SysKind::Rec);
+            }
+            OrchestratorEvent::ExecutionPacket {
+                executor,
+                text,
+                included_in_prompt,
+            } => {
+                let prompt_status = if included_in_prompt {
+                    "included in executor prompt"
+                } else {
+                    "not included in executor prompt"
+                };
                 self.sys(
-                    format!("recommend {}\n{}", pretty(&executor), rationale.trim()),
-                    SysKind::Rec,
+                    format!(
+                        "execution packet for {} · {} chars · {prompt_status}",
+                        pretty(&executor),
+                        text.chars().count()
+                    ),
+                    SysKind::Note,
+                );
+            }
+            OrchestratorEvent::SessionReport { markdown, .. } => {
+                self.sys(
+                    format!("session report ready · {} chars", markdown.chars().count()),
+                    SysKind::Note,
                 );
             }
             OrchestratorEvent::AwaitingConfirmation { .. } => {
@@ -348,6 +420,14 @@ impl App {
 
         // Match commands exactly (or followed by a space) so `/attachfoo` and
         // `/confirmation` fall through to a normal message rather than mis-firing.
+        if text == "/help" || text.eq_ignore_ascii_case("help") {
+            self.sys(help_message(), SysKind::Note);
+            return None;
+        }
+        if text == "/commands" || text.eq_ignore_ascii_case("commands") {
+            self.sys(commands_message(), SysKind::Note);
+            return None;
+        }
         if text == "/attach" || text.starts_with("/attach ") {
             let raw = text["/attach".len()..].trim();
             if raw.is_empty() {
@@ -432,7 +512,7 @@ impl App {
     pub fn footer_line(&self) -> Line<'static> {
         if !self.awaiting {
             return Line::from(Span::styled(
-                "type to talk · /attach <file> · /confirm [agent] · /reject · /quit",
+                "type to talk · /help · /commands · /attach <file> · /confirm [agent] · /reject · /quit",
                 Style::default().fg(FAINT),
             ));
         }
@@ -764,6 +844,7 @@ mod tests {
         app.apply(OrchestratorEvent::TurnComplete {
             agent,
             cost_usd: None,
+            token_usage: None,
         });
         app.advance(10.0); // reveal + finalize into a permanent block
         let done = text_of(&app.render_lines(80));
@@ -804,6 +885,7 @@ mod tests {
         app.apply(OrchestratorEvent::TurnComplete {
             agent,
             cost_usd: Some(0.01),
+            token_usage: None,
         });
         app.advance(10.0); // fully reveal + finalize
         assert!(
@@ -819,6 +901,7 @@ mod tests {
         app.apply(OrchestratorEvent::TurnComplete {
             agent: ghost,
             cost_usd: None,
+            token_usage: None,
         });
         app.advance(10.0);
         assert!(
@@ -901,6 +984,7 @@ mod tests {
         app.apply(OrchestratorEvent::TurnComplete {
             agent,
             cost_usd: None,
+            token_usage: None,
         });
         app.advance(10.0);
         let r = text_of(&app.render_lines(80));
@@ -965,6 +1049,12 @@ mod tests {
     #[test]
     fn commands_map_correctly() {
         let mut app = App::new("t".into());
+        app.input = "help".into();
+        assert!(app.submit_input().is_none());
+        assert!(text_of(&app.render_lines(80)).contains("Tales help"));
+        app.input = "/commands".into();
+        assert!(app.submit_input().is_none());
+        assert!(text_of(&app.render_lines(80)).contains("/attach <path>"));
         app.recommended = Some("claude".into());
         app.input = "/confirm".into();
         match app.submit_input() {

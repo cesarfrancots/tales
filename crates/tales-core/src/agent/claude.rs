@@ -94,6 +94,9 @@ impl AgentAdapter for ClaudeAdapter {
         if let Some(model) = &ctx.model {
             cmd.arg("--model").arg(model);
         }
+        if let Some(effort) = &ctx.effort {
+            cmd.arg("--effort").arg(effort);
+        }
         if let Some(tools) = &ctx.allowed_tools {
             if !tools.is_empty() {
                 cmd.arg("--allowedTools").args(tools);
@@ -313,6 +316,7 @@ async fn reader_task(
                         agent,
                         turn,
                         cost_usd: cost,
+                        token_usage: None,
                     })
                     .await;
             }

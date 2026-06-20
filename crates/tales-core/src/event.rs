@@ -6,7 +6,9 @@
 //! broadcast channel so a stalled UI can never block the engine; commands fan
 //! in over an mpsc so all frontends are interchangeable producers.
 
-use crate::AgentId;
+use serde_json::Value;
+
+use crate::{AgentId, TokenUsage};
 
 /// Everything the core tells the outside world. Frontends render these.
 #[derive(Clone, Debug)]
@@ -32,16 +34,32 @@ pub enum OrchestratorEvent {
     /// An agent finished a turn. `cost_usd` is the session-cumulative cost as
     /// reported by the tool (Claude), or `None` when the tool reports no machine
     /// cost (Codex, Open Code) — so it is a running total, not a per-turn delta.
+    /// `token_usage` is provider-reported usage for this turn when available.
     TurnComplete {
         agent: AgentId,
         cost_usd: Option<f64>,
+        token_usage: Option<TokenUsage>,
     },
     /// An agent process exited.
     AgentExited { agent: AgentId, code: Option<i32> },
     /// The discussion phase changed (planning → recommending → …).
     PhaseChanged { phase: String },
     /// The agents recommended an executor; awaiting the user's decision.
-    RecommendationReady { executor: String, rationale: String },
+    RecommendationReady {
+        executor: String,
+        rationale: String,
+        confident: bool,
+        scores: Vec<(String, f32)>,
+    },
+    /// Compact execution handoff/audit packet assembled after the gate opens.
+    ExecutionPacket {
+        executor: String,
+        text: String,
+        included_in_prompt: bool,
+    },
+    /// Deterministic local run report for handoff/replay. This is generated
+    /// without model calls, so it is cheap to replay or copy into a follow-up.
+    SessionReport { markdown: String, summary: Value },
     /// The engine is blocked waiting for the user to confirm/override/reject.
     AwaitingConfirmation { prompt: String },
     /// Diagnostic log line for an in-UI log pane.

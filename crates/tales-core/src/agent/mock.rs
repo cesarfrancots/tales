@@ -83,6 +83,7 @@ impl AgentAdapter for MockAdapter {
                                 agent,
                                 turn,
                                 cost_usd: None,
+                                token_usage: None,
                             })
                             .await;
                     }

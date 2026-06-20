@@ -6,21 +6,21 @@
 <title>tales</title>
 <style>
   :root {
-    --bg: #0b0d11;
-    --block: #111419;
-    --block-hover: #151921;
-    --border: #1b2029;
-    --text: #d2d8e2;
-    --dim: #6b7483;
-    --faint: #3c434f;
+    --bg: #080a0f;
+    --block: #0d1017;
+    --block-hover: #11151d;
+    --border: #202735;
+    --text: #d9dee7;
+    --dim: #7b8492;
+    --faint: #444c59;
     --claude: #5cb0ff;
-    --codex: #c08cff;
+    --codex: #b990ff;
     --you: #7ee0a3;
     --accent: #2dd4bf;
     --warn: #ffc777;
     --err: #ff7a85;
     --mono: "JetBrains Mono", "SF Mono", ui-monospace, "Menlo", "Consolas", monospace;
-    --r: 10px;
+    --r: 8px;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
@@ -33,33 +33,86 @@
   /* ── top bar ───────────────────────────────────────────── */
   header {
     display: flex; align-items: center; gap: 12px;
-    padding: 11px 18px; border-bottom: 1px solid var(--border);
-    background: var(--bg); user-select: none;
+    min-height: 44px; padding: 0 16px; border-bottom: 1px solid var(--border);
+    background: rgba(8,10,15,.92); user-select: none;
+    backdrop-filter: blur(12px);
   }
   .logo { font-weight: 700; letter-spacing: .5px; color: var(--text); }
   .logo .pin { color: var(--accent); }
   .task { color: var(--dim); font-size: 12px; overflow: hidden;
           text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+  .workspace-button {
+    display: inline-flex; align-items: center; gap: 7px; min-width: 0;
+    max-width: min(360px, 32vw); min-height: 28px; padding: 0 10px;
+    border: 1px solid var(--border); border-radius: 7px;
+    background: rgba(255,255,255,.012); color: var(--dim);
+    font: 600 12px var(--mono); cursor: pointer;
+  }
+  .workspace-button:hover { border-color: var(--faint); color: var(--text); }
+  .workspace-button .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .command-button {
+    display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 9px;
+    border: 1px solid var(--border); border-radius: 7px;
+    background: transparent; color: var(--dim);
+    font: 600 12px var(--mono); cursor: pointer;
+  }
+  .command-button:hover { border-color: var(--faint); color: var(--text); }
+  .tool-status {
+    color: var(--faint); font-size: 11px; white-space: nowrap;
+    border: 1px solid var(--border); border-radius: 5px; padding: 2px 6px;
+  }
+  .tool-status.ok { color: var(--accent); border-color: #1f4f49; }
+  .tool-status.warn { color: var(--warn); border-color: #3f351d; }
   .status { display: flex; align-items: center; gap: 7px; font-size: 11.5px;
             color: var(--dim); text-transform: lowercase; }
   .status .live { width: 7px; height: 7px; border-radius: 50%;
                   background: var(--faint); transition: background .2s; }
   .status.on .live { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+  .session-strip {
+    border-bottom: 1px solid var(--border);
+    color: var(--dim); background: #090b10; font-size: 11px;
+  }
+  .session-strip[hidden] { display: none; }
+  .session-strip summary {
+    display: flex; align-items: center; gap: 9px; min-height: 32px;
+    padding: 0 18px; cursor: pointer; list-style: none;
+  }
+  .session-strip summary::-webkit-details-marker { display: none; }
+  .session-strip summary::before { content: "▸"; color: var(--faint); transition: transform .14s ease; }
+  .session-strip[open] summary::before { transform: rotate(90deg); }
+  .session-title { color: var(--text); font-weight: 600; }
+  .session-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .session-details { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; padding: 0 18px 10px 36px; }
+  .session-chip {
+    display: inline-flex; align-items: center; gap: 5px;
+    border: 1px solid var(--border); border-radius: 5px; padding: 2px 7px;
+    min-height: 22px; max-width: 100%;
+  }
+  .session-chip strong { color: var(--text); font-weight: 600; }
+  .session-chip .role { color: var(--faint); text-transform: uppercase; font-size: 9px; letter-spacing: .5px; }
+  .session-chip.ready { border-color: #1f4f49; color: var(--accent); }
+  .session-chip.missing { border-color: #3f351d; color: var(--warn); }
+  .session-chip.advice-good { border-color: #1f4f49; color: var(--accent); }
+  .session-chip.advice-info { border-color: var(--border); color: var(--dim); }
+  .session-chip.advice-warn { border-color: #3f351d; color: var(--warn); }
+  .session-chip.path { max-width: min(560px, 100%); }
+  .session-chip.path span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* ── stream ────────────────────────────────────────────── */
   #stream {
-    flex: 1; overflow-y: auto; padding: 16px 18px;
+    flex: 1; overflow-y: auto; padding: 18px clamp(18px, 6vw, 84px);
     display: flex; flex-direction: column; gap: 8px;
     scrollbar-width: thin; scrollbar-color: var(--border) transparent;
   }
   #stream::-webkit-scrollbar { width: 9px; }
   #stream::-webkit-scrollbar-thumb { background: var(--border); border-radius: 9px; }
   .block {
-    border: 1px solid var(--border); background: var(--block);
-    border-radius: var(--r); padding: 9px 13px 11px; max-width: 820px;
+    border: 0; background: transparent;
+    border-bottom: 1px solid rgba(32,39,53,.68);
+    border-radius: 0; padding: 5px 0 14px 14px; max-width: 840px;
     border-left: 2px solid var(--faint);
     transition: background .12s ease, border-color .12s ease;
   }
-  .block:hover { background: var(--block-hover); }
+  .block:hover { background: rgba(255,255,255,.014); }
   .block .head { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
   .block .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
   .block .name { font-weight: 600; font-size: 12px; letter-spacing: .2px; }
@@ -85,14 +138,88 @@
   .block.codex { border-left-color: var(--codex); }
   .block.codex .dot { background: var(--codex); } .block.codex .name { color: var(--codex); }
   .block.you {
-    align-self: flex-end; border-left-color: var(--you);
-    background: #0e1813; border-color: #1c3527;
+    align-self: stretch; border-left-color: var(--you);
+    background: transparent;
   }
   .block.you .dot { background: var(--you); } .block.you .name { color: var(--you); }
+  .block.packet {
+    border: 1px solid #1f3b38; border-left: 2px solid var(--accent);
+    border-radius: var(--r); padding: 9px 13px 11px;
+    background: #0c1717;
+  }
+  .block.packet .dot { background: var(--accent); }
+  .block.packet .name { color: var(--accent); }
+  .block.report {
+    border: 1px solid #3f351d; border-left: 2px solid var(--warn);
+    border-radius: var(--r); padding: 9px 13px 11px;
+    background: #17140d;
+  }
+  .block.report .dot { background: var(--warn); }
+  .block.report .name { color: var(--warn); }
+  .opt-panel,
+  .resume-panel {
+    border: 0; border-left: 2px solid var(--accent); border-bottom: 1px solid rgba(32,39,53,.68);
+    background: transparent; border-radius: 0; padding: 5px 0 14px 14px;
+    max-width: 820px;
+  }
+  .resume-panel {
+    border-left-color: var(--you);
+  }
+  .opt-head {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+    color: var(--accent); font-weight: 600; font-size: 12px;
+  }
+  .opt-head .mark { color: var(--faint); }
+  .opt-head .count { margin-left: auto; color: var(--faint); font-weight: 400; font-size: 10.5px; }
+  .resume-head {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+    color: var(--you); font-weight: 600; font-size: 12px;
+  }
+  .resume-head .mark { color: var(--faint); }
+  .resume-head .count { margin-left: auto; color: var(--faint); font-weight: 400; font-size: 10.5px; }
+  .resume-list { display: flex; flex-direction: column; gap: 5px; }
+  .resume-row {
+    display: grid; grid-template-columns: minmax(206px, .36fr) minmax(0, 1fr);
+    gap: 10px; align-items: start; min-width: 0;
+  }
+  .resume-key {
+    display: inline-flex; align-items: center; gap: 6px; min-width: 0;
+    color: var(--you); font-size: 11px;
+  }
+  .resume-key .glyph {
+    color: var(--faint); width: 32px; flex: none; font-size: 10px; text-transform: uppercase;
+  }
+  .resume-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .resume-val { color: var(--text); font-size: 11.5px; overflow-wrap: anywhere; min-width: 0; }
+  .opt-list { display: flex; flex-wrap: wrap; gap: 6px; }
+  .opt-chip {
+    display: inline-flex; align-items: flex-start; gap: 6px; max-width: 100%;
+    border: 1px solid var(--border); border-radius: 5px; padding: 4px 7px;
+    color: var(--dim); background: rgba(255,255,255,.012); font-size: 11px;
+  }
+  .opt-chip .glyph { color: var(--accent); flex: none; }
+  .opt-chip.warn { border-color: #3f351d; color: var(--warn); }
+  .opt-chip.warn .glyph { color: var(--warn); }
+  .opt-chip.ok { border-color: #1f4f49; color: var(--accent); }
   .block.streaming .body::after {
     content: "▌"; color: var(--dim); animation: blink 1s steps(2) infinite; margin-left: 1px;
   }
   @keyframes blink { 50% { opacity: 0; } }
+  @media (max-width: 680px) {
+    .tool-status { display: none; }
+    .session-strip { padding: 7px 12px; }
+    .session-chip.path { display: none; }
+    .resume-row { grid-template-columns: 1fr; gap: 1px; }
+    #gate.show {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      gap: 8px;
+      padding: 10px 12px;
+    }
+    #gate .q { grid-column: 1 / -1; }
+    #gate select { min-width: 0; width: 100%; }
+    #gate .btn { white-space: nowrap; padding: 6px 10px; }
+  }
   /* thinking takes precedence over the cursor while the body is still empty */
   .block.thinking .body::after {
     content: "thinking…"; color: var(--dim); font-style: italic;
@@ -107,15 +234,127 @@
   .sys.vote { color: var(--dim); }
   /* recommendation card */
   .reco {
-    border: 1px solid #1f3b38; background: #0d1817; border-radius: var(--r);
-    padding: 9px 13px; max-width: 820px;
+    border: 0; border-left: 2px solid var(--accent); border-bottom: 1px solid rgba(32,39,53,.68);
+    background: transparent; border-radius: 0; padding: 5px 0 14px 14px; max-width: 820px;
   }
   .reco .t { color: var(--accent); font-weight: 600; font-size: 12px; margin-bottom: 4px; }
   .reco .why { color: var(--dim); font-size: 11.5px; white-space: pre-wrap; }
+  .reco.needs-choice { border-left-color: var(--warn); }
+  .reco.needs-choice .t { color: var(--warn); }
+  .reco .scores {
+    display: flex; flex-wrap: wrap; gap: 5px; margin: 6px 0 5px;
+    color: var(--dim); font-size: 10.5px;
+  }
+  .reco .score {
+    border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px;
+  }
+  .reco .score.top { color: var(--accent); border-color: #1f4f49; }
+  .reco.needs-choice .score.top { color: var(--warn); border-color: #3f351d; }
+  /* ── pre-session launcher ─────────────────────────────── */
+  #presession {
+    flex: 1; display: grid; place-items: start center; padding: 76px 18px 28px;
+    background:
+      linear-gradient(180deg, rgba(255,255,255,.018), transparent 38%),
+      var(--bg);
+  }
+  #presession[hidden] { display: none; }
+  .ps-card {
+    width: min(680px, 100%);
+    border: 0; border-radius: 0;
+    background: transparent;
+    padding: 0;
+    box-shadow: none;
+  }
+  .ps-mark { display: flex; align-items: center; gap: 8px; font-weight: 700; margin-bottom: 10px; }
+  .ps-sub { color: var(--dim); margin: 0 0 18px; font-size: 12px; }
+  .workspace-pick {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    width: 100%; min-height: 44px; padding: 0 13px;
+    border: 1px solid var(--border); border-radius: 8px;
+    background: rgba(255,255,255,.014); color: var(--text);
+    font: 600 12px var(--mono); cursor: pointer;
+  }
+  .workspace-pick:hover, .workspace-pick:focus-visible {
+    outline: none; border-color: rgba(45,212,191,.48);
+  }
+  .workspace-pick .ws-label { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ps-row {
+    display: flex; align-items: center; gap: 10px; margin-top: 14px;
+    min-height: 44px; border-bottom: 1px solid var(--border);
+  }
+  .ps-row .caret { color: var(--accent); font-weight: 700; }
+  #psTask, #workspaceInput {
+    flex: 1; min-width: 0; background: transparent; border: 0; outline: 0;
+    color: var(--text); font: 13px var(--mono); caret-color: var(--accent);
+  }
+  #psTask::placeholder, #workspaceInput::placeholder { color: var(--faint); }
+  .ps-actions { display: flex; justify-content: flex-end; margin-top: 18px; }
+  .workspace-modal {
+    position: fixed; inset: 0; z-index: 100;
+    display: grid; place-items: center; padding: 18px;
+    background: rgba(0,0,0,.54); backdrop-filter: blur(9px);
+  }
+  .workspace-modal[hidden] { display: none; }
+  .workspace-panel {
+    width: min(640px, 100%);
+    border: 1px solid var(--border); border-radius: 10px;
+    background: #0b0e14; box-shadow: 0 30px 110px -48px #000;
+    padding: 18px;
+  }
+  .workspace-panel h2 { margin: 0 0 5px; font-size: 14px; }
+  .workspace-panel p { margin: 0 0 14px; color: var(--dim); font-size: 12px; }
+  .workspace-input-row {
+    display: flex; align-items: center; gap: 10px;
+    border: 1px solid var(--border); border-radius: 8px;
+    min-height: 42px; padding: 0 11px;
+  }
+  .workspace-shortcuts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .workspace-shortcuts button {
+    border: 1px solid var(--border); border-radius: 7px; background: transparent;
+    color: var(--dim); padding: 5px 9px; font: 600 11px var(--mono); cursor: pointer;
+  }
+  .workspace-shortcuts button:hover { color: var(--text); border-color: var(--faint); }
+  .workspace-error { min-height: 18px; margin-top: 10px; color: var(--err); font-size: 11px; }
+  .workspace-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+  .command-palette {
+    position: fixed; left: 50%; bottom: 76px; z-index: 90;
+    width: min(720px, calc(100vw - 28px)); transform: translateX(-50%);
+    border: 1px solid var(--border); border-radius: 10px;
+    background: rgba(8,10,15,.98); box-shadow: 0 30px 110px -52px #000;
+    overflow: hidden;
+  }
+  .command-palette[hidden] { display: none; }
+  .palette-head {
+    display: flex; align-items: center; gap: 10px; min-height: 42px;
+    padding: 0 13px; border-bottom: 1px solid var(--border); color: var(--dim);
+  }
+  .palette-head .caret { color: var(--accent); font-weight: 700; }
+  .palette-title { color: var(--text); font-weight: 700; }
+  .palette-close {
+    margin-left: auto; width: 28px; height: 28px; border: 1px solid transparent;
+    border-radius: 7px; background: transparent; color: var(--dim);
+    font: 600 14px/1 var(--mono); cursor: pointer;
+  }
+  .palette-close:hover, .palette-close:focus-visible {
+    outline: none; border-color: var(--border); color: var(--text);
+  }
+  .palette-list { display: grid; gap: 1px; padding: 6px; }
+  .palette-action {
+    display: grid; grid-template-columns: 28px minmax(0,1fr) auto; align-items: center; gap: 8px;
+    min-height: 38px; padding: 0 9px; border: 0; border-radius: 7px;
+    background: transparent; color: var(--text); font: 12px var(--mono); cursor: pointer; text-align: left;
+  }
+  .palette-action:hover, .palette-action:focus-visible {
+    outline: none; background: var(--block-hover);
+  }
+  .palette-action .glyph { color: var(--accent); }
+  .palette-action .desc { color: var(--dim); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .palette-action .kbd { color: var(--faint); font-size: 10px; }
   /* ── gate ──────────────────────────────────────────────── */
   #gate {
     display: none; align-items: center; gap: 10px;
-    padding: 10px 18px; border-top: 1px solid var(--border); background: #0c130f;
+    padding: 12px 18px; border-top: 1px solid rgba(126,224,163,.34);
+    background: rgba(10,18,14,.96); backdrop-filter: blur(10px);
   }
   #gate.show { display: flex; }
   #gate .q { color: var(--you); font-size: 12px; }
@@ -136,8 +375,11 @@
   /* ── input ─────────────────────────────────────────────── */
   .prompt-bar {
     display: flex; align-items: center; gap: 10px;
-    padding: 12px 18px; border-top: 1px solid var(--border); background: var(--bg);
+    min-height: 48px; padding: 0 18px; border-top: 1px solid var(--border); background: var(--bg);
   }
+  body.preflight .prompt-bar,
+  body.preflight #stream,
+  body.preflight #gate { display: none; }
   .prompt-bar .caret { color: var(--accent); font-weight: 700; }
   #input {
     flex: 1; background: transparent; border: none; color: var(--text);
@@ -153,9 +395,60 @@
 <body>
   <header>
     <span class="logo"><span class="pin">❯</span> tales</span>
+    <button class="workspace-button" id="workspaceButton" type="button">
+      <span>workspace</span><span class="path" id="workspaceLabel">loading…</span>
+    </button>
+    <button class="command-button" id="commandButton" type="button">⌘K</button>
     <span class="task" id="task"></span>
+    <span class="tool-status" id="toolStatus">tools</span>
     <span class="status" id="status"><span class="live"></span><span id="phase">connecting</span></span>
   </header>
+  <details id="sessionStrip" class="session-strip" hidden>
+    <summary><span class="session-title">session</span><span class="session-meta" id="sessionMeta"></span></summary>
+    <div class="session-details" id="sessionDetails"></div>
+  </details>
+
+  <section id="presession" hidden>
+    <div class="ps-card">
+      <div class="ps-mark"><span class="pin">❯</span> tales</div>
+      <p class="ps-sub">Pick a workspace and task. The agents will plan there; nothing executes until you approve.</p>
+      <button id="workspaceButtonLarge" class="workspace-pick" type="button">
+        <span>workspace</span>
+        <span class="ws-label" id="workspaceLabelLarge">choose workspace…</span>
+      </button>
+      <div class="ps-row">
+        <span class="caret">❯</span>
+        <input id="psTask" placeholder="what should the agents plan?" autocomplete="off" />
+      </div>
+      <div class="ps-actions">
+        <button id="startSession" class="btn go" type="button" disabled>start debate</button>
+      </div>
+    </div>
+  </section>
+
+  <div id="workspaceModal" class="workspace-modal" hidden>
+    <div class="workspace-panel" role="dialog" aria-modal="true" aria-labelledby="workspaceTitle">
+      <h2 id="workspaceTitle">Select workspace</h2>
+      <p>Use an absolute folder path on this machine. Tales will validate it before starting.</p>
+      <div class="workspace-input-row">
+        <span class="caret">❯</span>
+        <input id="workspaceInput" autocomplete="off" spellcheck="false" />
+      </div>
+      <div class="workspace-shortcuts">
+        <button id="useLaunchCwd" type="button">launch cwd</button>
+      </div>
+      <div class="workspace-error" id="workspaceError"></div>
+      <div class="workspace-actions">
+        <button id="cancelWorkspace" class="btn" type="button">cancel</button>
+        <button id="useWorkspace" class="btn go" type="button">use workspace</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="commandPalette" class="command-palette" hidden>
+    <div class="palette-head"><span class="caret">❯</span><span class="palette-title">commands</span><span>type with the session, approve only when ready</span><button id="paletteClose" class="palette-close" type="button" aria-label="Close command palette">×</button></div>
+    <div class="palette-list" id="paletteList"></div>
+  </div>
 
   <div id="stream"></div>
 
@@ -175,20 +468,203 @@
 <script>
 (function () {
   const $ = (id) => document.getElementById(id);
-  const stream = $('stream'), statusEl = $('status'), phaseEl = $('phase');
-  const taskEl = $('task'), gate = $('gate'), execSel = $('executor'), input = $('input');
-  const confirmBtn = $('confirm'), rejectBtn = $('reject');
+	  const stream = $('stream'), statusEl = $('status'), phaseEl = $('phase');
+	  const taskEl = $('task'), toolStatusEl = $('toolStatus'), sessionStrip = $('sessionStrip'), sessionMeta = $('sessionMeta'), sessionDetails = $('sessionDetails'), gate = $('gate'), execSel = $('executor'), input = $('input');
+	  const confirmBtn = $('confirm'), rejectBtn = $('reject');
+	  const presession = $('presession'), workspaceButton = $('workspaceButton'), workspaceButtonLarge = $('workspaceButtonLarge'), workspaceLabel = $('workspaceLabel'), workspaceLabelLarge = $('workspaceLabelLarge');
+	  const workspaceModal = $('workspaceModal'), workspaceInput = $('workspaceInput'), workspaceError = $('workspaceError'), useWorkspace = $('useWorkspace'), cancelWorkspace = $('cancelWorkspace'), useLaunchCwd = $('useLaunchCwd');
+	  const psTask = $('psTask'), startSession = $('startSession');
+	  const commandButton = $('commandButton'), commandPalette = $('commandPalette'), paletteList = $('paletteList'), paletteClose = $('paletteClose');
 
-  const names = {};       // agentId -> { label, display }
-  const roleById = {};    // agentId -> "Drafter" | "Critic" | "Executor"
-  const streaming = {};   // agentId -> body text node being streamed
-  const lastBlock = {};   // agentId -> most recent block element
-  const seenCounts = {};  // base display name -> count (for duplicates)
-  const candidates = [];  // labels available to execute
-  let recommended = null;
+	  const names = {};       // agentId -> { label, display }
+	  const roleById = {};    // agentId -> "Drafter" | "Critic" | "Executor"
+	  const streaming = {};   // agentId -> body text node being streamed
+	  const lastBlock = {};   // agentId -> most recent block element
+	  const seenCounts = {};  // base display name -> count (for duplicates)
+	  const candidates = [];  // labels available to execute
+	  const toolHealth = {};  // lower label -> /api/tools row
+	  let launchCwd = '';
+	  let workspacePath = '';
+	  let sessionStarted = false;
+	  let recommended = null;
+	  let currentSession = null;
+	  let latestReport = '';
 
-  const PRETTY = { claude: 'Claude Code', codex: 'Codex' };
-  function prettyBase(label) { return PRETTY[(label || '').toLowerCase()] || label; }
+	  const PRETTY = { claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini CLI', opencode: 'Open Code' };
+	  function prettyBase(label) {
+	    const key = (label || '').toLowerCase();
+	    return (toolHealth[key] && toolHealth[key].pretty) || PRETTY[key] || label;
+	  }
+	  async function loadToolHealth() {
+	    try {
+	      const res = await fetch('/api/tools', { cache: 'no-store' });
+	      const data = await res.json();
+	      const tools = Array.isArray(data.tools) ? data.tools : [];
+	      tools.forEach((tool) => { toolHealth[(tool.key || '').toLowerCase()] = tool; });
+	      const ready = tools.filter((tool) => tool.installed).length;
+	      const primaryMissing = tools.filter((tool) => ['claude', 'codex'].includes(tool.key) && !tool.installed);
+	      toolStatusEl.textContent = `tools ${ready}/${tools.length}`;
+	      toolStatusEl.classList.toggle('ok', primaryMissing.length === 0);
+	      toolStatusEl.classList.toggle('warn', primaryMissing.length > 0);
+	      if (primaryMissing.length) toolStatusEl.title = 'missing: ' + primaryMissing.map((tool) => tool.pretty).join(', ');
+	    } catch (e) {
+	      toolStatusEl.textContent = 'tools ?';
+	      toolStatusEl.classList.add('warn');
+	      toolStatusEl.title = 'tool readiness unavailable';
+	    }
+	  }
+	  function optionLabel(label) {
+	    const key = (label || '').toLowerCase();
+	    const tool = toolHealth[key];
+	    const base = prettyBase(label);
+	    if (!tool) return base;
+	    return tool.installed ? `${base} · ready` : `${base} · missing`;
+	  }
+	  function valueOrDefault(value, fallback) {
+	    return value === undefined || value === null || value === '' ? fallback : value;
+	  }
+	  function makeSessionChip(parts, cls) {
+	    const chip = document.createElement('span');
+	    chip.className = 'session-chip ' + (cls || '');
+	    parts.forEach((part) => {
+	      const span = document.createElement(part.strong ? 'strong' : 'span');
+	      if (part.role) span.className = 'role';
+	      span.textContent = part.text;
+	      chip.appendChild(span);
+	    });
+	    return chip;
+	  }
+	  function shortPath(path) {
+	    if (!path) return 'choose workspace…';
+	    return path.replace(/^\/Users\/([^/]+)/, '~');
+	  }
+	  function setWorkspace(path) {
+	    workspacePath = path || '';
+	    workspaceLabel.textContent = shortPath(workspacePath);
+	    workspaceLabelLarge.textContent = shortPath(workspacePath);
+	    validatePreflight();
+	  }
+	  function validatePreflight() {
+	    const ready = Boolean(workspacePath && psTask.value.trim());
+	    startSession.disabled = !ready || sessionStarted;
+	  }
+	  function renderSession(data) {
+	    if (!data) return;
+	    currentSession = data;
+	    if (data.started === false) {
+	      sessionStarted = false;
+	      document.body.classList.add('preflight');
+	      launchCwd = data.launch_cwd || data.cwd || launchCwd;
+	      setWorkspace(workspacePath || launchCwd || '');
+	      taskEl.textContent = 'choose a workspace and task';
+	      phaseEl.textContent = 'ready';
+	      presession.hidden = false;
+	      stream.hidden = true;
+	      input.disabled = true;
+	      sessionStrip.hidden = true;
+	      return;
+	    }
+	    sessionStarted = true;
+	    document.body.classList.remove('preflight');
+	    presession.hidden = true;
+	    stream.hidden = false;
+	    setWorkspace(data.cwd || workspacePath);
+	    taskEl.textContent = data.task || '';
+	    if (!Array.isArray(data.agents)) return;
+	    sessionDetails.innerHTML = '';
+	    sessionStrip.hidden = false;
+	    sessionMeta.textContent = `${data.mode} · ${data.planning} · ${data.turns} turns · ${data.sandbox}`;
+	    data.agents.forEach((agent) => {
+	      const tool = toolHealth[(agent.key || '').toLowerCase()];
+	      const status = tool ? (tool.installed ? 'ready' : 'missing') : '';
+	      const detail = [valueOrDefault(agent.model, 'default'), valueOrDefault(agent.effort, 'default')].join(' · ');
+	      const reuse = agent.reuses ? ` · uses ${agent.reuses}` : '';
+	      const chip = makeSessionChip([
+	        { text: agent.role, role: true },
+	        { text: prettyBase(agent.key), strong: true },
+	        { text: `${detail}${reuse}` },
+	      ], status);
+	      if (tool && tool.install) chip.title = tool.installed ? tool.path || '' : tool.install;
+	      sessionDetails.appendChild(chip);
+	    });
+	    const contextLabel = data.context_budget_chars === null || data.context_budget_chars === undefined
+	      ? `ctx default ${data.effective_context_budget_chars} (~${data.context_budget_tokens_estimate} tok)`
+	      : data.context_budget_chars === 0
+	        ? 'ctx unlimited'
+	        : `ctx ${data.context_budget_chars} (~${data.context_budget_tokens_estimate} tok)`;
+	    const project = data.project_context && data.project_context.enabled
+	      ? `cache ${data.project_context.cache_hit ? 'hit' : 'ready'} · ctx~${data.project_context.tokens_estimate || '?'} tok`
+	      : 'cache off';
+	    const chips = [
+	      `${data.mode} · ${data.planning} · ${data.turns} turns`,
+	      `sandbox ${data.sandbox}`,
+	      contextLabel,
+	      project,
+	    ];
+	    if (data.prompt_forecast) {
+	      chips.push(`calls ${data.prompt_forecast.planned_calls} · local~${data.prompt_forecast.known_payload_tokens_estimate} tok`);
+	      if (data.prompt_forecast.max_vote_repair_prompts) chips.push(`repair≤${data.prompt_forecast.max_vote_repair_prompts}`);
+	    }
+	    if (data.local_changes && data.local_changes.available) {
+	      chips.push(`git ${data.local_changes.visible_changes}${data.local_changes.truncated ? '+' : ''} · omit ${data.local_changes.omitted || 0}`);
+	    }
+	    chips.forEach((text) => sessionDetails.appendChild(makeSessionChip([{ text }])));
+	    if (Array.isArray(data.run_advice)) {
+	      data.run_advice.forEach((advice) => {
+	        const chip = makeSessionChip([
+	          { text: advice.level || 'info', role: true },
+	          { text: advice.title || advice.key || 'advice', strong: true },
+	          { text: advice.detail || '' },
+	        ], 'advice-' + (advice.level || 'info'));
+	        chip.title = advice.detail || '';
+	        sessionDetails.appendChild(chip);
+	      });
+	    }
+	    if (data.workspace_profile && data.workspace_profile.present !== false) {
+	      const commands = Array.isArray(data.workspace_profile.commands) ? data.workspace_profile.commands.length : 0;
+	      const preferred = Array.isArray(data.workspace_profile.preferred_tools) ? data.workspace_profile.preferred_tools.join(', ') : '';
+	      sessionDetails.appendChild(makeSessionChip([
+	        { text: 'profile', role: true },
+	        { text: `${commands} command${commands === 1 ? '' : 's'}`, strong: true },
+	        { text: preferred ? ` · ${preferred}` : ' · local metadata' },
+	      ], 'advice-info'));
+	    } else {
+	      sessionDetails.appendChild(makeSessionChip([
+	        { text: 'profile', role: true },
+	        { text: 'not stored yet' },
+	      ], 'advice-info'));
+	    }
+	    if (Array.isArray(data.tool_recommendations)) {
+	      data.tool_recommendations.slice(0, 3).forEach((item) => {
+	        const chips = Array.isArray(item.chips) && item.chips.length ? item.chips.join('/') : 'recommend';
+	        const reasons = Array.isArray(item.reasons) ? item.reasons.join(' · ') : '';
+	        const chip = makeSessionChip([
+	          { text: chips, role: true },
+	          { text: prettyBase(item.tool), strong: true },
+	          { text: ` score ${item.score}` },
+	        ], item.installed === false ? 'advice-warn' : 'advice-good');
+	        chip.title = reasons;
+	        sessionDetails.appendChild(chip);
+	      });
+	    }
+	    if (data.report_path) {
+	      sessionDetails.appendChild(makeSessionChip([
+	        { text: 'report', role: true },
+	        { text: data.report_path },
+	      ], 'path'));
+	    }
+	  }
+	  async function loadSession() {
+	    try {
+	      const res = await fetch('/api/session', { cache: 'no-store' });
+	      const data = await res.json();
+	      renderSession(data);
+	      return data;
+	    } catch (e) {
+	      sessionStrip.hidden = true;
+	      return null;
+	    }
+	  }
 
   let ws, reconnectDelay = 500;
   function setConnected(on) {
@@ -200,6 +676,7 @@
     return false;
   }
   function connect() {
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
     ws = new WebSocket(`ws://${location.host}/ws`);
     ws.onopen = () => { phaseEl.textContent = 'idle'; setConnected(true); reconnectDelay = 500; };
     ws.onerror = () => {};            // onclose drives recovery
@@ -210,6 +687,117 @@
     };
     ws.onmessage = onMessage;
   }
+
+  function openWorkspaceModal() {
+    workspaceError.textContent = '';
+    workspaceInput.value = workspacePath || launchCwd || '';
+    workspaceModal.hidden = false;
+    workspaceInput.focus();
+    workspaceInput.select();
+  }
+  function closeWorkspaceModal() {
+    workspaceModal.hidden = true;
+    workspaceError.textContent = '';
+  }
+  function closeCommandPalette() {
+    commandPalette.hidden = true;
+  }
+  function paletteActions() {
+    return [
+      { glyph: 'ws', label: 'Choose workspace', desc: shortPath(workspacePath), run: openWorkspaceModal },
+      { glyph: 'go', label: 'Start session', desc: psTask.value.trim() || 'enter a task first', run: () => { if (!startSession.disabled) startSession.click(); } },
+      { glyph: 'rf', label: 'Refresh preflight', desc: 'reload tools, profile, forecast', run: async () => { await loadToolHealth(); await loadSession(); } },
+      { glyph: 'fx', label: 'Show forecast', desc: currentSession && currentSession.prompt_forecast ? `${currentSession.prompt_forecast.planned_calls} calls` : 'not ready', run: () => currentSession && sys(`forecast: ${JSON.stringify(currentSession.prompt_forecast || {})}`, 'rec') },
+      { glyph: 'id', label: 'Show profile', desc: currentSession && currentSession.workspace_profile ? 'local metadata memory' : 'not loaded', run: () => currentSession && sys(`profile: ${JSON.stringify(currentSession.workspace_profile || {})}`, 'rec') },
+      { glyph: 'ok', label: 'Approve recommendation', desc: recommended || 'waiting for gate', run: () => { if (!gate.classList.contains('show')) return; confirmBtn.click(); } },
+      { glyph: 'no', label: 'Reject plan', desc: gate.classList.contains('show') ? 'stop before execution' : 'waiting for gate', run: () => { if (gate.classList.contains('show')) rejectBtn.click(); } },
+      { glyph: 'cp', label: 'Copy report', desc: latestReport ? 'session report markdown' : 'no report yet', run: () => { if (latestReport && navigator.clipboard) navigator.clipboard.writeText(latestReport); } },
+    ];
+  }
+  function openCommandPalette() {
+    paletteList.innerHTML = '';
+    paletteActions().forEach((action) => {
+      const button = document.createElement('button');
+      button.className = 'palette-action';
+      button.type = 'button';
+      button.innerHTML = '<span class="glyph"></span><span></span><span class="desc"></span>';
+      button.querySelector('.glyph').textContent = action.glyph;
+      button.children[1].textContent = action.label;
+      button.querySelector('.desc').textContent = action.desc || '';
+      button.addEventListener('click', () => {
+        closeCommandPalette();
+        action.run();
+      });
+      paletteList.appendChild(button);
+    });
+    commandPalette.hidden = false;
+    const first = paletteList.querySelector('button');
+    if (first) first.focus();
+  }
+  workspaceButton.addEventListener('click', openWorkspaceModal);
+  workspaceButtonLarge.addEventListener('click', openWorkspaceModal);
+  commandButton.addEventListener('click', openCommandPalette);
+  paletteClose.addEventListener('click', closeCommandPalette);
+  cancelWorkspace.addEventListener('click', closeWorkspaceModal);
+  useLaunchCwd.addEventListener('click', () => {
+    workspaceInput.value = launchCwd || workspacePath || '';
+    workspaceInput.focus();
+  });
+  useWorkspace.addEventListener('click', () => {
+    const path = workspaceInput.value.trim();
+    if (!path) {
+      workspaceError.textContent = 'Enter a workspace path.';
+      return;
+    }
+    setWorkspace(path);
+    closeWorkspaceModal();
+  });
+  workspaceModal.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeWorkspaceModal();
+    if (e.key === 'Enter' && document.activeElement === workspaceInput) useWorkspace.click();
+  });
+  commandPalette.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeCommandPalette();
+  });
+  document.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+      e.preventDefault();
+      commandPalette.hidden ? openCommandPalette() : closeCommandPalette();
+    }
+  });
+  psTask.addEventListener('input', validatePreflight);
+  psTask.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !startSession.disabled) startSession.click();
+  });
+  startSession.addEventListener('click', async () => {
+    if (startSession.disabled) return;
+    workspaceError.textContent = '';
+    startSession.disabled = true;
+    startSession.textContent = 'starting…';
+    phaseEl.textContent = 'preflight';
+    try {
+      const res = await fetch('/api/session/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cwd: workspacePath, task: psTask.value.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        workspaceError.textContent = data.message || 'Could not start session.';
+        startSession.textContent = 'start debate';
+        validatePreflight();
+        openWorkspaceModal();
+        return;
+      }
+      renderSession(data);
+      connect();
+    } catch (e) {
+      workspaceError.textContent = 'Could not reach Tales server.';
+      startSession.textContent = 'start debate';
+      validatePreflight();
+      openWorkspaceModal();
+    }
+  });
 
   const nearBottom = () => stream.scrollHeight - stream.scrollTop - stream.clientHeight < 90;
   const toBottom = () => { stream.scrollTop = stream.scrollHeight; };
@@ -266,6 +854,132 @@
   function isVote(t) {                 // strict: the whole message is a vote JSON object
     try { const o = JSON.parse(t.trim()); return o && typeof o === 'object' && 'recommended_executor' in o; }
     catch (e) { return false; }
+  }
+  function markdownSection(markdown, heading) {
+    const lines = String(markdown || '').split(/\r?\n/);
+    const start = lines.findIndex((line) => line.trim() === `## ${heading}`);
+    if (start === -1) return [];
+    const out = [];
+    for (let i = start + 1; i < lines.length; i += 1) {
+      if (/^##\s+/.test(lines[i])) break;
+      out.push(lines[i]);
+    }
+    return out;
+  }
+  function optimizationHints(markdown) {
+    return markdownSection(markdown, 'Optimization hints')
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith('- '))
+      .map((line) => {
+        const text = line.slice(2).trim();
+        const key = text.split(':')[0] || 'hint';
+        const tone = /off|unlimited|repair|large share|90%|rebuilt/.test(text)
+          ? 'warn'
+          : /hit|under half|within/.test(text)
+            ? 'ok'
+            : 'neutral';
+        const glyph = key === 'project_context_cache' ? '◫'
+          : key === 'context_budget' ? '◷'
+            : key === 'structured_output' ? '{}'
+              : key === 'recommendation_vote' ? '⇄'
+                : key === 'local_changes' ? 'git'
+                : '$';
+        return { text, tone, glyph };
+      });
+  }
+  function renderOptimizationPanel(markdown) {
+    const hints = optimizationHints(markdown);
+    if (!hints.length) return null;
+    const panel = document.createElement('div');
+    panel.className = 'opt-panel';
+    const head = document.createElement('div');
+    head.className = 'opt-head';
+    head.innerHTML = '<span class="mark">▣</span><span>Optimization hints</span><span class="count"></span>';
+    head.querySelector('.count').textContent = `${hints.length} signal${hints.length === 1 ? '' : 's'}`;
+    const list = document.createElement('div');
+    list.className = 'opt-list';
+    hints.forEach((hint) => {
+      const chip = document.createElement('div');
+      chip.className = 'opt-chip ' + hint.tone;
+      const glyph = document.createElement('span');
+      glyph.className = 'glyph';
+      glyph.textContent = hint.glyph;
+      const text = document.createElement('span');
+      text.textContent = hint.text;
+      chip.appendChild(glyph);
+      chip.appendChild(text);
+      list.appendChild(chip);
+    });
+    panel.appendChild(head);
+    panel.appendChild(list);
+    return panel;
+  }
+  function resumePacket(markdown) {
+    const glyphs = {
+      task: '>',
+      status: '*',
+      executor: '$',
+      executor_output: '>',
+      recommendation: '+',
+      recommendation_rationale: '?',
+      latest_human_direction: '@',
+      latest_planner_output: '::',
+      project_context: '#',
+      local_changes: 'git',
+      next_step: '->',
+    };
+    return markdownSection(markdown, 'Resume packet')
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith('- '))
+      .map((line) => {
+        const text = line.slice(2).trim();
+        const split = text.indexOf(':');
+        if (split === -1) return null;
+        const key = text.slice(0, split).trim();
+        const value = text.slice(split + 1).trim();
+        return {
+          key,
+          label: key.replace(/_/g, ' '),
+          value,
+          glyph: glyphs[key] || '-',
+        };
+      })
+      .filter(Boolean);
+  }
+  function renderResumePanel(markdown) {
+    const items = resumePacket(markdown);
+    if (!items.length) return null;
+    const panel = document.createElement('div');
+    panel.className = 'resume-panel';
+    const head = document.createElement('div');
+    head.className = 'resume-head';
+    head.innerHTML = '<span class="mark">▣</span><span>Resume packet</span><span class="count"></span>';
+    head.querySelector('.count').textContent = `${items.length} handoff item${items.length === 1 ? '' : 's'}`;
+    const list = document.createElement('div');
+    list.className = 'resume-list';
+    items.forEach((item) => {
+      const row = document.createElement('div');
+      row.className = 'resume-row';
+      const key = document.createElement('div');
+      key.className = 'resume-key';
+      const glyph = document.createElement('span');
+      glyph.className = 'glyph';
+      glyph.textContent = item.glyph;
+      const label = document.createElement('span');
+      label.className = 'resume-label';
+      label.textContent = item.label;
+      const value = document.createElement('div');
+      value.className = 'resume-val';
+      value.textContent = item.value;
+      key.appendChild(glyph);
+      key.appendChild(label);
+      row.appendChild(key);
+      row.appendChild(value);
+      list.appendChild(row);
+    });
+    panel.appendChild(head);
+    panel.appendChild(list);
+    return panel;
   }
 
   function onMessage(ev) {
@@ -360,21 +1074,56 @@
         recommended = m.executor;
         const disp = PRETTY[m.executor.toLowerCase()] || m.executor;
         const el = document.createElement('div');
-        el.className = 'reco';
-        el.innerHTML = '<div class="t"></div><div class="why"></div>';
-        el.querySelector('.t').textContent = '★ recommend: ' + disp;
+        el.className = 'reco' + (m.confident === false ? ' needs-choice' : '');
+        el.innerHTML = '<div class="t"></div><div class="scores"></div><div class="why"></div>';
+        el.querySelector('.t').textContent = (m.confident === false ? '★ choose: ' : '★ recommend: ') + disp;
+        const scoresEl = el.querySelector('.scores');
+        const scores = Array.isArray(m.scores) ? m.scores : [];
+        scores.slice(0, 4).forEach((item, index) => {
+          const chip = document.createElement('span');
+          chip.className = 'score' + (index === 0 ? ' top' : '');
+          const name = PRETTY[String(item.executor || '').toLowerCase()] || item.executor || '?';
+          const score = Number(item.score || 0).toFixed(2);
+          chip.textContent = `${name} ${score}`;
+          scoresEl.appendChild(chip);
+        });
+        if (!scores.length) scoresEl.hidden = true;
         el.querySelector('.why').textContent = m.rationale.trim();
         append(el);
         break;
       }
+      case 'execution_packet': {
+        const el = makeBlock(null, null, 'packet');
+        const disp = PRETTY[(m.executor || '').toLowerCase()] || m.executor;
+        el.querySelector('.name').textContent = 'Execution packet -> ' + disp;
+        el.querySelector('.meta').textContent = m.included_in_prompt ? 'sent' : 'session audit';
+        el.querySelector('.body').textContent = m.text;
+        append(el);
+        break;
+      }
+      case 'session_report': {
+        latestReport = m.markdown || '';
+        const resume = renderResumePanel(m.markdown);
+        if (resume) append(resume);
+        const hints = renderOptimizationPanel(m.markdown);
+        if (hints) append(hints);
+        const el = makeBlock(null, null, 'report');
+        el.querySelector('.name').textContent = 'Session report';
+        el.querySelector('.meta').textContent = 'local';
+        el.querySelector('.body').textContent = m.markdown;
+        append(el);
+        break;
+      }
       case 'awaiting': {
-        execSel.innerHTML = '';
-        candidates.forEach((c) => {
-          const o = document.createElement('option');
-          o.value = c; o.textContent = PRETTY[c.toLowerCase()] || c;
-          if (c === recommended) o.selected = true;
-          execSel.appendChild(o);
-        });
+	        execSel.innerHTML = '';
+	        candidates.forEach((c) => {
+	          const o = document.createElement('option');
+	          const tool = toolHealth[(c || '').toLowerCase()];
+	          o.value = c; o.textContent = optionLabel(c);
+	          if (tool && tool.install) o.title = tool.installed ? tool.path || '' : tool.install;
+	          if (c === recommended) o.selected = true;
+	          execSel.appendChild(o);
+	        });
         gate.classList.add('show'); toBottom();
         break;
       }
@@ -392,8 +1141,12 @@
   confirmBtn.onclick = () => { if (wsSend({ kind: 'confirm', executor: execSel.value || recommended })) gate.classList.remove('show'); };
   rejectBtn.onclick = () => { if (wsSend({ kind: 'reject' })) gate.classList.remove('show'); };
 
-  connect();
-})();
+	  (async function boot() {
+	    await loadToolHealth();
+	    const data = await loadSession();
+	    if (data && data.started !== false) connect();
+	  })();
+	})();
 </script>
 </body>
 </html>

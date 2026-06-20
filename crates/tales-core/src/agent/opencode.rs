@@ -238,6 +238,7 @@ impl Manager {
                 agent,
                 turn,
                 cost_usd: None,
+                token_usage: None,
             })
             .await;
 

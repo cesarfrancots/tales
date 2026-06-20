@@ -8,6 +8,7 @@ use tales_core::agent::mock::MockAdapter;
 use tales_core::agent::SpawnCtx;
 use tales_core::bus::EventBus;
 use tales_core::conductor::Role;
+use tales_core::event::OrchestratorEvent;
 use tales_core::orchestrator::{Orchestrator, Phase};
 use uuid::Uuid;
 
@@ -66,6 +67,80 @@ async fn recommendation_then_confirm_reaches_executing() {
     let chosen = orch.confirm_execution("claude").unwrap();
     assert_eq!(chosen, "claude");
     assert_eq!(orch.phase(), Phase::Executing);
+
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn tied_recommendation_is_not_confident_and_gate_says_choose() {
+    let (bus, _rx) = EventBus::new(512, 64);
+    let mut events = bus.subscribe();
+    let mut orch = Orchestrator::new(bus);
+    let claude_vote =
+        r#"{"recommended_executor":"claude","confidence":0.7,"rationale":"local context"}"#;
+    let codex_vote =
+        r#"{"recommended_executor":"codex","confidence":0.7,"rationale":"cheaper execution"}"#;
+
+    orch.add_agent(
+        Box::new(MockAdapter::new(vec!["draft".into(), claude_vote.into()])),
+        ctx(Uuid::new_v4(), "claude"),
+        Role::Drafter,
+    )
+    .await
+    .unwrap();
+    orch.add_agent(
+        Box::new(MockAdapter::new(vec!["critique".into(), codex_vote.into()])),
+        ctx(Uuid::new_v4(), "codex"),
+        Role::Critic,
+    )
+    .await
+    .unwrap();
+
+    orch.run_discussion("build a thing", 2).await.unwrap();
+    let rec = orch.run_recommendation().await.unwrap();
+
+    assert_eq!(rec.executor, "claude");
+    assert!(!rec.confident);
+    assert!(
+        rec.rationale.contains("tied executor vote"),
+        "{}",
+        rec.rationale
+    );
+    assert_eq!(orch.phase(), Phase::AwaitingConfirmation);
+
+    let mut saw_choose_prompt = false;
+    let mut saw_structured_recommendation = false;
+    while let Ok(event) = events.try_recv() {
+        match event {
+            OrchestratorEvent::AwaitingConfirmation { prompt }
+                if prompt.contains("No clear executor consensus")
+                    && prompt.contains("Preselected executor: claude") =>
+            {
+                saw_choose_prompt = true;
+            }
+            OrchestratorEvent::RecommendationReady {
+                executor,
+                confident,
+                scores,
+                ..
+            } => {
+                assert_eq!(executor, "claude");
+                assert!(!confident);
+                assert_eq!(scores[0], ("claude".to_string(), 0.7));
+                assert_eq!(scores[1], ("codex".to_string(), 0.7));
+                saw_structured_recommendation = true;
+            }
+            _ => {}
+        }
+    }
+    assert!(
+        saw_choose_prompt,
+        "expected not-confident gate prompt on bus"
+    );
+    assert!(
+        saw_structured_recommendation,
+        "expected structured recommendation metadata on bus"
+    );
 
     orch.shutdown().await;
 }

@@ -6,11 +6,12 @@
 //! grid can replace the native PTY/line renderer without touching the planner.
 
 use std::collections::VecDeque;
+use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use futures::StreamExt;
@@ -18,9 +19,9 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block as RBlock, Borders, List, ListItem, Paragraph};
+use ratatui::widgets::{Block as RBlock, Borders, List, ListItem, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
-use tales_core::agent::{tool_info, validate_roster};
+use tales_core::agent::{bin_path, tool_info, validate_roster, KNOWN_TOOLS};
 use tales_core::bus::EventBus;
 use tales_core::conductor::Role;
 use tales_core::event::{OrchestratorEvent, UserCommand};
@@ -28,13 +29,16 @@ use tokio::sync::broadcast::error::TryRecvError;
 use tokio::sync::mpsc;
 use tokio::time::{self, Duration};
 
-use crate::app::App;
-use crate::theme::{color_for, ACCENT, DIM, ERRC, FAINT, TEXT};
+use crate::app::{commands_message, help_message, App};
+use crate::theme::{color_for, pretty, ACCENT, DIM, ERRC, FAINT, TEXT};
 use crate::{run_session, Args, Connection};
 
 const MAX_SCROLLBACK: usize = 2_000;
+const PLAN_DIR: &str = ".tales";
+const LAST_PLAN_FILE: &str = "last-plan.md";
 
 type PaneId = u64;
+type ChildInput = Arc<Mutex<Box<dyn Write + Send>>>;
 
 pub(crate) async fn run_terminal_workspace(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
@@ -265,14 +269,24 @@ impl Workspace {
 
     fn apply_tales_action(&mut self, action: TalesAction) {
         match action {
-            TalesAction::LaunchExecutor { key, prompt } => {
+            TalesAction::LaunchExecutor {
+                key,
+                prompt,
+                plan_path,
+            } => {
                 let Some(index) = self.spawn_agent(&key) else {
                     return;
                 };
                 if let Some(Pane::Process(proc)) = self.panes.get_mut(index) {
+                    proc.reset_for_execution(plan_path.as_deref());
                     proc.write(prompt.as_bytes());
                     proc.write(b"\r");
-                    self.notice = format!("launched {} executor pane", proc.title);
+                    self.notice = match plan_path {
+                        Some(path) => {
+                            format!("launched {} with {}", proc.title, path.display())
+                        }
+                        None => format!("launched {} executor pane", proc.title),
+                    };
                 }
             }
         }
@@ -396,22 +410,30 @@ impl Workspace {
         let chunks = Layout::vertical([
             Constraint::Length(1),
             Constraint::Min(3),
-            Constraint::Length(1),
+            Constraint::Length(3),
             Constraint::Length(1),
         ])
         .split(f.area());
 
         self.draw_header(f, chunks[0]);
 
-        let body = if chunks[1].width >= 96 {
-            Layout::horizontal([Constraint::Min(20), Constraint::Length(30)]).split(chunks[1])
+        if self.active_is_process() {
+            self.draw_active_pane(f, chunks[1]);
         } else {
-            Layout::vertical([Constraint::Min(8), Constraint::Length(7)]).split(chunks[1])
-        };
-        self.draw_active_pane(f, body[0]);
-        self.draw_status(f, body[1]);
+            let body = if chunks[1].width >= 112 {
+                Layout::horizontal([Constraint::Min(20), Constraint::Length(30)]).split(chunks[1])
+            } else {
+                Layout::vertical([Constraint::Min(8), Constraint::Length(7)]).split(chunks[1])
+            };
+            self.draw_active_pane(f, body[0]);
+            self.draw_status(f, body[1]);
+        }
         self.draw_input(f, chunks[2]);
         self.draw_footer(f, chunks[3]);
+    }
+
+    fn active_is_process(&self) -> bool {
+        matches!(self.panes.get(self.active), Some(Pane::Process(_)))
     }
 
     fn draw_header(&self, f: &mut Frame, area: Rect) {
@@ -493,26 +515,33 @@ impl Workspace {
         let line = match self.panes.get(self.active) {
             Some(Pane::Tales(tales)) => Line::from(vec![
                 Span::styled(
-                    "❯ ",
+                    "you ❯ ",
                     Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(tales.app.input.clone(), Style::default().fg(TEXT)),
             ]),
             Some(Pane::Process(proc)) => Line::from(vec![
-                Span::styled("input → ", Style::default().fg(ACCENT)),
+                Span::styled("typing → ", Style::default().fg(ACCENT)),
                 Span::styled(
                     proc.title.clone(),
                     Style::default().fg(color_for(proc.kind.label())),
                 ),
-                Span::styled(" · raw keys forwarded", Style::default().fg(FAINT)),
+                Span::styled(
+                    " · this pane can ask for input directly",
+                    Style::default().fg(FAINT),
+                ),
             ]),
             None => Line::from(""),
         };
-        f.render_widget(Paragraph::new(line), area);
+        f.render_widget(Paragraph::new(line).wrap(Wrap { trim: false }), area);
     }
 
     fn draw_footer(&self, f: &mut Frame, area: Rect) {
-        let help = "Tab switch · Ctrl-T Tales · Ctrl-N shell · Ctrl-X Codex · Ctrl-L Claude · Ctrl-S send plan · Ctrl-A approve · Ctrl-Q quit";
+        let help = if self.active_is_process() {
+            "Tab switch · Ctrl-T Tales · Ctrl-A approve · Ctrl-Q quit"
+        } else {
+            "Tab switch · Ctrl-T Tales · Ctrl-N shell · Ctrl-X Codex · Ctrl-L Claude · Ctrl-S send plan · Ctrl-A approve · Ctrl-Q quit"
+        };
         f.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(help, Style::default().fg(FAINT)),
@@ -523,6 +552,7 @@ impl Workspace {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 enum Pane {
     Tales(TalesPane),
     Process(ProcessPane),
@@ -553,11 +583,23 @@ struct TalesPane {
     commands: Option<mpsc::Sender<UserCommand>>,
     events: Option<tokio::sync::broadcast::Receiver<OrchestratorEvent>>,
     started: bool,
+    startup_page: StartupPage,
     notice: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StartupPage {
+    Welcome,
+    Help,
+    Commands,
+}
+
 enum TalesAction {
-    LaunchExecutor { key: String, prompt: String },
+    LaunchExecutor {
+        key: String,
+        prompt: String,
+        plan_path: Option<PathBuf>,
+    },
 }
 
 impl TalesPane {
@@ -571,7 +613,8 @@ impl TalesPane {
             commands: None,
             events: None,
             started: false,
-            notice: "type a planning prompt in Tales".to_string(),
+            startup_page: StartupPage::Welcome,
+            notice: "type help, commands, or a planning prompt".to_string(),
         }
     }
 
@@ -587,7 +630,9 @@ impl TalesPane {
                 if !self.started {
                     let task = self.app.input.trim().to_string();
                     if task.is_empty() {
-                        self.notice = "enter a planning prompt first".to_string();
+                        self.notice = "type help, commands, or a planning prompt".to_string();
+                    } else if self.handle_startup_command(&task) {
+                        self.app.input.clear();
                     } else {
                         self.start(task);
                     }
@@ -602,6 +647,10 @@ impl TalesPane {
             }
             (KeyCode::Esc, _) => {
                 self.app.input.clear();
+                if !self.started {
+                    self.startup_page = StartupPage::Welcome;
+                    self.notice = "back to welcome".to_string();
+                }
             }
             // At the gate, a bare digit picks that executor; otherwise type it.
             (KeyCode::Char(c), _) => {
@@ -618,6 +667,22 @@ impl TalesPane {
         None
     }
 
+    fn handle_startup_command(&mut self, text: &str) -> bool {
+        match text.trim().to_ascii_lowercase().as_str() {
+            "help" | "/help" => {
+                self.startup_page = StartupPage::Help;
+                self.notice = "showing Tales help".to_string();
+                true
+            }
+            "commands" | "/commands" => {
+                self.startup_page = StartupPage::Commands;
+                self.notice = "showing Tales commands".to_string();
+                true
+            }
+            _ => false,
+        }
+    }
+
     async fn handle_command(&mut self, cmd: UserCommand) -> Option<TalesAction> {
         match cmd {
             UserCommand::ConfirmExecution { executor } if self.app.awaiting => {
@@ -630,10 +695,21 @@ impl TalesPane {
                 self.app.awaiting = false;
                 self.app.recommended = None;
                 self.state = PaneState::WaitingForInput;
-                self.notice = format!("launching {executor} executor pane");
+                let prompt = self.executor_prompt();
+                let plan_path = match self.save_executor_plan(&executor, &prompt) {
+                    Ok(path) => {
+                        self.notice = format!("saved plan to {}", path.display());
+                        Some(path)
+                    }
+                    Err(e) => {
+                        self.notice = format!("could not save plan: {e}");
+                        None
+                    }
+                };
                 Some(TalesAction::LaunchExecutor {
                     key: executor,
-                    prompt: self.executor_prompt(),
+                    prompt,
+                    plan_path,
                 })
             }
             other => {
@@ -717,9 +793,8 @@ impl TalesPane {
                 Ok(ev) => {
                     if matches!(ev, OrchestratorEvent::AwaitingConfirmation { .. }) {
                         self.state = PaneState::AwaitingApproval;
-                    } else if matches!(ev, OrchestratorEvent::AgentExited { .. }) {
-                        self.state = PaneState::WaitingForInput;
-                    } else if matches!(ev, OrchestratorEvent::PhaseChanged { ref phase } if phase == "done")
+                    } else if matches!(ev, OrchestratorEvent::AgentExited { .. })
+                        || matches!(ev, OrchestratorEvent::PhaseChanged { ref phase } if phase == "done")
                     {
                         self.state = PaneState::WaitingForInput;
                     } else if self.started {
@@ -741,28 +816,37 @@ impl TalesPane {
         self.app.executor_handoff_prompt()
     }
 
+    fn save_executor_plan(&self, executor: &str, prompt: &str) -> io::Result<PathBuf> {
+        let dir = self.cfg.cwd.join(PLAN_DIR);
+        fs::create_dir_all(&dir)?;
+        let path = dir.join(LAST_PLAN_FILE);
+        let saved_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let text = format!(
+            "# Tales executor plan\n\n\
+             - Executor: {}\n\
+             - Executor key: {executor}\n\
+             - Saved unix time: {saved_at}\n\
+             - Workspace: {}\n\n\
+             ## Handoff prompt\n\n\
+             {prompt}\n",
+            pretty(executor),
+            self.cfg.cwd.display()
+        );
+        fs::write(&path, text)?;
+        Ok(path)
+    }
+
     fn draw(&self, f: &mut Frame, area: Rect) {
         if !self.started {
-            let lines = vec![
-                Line::from(vec![
-                    Span::styled("Tales orchestrator pane", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
-                ]),
-                Line::from(""),
-                Line::from(Span::styled(
-                    "Type the planning prompt below, then press Enter.",
-                    Style::default().fg(TEXT),
-                )),
-                Line::from(Span::styled(
-                    "Sibling panes can run shells, Codex, Claude Code, or Open Code while Tales keeps the plan.",
-                    Style::default().fg(DIM),
-                )),
-                Line::from(""),
-                Line::from(Span::styled(
-                    "Use Ctrl-X/Ctrl-L to open executor panes, then Ctrl-S to send the agreed plan.",
-                    Style::default().fg(FAINT),
-                )),
-            ];
-            f.render_widget(Paragraph::new(lines), area);
+            let lines = match self.startup_page {
+                StartupPage::Welcome => welcome_lines(&self.cfg),
+                StartupPage::Help => startup_help_lines(),
+                StartupPage::Commands => startup_commands_lines(),
+            };
+            f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
             return;
         }
 
@@ -791,6 +875,197 @@ impl SessionKind {
     }
 }
 
+fn welcome_lines(cfg: &WorkspaceConfig) -> Vec<Line<'static>> {
+    let roster = if cfg.connect.is_empty() {
+        vec!["claude".to_string(), "codex".to_string()]
+    } else {
+        cfg.connect.clone()
+    };
+    let roster_text = roster
+        .iter()
+        .map(|key| pretty(key))
+        .collect::<Vec<_>>()
+        .join(" + ");
+
+    let mut lines = pixel_logo_lines();
+    lines.extend([
+        Line::from(""),
+        Line::from(Span::styled(
+            "Plan with multiple coding CLIs, then hand the agreed plan to one live executor.",
+            Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(vec![
+            Span::styled(
+                "Start: ",
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("type a task", Style::default().fg(TEXT)),
+            Span::styled("  |  ", Style::default().fg(DIM)),
+            Span::styled(
+                "help",
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" for guidance", Style::default().fg(TEXT)),
+            Span::styled("  |  ", Style::default().fg(DIM)),
+            Span::styled(
+                "commands",
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" for every command", Style::default().fg(TEXT)),
+        ]),
+        Line::from(Span::styled(
+            format!("Workspace: {}", cfg.cwd.display()),
+            Style::default().fg(DIM),
+        )),
+        Line::from(Span::styled(
+            format!("Planner roster: {roster_text}"),
+            Style::default().fg(DIM),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Available CLIs",
+            Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+        )),
+    ]);
+
+    for tool in KNOWN_TOOLS {
+        let installed = bin_path(tool.bin).is_some();
+        let status = if installed { "ready" } else { "missing" };
+        let status_color = if installed { ACCENT } else { FAINT };
+        let caps = if tool.supports_headless {
+            "planner + executor"
+        } else {
+            "executor"
+        };
+        lines.push(Line::from(vec![
+            Span::styled("  ", Style::default().fg(DIM)),
+            Span::styled(
+                format!("{:<13}", tool.pretty),
+                Style::default()
+                    .fg(color_for(tool.key))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!(" {:<10}", tool.bin), Style::default().fg(TEXT)),
+            Span::styled(format!("{:<8}", status), Style::default().fg(status_color)),
+            Span::styled(caps, Style::default().fg(DIM)),
+        ]));
+    }
+
+    lines.extend([
+        Line::from(""),
+        Line::from(Span::styled(
+            "Tips",
+            Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            "  - Describe the outcome, constraints, and files that matter.",
+            Style::default().fg(TEXT),
+        )),
+        Line::from(Span::styled(
+            "  - At the executor gate: Enter accepts the recommendation; 1-9 picks another tool.",
+            Style::default().fg(TEXT),
+        )),
+        Line::from(Span::styled(
+            "  - Once the executor pane opens, type directly there if it asks for input.",
+            Style::default().fg(TEXT),
+        )),
+        Line::from(Span::styled(
+            "  - Run tales doctor --all outside the TUI for install details.",
+            Style::default().fg(TEXT),
+        )),
+        Line::from(Span::styled(
+            format!("Saved executor plan: {}/{}", PLAN_DIR, LAST_PLAN_FILE),
+            Style::default().fg(DIM),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Shortcuts: Ctrl-X Codex · Ctrl-L Claude · Ctrl-O Open Code · Ctrl-N shell · Tab switch · Ctrl-Q quit",
+            Style::default().fg(DIM),
+        )),
+    ]);
+    lines
+}
+
+fn pixel_logo_lines() -> Vec<Line<'static>> {
+    vec![
+        Line::from(vec![
+            Span::styled(
+                "  ████████  █████   ██      ███████  ███████",
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("    ▄▄▄▄▄▄▄▄", Style::default().fg(DIM)),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "     ██    ██   ██  ██      ██       ██     ",
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("   ██ ▄▄ ▄▄ ██", Style::default().fg(DIM)),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "     ██    ███████  ██      █████    ███████",
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("  ██ ██ ██ ██", Style::default().fg(DIM)),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "     ██    ██   ██  ██      ██            ██",
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("  ██ ▀▀ ▀▀ ██", Style::default().fg(DIM)),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "     ██    ██   ██  ██████  ███████  ███████",
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("   ▀██████▀", Style::default().fg(DIM)),
+        ]),
+    ]
+}
+
+fn startup_help_lines() -> Vec<Line<'static>> {
+    let mut lines = pixel_logo_lines();
+    lines.push(Line::from(""));
+    lines.extend(message_lines("Help", help_message()));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Type commands for the command list, Esc for welcome, or enter a task to start planning.",
+        Style::default().fg(TEXT),
+    )));
+    lines
+}
+
+fn startup_commands_lines() -> Vec<Line<'static>> {
+    let mut lines = pixel_logo_lines();
+    lines.push(Line::from(""));
+    lines.extend(message_lines("Commands", commands_message()));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Shell commands: tales --help · tales commands · tales doctor --all",
+        Style::default().fg(TEXT),
+    )));
+    lines
+}
+
+fn message_lines(title: &str, text: &str) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(Span::styled(
+        title.to_string(),
+        Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+    ))];
+    lines.extend(text.lines().map(|line| {
+        let style = if line.starts_with("Tales ") {
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(TEXT)
+        };
+        Line::from(Span::styled(line.trim().to_string(), style))
+    }));
+    lines
+}
+
 struct ProcessPane {
     id: PaneId,
     kind: SessionKind,
@@ -800,7 +1075,7 @@ struct ProcessPane {
     state: PaneState,
     lines: VecDeque<String>,
     pending: String,
-    writer: Option<Arc<Mutex<Box<dyn Write + Send>>>>,
+    writer: Option<ChildInput>,
     child: Option<Child>,
     last_output: Instant,
 }
@@ -863,11 +1138,31 @@ impl ProcessPane {
         }
     }
 
+    fn reset_for_execution(&mut self, plan_path: Option<&Path>) {
+        self.lines.clear();
+        self.pending.clear();
+        self.push_line(format!("{} executor started", self.title));
+        if let Some(path) = plan_path {
+            self.push_line(format!("saved plan: {}", path.display()));
+        }
+        self.push_line("working on the handoff prompt now");
+        self.push_line("");
+    }
+
     fn push_output(&mut self, bytes: &[u8]) {
         let text = strip_ansi(&String::from_utf8_lossy(bytes));
-        for ch in text.chars() {
+        let mut chars = text.chars().peekable();
+        while let Some(ch) = chars.next() {
             match ch {
-                '\r' => self.pending.clear(),
+                '\r' => {
+                    if matches!(chars.peek(), Some('\n')) {
+                        continue;
+                    }
+                    if !self.pending.is_empty() {
+                        let line = std::mem::take(&mut self.pending);
+                        self.push_line(line);
+                    }
+                }
                 '\n' => {
                     let line = std::mem::take(&mut self.pending);
                     self.push_line(line);
@@ -952,31 +1247,53 @@ impl ProcessPane {
 
     fn draw(&self, f: &mut Frame, area: Rect) {
         let height = area.height as usize;
-        let mut lines = self
-            .lines
-            .iter()
-            .rev()
-            .take(height.saturating_sub(1))
-            .cloned()
-            .collect::<Vec<_>>();
-        lines.reverse();
-        if !self.pending.is_empty() && lines.len() < height {
-            lines.push(self.pending.clone());
+        let width = area.width.saturating_sub(1).max(8) as usize;
+        let mut logical = self.lines.iter().cloned().collect::<Vec<_>>();
+        if !self.pending.is_empty() {
+            logical.push(self.pending.clone());
         }
-        if lines.is_empty() {
-            lines.push(format!(
+        if logical.is_empty() {
+            logical.push(format!(
                 "{} · {} · {}",
                 self.kind.label(),
                 self.command,
                 self.cwd.to_string_lossy()
             ));
         }
-        let rendered = lines
+        let mut visual = Vec::new();
+        for line in logical {
+            visual.extend(wrap_plain_line(&line, width));
+        }
+        if visual.len() > height {
+            visual = visual.split_off(visual.len() - height);
+        }
+        let rendered = visual
             .into_iter()
-            .map(|line| Line::from(Span::raw(line)))
+            .map(|line| Line::from(Span::styled(line, Style::default().fg(TEXT))))
             .collect::<Vec<_>>();
         f.render_widget(Paragraph::new(rendered), area);
     }
+}
+
+fn wrap_plain_line(line: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    if line.is_empty() {
+        return vec![String::new()];
+    }
+
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut count = 0;
+    for ch in line.chars() {
+        if count >= width {
+            out.push(std::mem::take(&mut current));
+            count = 0;
+        }
+        current.push(ch);
+        count += 1;
+    }
+    out.push(current);
+    out
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1049,7 +1366,7 @@ fn spawn_child(
     args: &[String],
     cwd: &Path,
     tx: mpsc::UnboundedSender<TerminalEvent>,
-) -> io::Result<(Child, Arc<Mutex<Box<dyn Write + Send>>>)> {
+) -> io::Result<(Child, ChildInput)> {
     #[cfg(unix)]
     {
         spawn_pty_child(pane_id, command, args, cwd, tx)
@@ -1067,7 +1384,7 @@ fn spawn_pty_child(
     args: &[String],
     cwd: &Path,
     tx: mpsc::UnboundedSender<TerminalEvent>,
-) -> io::Result<(Child, Arc<Mutex<Box<dyn Write + Send>>>)> {
+) -> io::Result<(Child, ChildInput)> {
     use std::fs::File;
     use std::os::unix::io::{FromRawFd, RawFd};
     use std::os::unix::process::CommandExt;
@@ -1169,7 +1486,7 @@ fn spawn_piped_child(
     args: &[String],
     cwd: &Path,
     tx: mpsc::UnboundedSender<TerminalEvent>,
-) -> io::Result<(Child, Arc<Mutex<Box<dyn Write + Send>>>)> {
+) -> io::Result<(Child, ChildInput)> {
     let mut child = Command::new(command)
         .args(args)
         .current_dir(cwd)
@@ -1260,10 +1577,143 @@ fn strip_ansi(input: &str) -> String {
 mod tests {
     use super::*;
 
+    fn test_pane() -> ProcessPane {
+        ProcessPane {
+            id: 1,
+            kind: SessionKind::Shell,
+            title: "test".into(),
+            command: "test".into(),
+            cwd: PathBuf::from("."),
+            state: PaneState::Running,
+            lines: VecDeque::new(),
+            pending: String::new(),
+            writer: None,
+            child: None,
+            last_output: Instant::now(),
+        }
+    }
+
+    fn lines_text(lines: &[Line<'static>]) -> String {
+        lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn test_workspace_config(cwd: PathBuf) -> WorkspaceConfig {
+        WorkspaceConfig {
+            connect: vec!["claude".into(), "codex".into()],
+            prefill: None,
+            cwd,
+            sandbox: "workspace-write".into(),
+            turns: 4,
+        }
+    }
+
+    #[test]
+    fn welcome_screen_has_pixel_art_tips_and_command_cues() {
+        let cfg = test_workspace_config(PathBuf::from("/tmp/tales"));
+        let text = lines_text(&welcome_lines(&cfg));
+
+        assert!(text.contains("████████"), "{text}");
+        assert!(text.contains("help"), "{text}");
+        assert!(text.contains("commands"), "{text}");
+        assert!(text.contains("Tips"), "{text}");
+        assert!(text.contains("tales doctor --all"), "{text}");
+    }
+
+    #[test]
+    fn startup_help_and_commands_pages_render() {
+        let help = lines_text(&startup_help_lines());
+        let commands = lines_text(&startup_commands_lines());
+
+        assert!(help.contains("Tales help"), "{help}");
+        assert!(help.contains("Type /commands"), "{help}");
+        assert!(commands.contains("Tales commands"), "{commands}");
+        assert!(commands.contains("/attach <path>"), "{commands}");
+    }
+
+    #[test]
+    fn startup_command_switches_pages() {
+        let cwd = std::env::temp_dir().join("tales-startup-command-test");
+        let mut pane = TalesPane::new(1, test_workspace_config(cwd));
+
+        assert!(pane.handle_startup_command("help"));
+        assert_eq!(pane.startup_page, StartupPage::Help);
+        assert!(pane.handle_startup_command("/commands"));
+        assert_eq!(pane.startup_page, StartupPage::Commands);
+        assert!(!pane.handle_startup_command("build a feature"));
+    }
+
     #[test]
     fn strips_common_ansi_sequences() {
         assert_eq!(strip_ansi("\x1b[32mhello\x1b[0m"), "hello");
         assert_eq!(strip_ansi("a\x1b]0;title\x07b"), "ab");
+    }
+
+    #[test]
+    fn process_output_preserves_crlf_lines() {
+        let mut pane = test_pane();
+        pane.push_output(b"one\r\ntwo\r\n");
+        let lines = pane.lines.into_iter().collect::<Vec<_>>();
+        assert_eq!(lines, vec!["one", "two"]);
+        assert!(pane.pending.is_empty());
+    }
+
+    #[test]
+    fn process_output_turns_bare_carriage_return_into_history() {
+        let mut pane = test_pane();
+        pane.push_output(b"working 1\rworking 2\rready");
+        let lines = pane.lines.into_iter().collect::<Vec<_>>();
+        assert_eq!(lines, vec!["working 1", "working 2"]);
+        assert_eq!(pane.pending, "ready");
+    }
+
+    #[test]
+    fn wraps_process_lines_to_pane_width() {
+        assert_eq!(
+            wrap_plain_line("abcdef", 2),
+            vec!["ab".to_string(), "cd".to_string(), "ef".to_string()]
+        );
+        assert_eq!(wrap_plain_line("", 2), vec!["".to_string()]);
+    }
+
+    #[test]
+    fn save_executor_plan_writes_last_plan_in_workspace() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let cwd =
+            std::env::temp_dir().join(format!("tales-plan-test-{}-{unique}", std::process::id()));
+        fs::create_dir_all(&cwd).unwrap();
+
+        let pane = TalesPane::new(
+            1,
+            WorkspaceConfig {
+                connect: vec!["claude".into(), "codex".into()],
+                prefill: None,
+                cwd: cwd.clone(),
+                sandbox: "workspace-write".into(),
+                turns: 4,
+            },
+        );
+        let path = pane
+            .save_executor_plan("codex", "Execute this saved handoff.")
+            .unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+
+        assert_eq!(path, cwd.join(PLAN_DIR).join(LAST_PLAN_FILE));
+        assert!(text.contains("Executor key: codex"));
+        assert!(text.contains("Execute this saved handoff."));
+
+        let _ = fs::remove_dir_all(&cwd);
     }
 
     #[test]

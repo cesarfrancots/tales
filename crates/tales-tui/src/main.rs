@@ -30,7 +30,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
@@ -38,6 +38,7 @@ use uuid::Uuid;
 
 use tales_core::agent::mock::MockAdapter;
 use tales_core::agent::{make_adapter, validate_roster, SpawnCtx};
+use tales_core::build_info;
 use tales_core::bus::EventBus;
 use tales_core::conductor::Role;
 use tales_core::event::{OrchestratorEvent, UserCommand};
@@ -51,6 +52,8 @@ use crate::theme::{ACCENT, DIM, TEXT};
 #[derive(Parser, Debug, Clone)]
 #[command(
     name = "tales-tui",
+    version = build_info::version(),
+    long_version = build_info::long_version(),
     about = "Interactive Tales terminal workspace: plan in Tales, run shells and agent CLIs beside it"
 )]
 struct Args {
@@ -419,7 +422,7 @@ fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::vertical([
         Constraint::Length(1), // header
         Constraint::Min(1),    // transcript
-        Constraint::Length(1), // input
+        Constraint::Length(3), // input
         Constraint::Length(1), // hint
     ])
     .split(f.area());
@@ -454,7 +457,7 @@ fn draw(f: &mut Frame, app: &App) {
 
     // Input line (with a 📎N indicator when media is queued).
     let mut input_spans = vec![Span::styled(
-        "❯ ",
+        "you ❯ ",
         Style::default().fg(ACCENT).add_modifier(bold),
     )];
     if app.pending_count() > 0 {
@@ -464,7 +467,10 @@ fn draw(f: &mut Frame, app: &App) {
         ));
     }
     input_spans.push(Span::styled(app.input.clone(), Style::default().fg(TEXT)));
-    f.render_widget(Paragraph::new(Line::from(input_spans)), chunks[2]);
+    f.render_widget(
+        Paragraph::new(Line::from(input_spans)).wrap(Wrap { trim: false }),
+        chunks[2],
+    );
 
     // Hint — becomes the executor picker at the gate.
     f.render_widget(Paragraph::new(app.footer_line()), chunks[3]);
@@ -605,6 +611,8 @@ mod render_tests {
         app.apply(OrchestratorEvent::RecommendationReady {
             executor: "claude".into(),
             rationale: "best at writing the code".into(),
+            confident: true,
+            scores: vec![("claude".into(), 1.2), ("codex".into(), 0.4)],
         });
         app.phase = "awaitingconfirmation".into();
         app.awaiting = true;

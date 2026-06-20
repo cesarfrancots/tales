@@ -30,7 +30,7 @@ use tokio::process::Command;
 use tokio::sync::mpsc;
 
 use super::{AgentAdapter, AgentCaps, AgentCommand, AgentEvent, Attachment, SpawnCtx, TurnId};
-use crate::{AgentId, Result};
+use crate::{AgentId, Result, TokenUsage};
 
 /// Adapter for the `codex` CLI.
 pub struct CodexAdapter {
@@ -251,6 +251,7 @@ impl Manager {
                     agent: self.ctx.agent,
                     turn,
                     cost_usd: None,
+                    token_usage: None,
                 })
                 .await;
         }
@@ -287,12 +288,14 @@ impl Manager {
                 false
             }
             Some("turn.completed") => {
+                let token_usage = parse_codex_token_usage(v);
                 let _ = self
                     .events_tx
                     .send(AgentEvent::TurnComplete {
                         agent,
                         turn,
                         cost_usd: None, // codex reports tokens, not USD
+                        token_usage,
                     })
                     .await;
                 true
@@ -323,6 +326,7 @@ impl Manager {
                         agent,
                         turn,
                         cost_usd: None,
+                        token_usage: None,
                     })
                     .await;
                 true
@@ -424,6 +428,67 @@ fn is_benign_codex_noise(line: &str) -> bool {
     NOISE.iter().any(|n| line.contains(n))
 }
 
+fn parse_codex_token_usage(event: &Value) -> Option<TokenUsage> {
+    let usage = event.get("usage")?;
+    let token_usage = TokenUsage {
+        input_tokens: usage_u64(
+            usage,
+            &[
+                "input_tokens",
+                "prompt_tokens",
+                "input",
+                "prompt",
+                "tokens_in",
+            ],
+            &[],
+        ),
+        cached_input_tokens: usage_u64(
+            usage,
+            &[
+                "cached_input_tokens",
+                "input_cached_tokens",
+                "cached_tokens",
+            ],
+            &[
+                "/input_token_details/cached_tokens",
+                "/prompt_tokens_details/cached_tokens",
+            ],
+        ),
+        output_tokens: usage_u64(
+            usage,
+            &[
+                "output_tokens",
+                "completion_tokens",
+                "output",
+                "completion",
+                "tokens_out",
+            ],
+            &[],
+        ),
+        reasoning_output_tokens: usage_u64(
+            usage,
+            &["reasoning_output_tokens", "reasoning_tokens"],
+            &["/output_token_details/reasoning_tokens"],
+        ),
+        total_tokens: usage_u64(usage, &["total_tokens", "total"], &[]),
+    };
+    (!token_usage.is_empty()).then_some(token_usage)
+}
+
+fn usage_u64(usage: &Value, keys: &[&str], pointers: &[&str]) -> Option<u64> {
+    for key in keys {
+        if let Some(value) = usage.get(*key).and_then(Value::as_u64) {
+            return Some(value);
+        }
+    }
+    for pointer in pointers {
+        if let Some(value) = usage.pointer(pointer).and_then(Value::as_u64) {
+            return Some(value);
+        }
+    }
+    None
+}
+
 /// Build a human-readable summary of a Codex `item.completed` tool event, so the
 /// feed shows what it did (`command_execution: git diff --stat`) instead of a
 /// wall of identical wire-type names. Falls back to the type name if no useful
@@ -513,6 +578,50 @@ mod tests {
             "ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(...)"
         ));
         assert!(!is_benign_codex_noise("error: rate limit exceeded"));
+    }
+
+    #[test]
+    fn token_usage_parses_flat_and_nested_codex_usage() {
+        let flat = json!({
+            "type": "turn.completed",
+            "usage": {
+                "input_tokens": 100,
+                "cached_input_tokens": 25,
+                "output_tokens": 40,
+                "reasoning_output_tokens": 10,
+                "total_tokens": 150
+            }
+        });
+        assert_eq!(
+            parse_codex_token_usage(&flat),
+            Some(TokenUsage {
+                input_tokens: Some(100),
+                cached_input_tokens: Some(25),
+                output_tokens: Some(40),
+                reasoning_output_tokens: Some(10),
+                total_tokens: Some(150),
+            })
+        );
+
+        let nested = json!({
+            "type": "turn.completed",
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 40,
+                "prompt_tokens_details": { "cached_tokens": 20 },
+                "output_token_details": { "reasoning_tokens": 8 }
+            }
+        });
+        assert_eq!(
+            parse_codex_token_usage(&nested),
+            Some(TokenUsage {
+                input_tokens: Some(100),
+                cached_input_tokens: Some(20),
+                output_tokens: Some(40),
+                reasoning_output_tokens: Some(8),
+                total_tokens: None,
+            })
+        );
     }
 
     fn mgr_with(model: Option<&str>, effort: Option<&str>) -> Manager {

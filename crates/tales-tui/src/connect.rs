@@ -413,11 +413,11 @@ mod tests {
         s.cycle_effort();
         assert_eq!(s.rows[cx].effort().as_deref(), Some("low"));
 
-        let cl = s.rows.iter().position(|r| r.key == "claude").unwrap();
-        s.cursor = cl;
-        s.rows[cl].installed = true;
+        let no_effort = s.rows.iter().position(|r| r.efforts.is_empty()).unwrap();
+        s.cursor = no_effort;
+        s.rows[no_effort].installed = true;
         s.cycle_effort();
-        assert_eq!(s.rows[cl].effort(), None);
+        assert_eq!(s.rows[no_effort].effort(), None);
         assert!(s.status.is_some()); // hinted "no effort levels"
     }
 

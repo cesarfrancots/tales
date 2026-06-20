@@ -20,7 +20,7 @@
 //!   {"type":"turn.completed","usage":{…}}        (token counts, no USD cost)
 //!   {"type":"turn.failed",…}
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use async_trait::async_trait;
@@ -191,8 +191,11 @@ impl Manager {
         let turn = self.turn;
         let args = self.build_args(&prompt, attachments);
 
-        let mut child = match Command::new(&self.bin)
-            .args(&args)
+        let invocation = CodexInvocation::new(&self.bin);
+        let mut command = Command::new(&invocation.program);
+        command.args(&invocation.prefix_args).args(&args);
+
+        let mut child = match command
             .current_dir(PathBuf::from(&self.ctx.cwd))
             // Non-interactive: the prompt is passed as an arg, so don't wait on
             // stdin. (Codex still prints a benign "Reading additional input from
@@ -209,7 +212,7 @@ impl Manager {
                     .events_tx
                     .send(AgentEvent::Error {
                         agent,
-                        message: format!("failed to spawn {}: {e}", self.bin),
+                        message: format!("failed to spawn {}: {e}", invocation.label),
                         fatal: true,
                     })
                     .await;
@@ -411,6 +414,58 @@ impl Manager {
             None => {}
         }
     }
+}
+
+struct CodexInvocation {
+    program: String,
+    prefix_args: Vec<String>,
+    label: String,
+}
+
+impl CodexInvocation {
+    fn new(bin: &str) -> Self {
+        let Some(script) = windows_npm_codex_script(bin) else {
+            return Self {
+                program: bin.to_string(),
+                prefix_args: Vec::new(),
+                label: bin.to_string(),
+            };
+        };
+        let node = node_for_npm_shim(bin);
+        Self {
+            program: node.clone(),
+            prefix_args: vec![script.display().to_string()],
+            label: format!("{node} {}", script.display()),
+        }
+    }
+}
+
+fn windows_npm_codex_script(bin: &str) -> Option<PathBuf> {
+    if !cfg!(windows) {
+        return None;
+    }
+    let path = Path::new(bin);
+    let file = path.file_name()?.to_string_lossy().to_ascii_lowercase();
+    if file != "codex.cmd" && file != "codex.bat" {
+        return None;
+    }
+    let script = path
+        .parent()?
+        .join("node_modules")
+        .join("@openai")
+        .join("codex")
+        .join("bin")
+        .join("codex.js");
+    script.is_file().then_some(script)
+}
+
+fn node_for_npm_shim(bin: &str) -> String {
+    Path::new(bin)
+        .parent()
+        .map(|dir| dir.join("node.exe"))
+        .filter(|node| node.is_file())
+        .map(|node| node.display().to_string())
+        .unwrap_or_else(|| "node".to_string())
 }
 
 async fn stderr_task(stderr: tokio::process::ChildStderr, agent: AgentId) -> Vec<String> {
@@ -633,6 +688,31 @@ mod tests {
         assert!(!is_benign_codex_noise(
             "error: model gpt-5.5 is not available"
         ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_npm_codex_cmd_uses_node_entrypoint() {
+        let root =
+            std::env::temp_dir().join(format!("tales-codex-shim-test-{}", std::process::id()));
+        let bin = root.join("codex.cmd");
+        let script = root
+            .join("node_modules")
+            .join("@openai")
+            .join("codex")
+            .join("bin")
+            .join("codex.js");
+        std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+        std::fs::write(&bin, "@echo off").unwrap();
+        std::fs::write(&script, "console.log('codex')").unwrap();
+
+        let inv = CodexInvocation::new(&bin.display().to_string());
+
+        assert_eq!(inv.program, "node");
+        assert_eq!(inv.prefix_args, vec![script.display().to_string()]);
+        assert!(inv.label.contains("codex.js"));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

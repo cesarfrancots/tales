@@ -6,6 +6,14 @@ Tales uses one lockstep SemVer version for the Rust workspace. The version lives
 
 ## Unreleased
 
+## 0.3.0
+
+- Added `.tales/runs/<run>/` recovery artifacts for terminal, `tales run`, and `tales discuss` sessions with `plan.md`, `events.jsonl`, and `manifest.json`.
+- Added `tales recover` to list saved runs and print the newest or selected saved plan.
+- Added terminal recovery commands: `/artifacts`, `/handoff [executor|number]`, and `/switch <executor|number>`.
+- Added project-local MCP/tool config detection with safety warnings and Claude launches that disable project MCP loading when risky configs are present.
+- Documented the reliability roadmap for policy, scanner, redaction, and retention hardening.
+
 ## 0.2.0
 
 - Added the default terminal workspace welcome screen with Tales pixel art, tips, command cues, and readable tool status rows.

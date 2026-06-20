@@ -52,6 +52,9 @@ pub fn help_message() -> &'static str {
      Type a normal message to add context while the planners are working.\n\
      At the executor gate, press Enter to accept the recommendation or press 1-9 to pick a tool.\n\
      The selected executor opens as a live CLI pane, so you can answer questions directly there.\n\
+     Run artifacts are saved under .tales/runs/<run>/ and the executor handoff is copied to .tales/last-plan.md.\n\
+     If an executor stalls or exits, use /handoff to resend the plan or /switch <executor> to relaunch it.\n\
+     Use /artifacts to show the saved run files for recovery.\n\
      Type /commands for every Tales command."
 }
 
@@ -62,8 +65,25 @@ pub fn commands_message() -> &'static str {
      /attach <path> — send an image or PDF with your next message\n\
      /confirm [agent|number] — approve execution with the recommendation or a chosen executor\n\
      /reject — stop before execution\n\
+     /artifacts — show saved run paths for recovery\n\
+     /handoff [executor|number] — resend the current plan to a live executor, or reopen the chosen one\n\
+     /switch <executor|number> — open a fresh executor pane with the current plan\n\
      /quit — leave Tales\n\
+     Artifacts — .tales/runs/<run>/plan.md, events.jsonl, manifest.json; latest executor plan at .tales/last-plan.md\n\
      Ctrl-N shell · Ctrl-X Codex · Ctrl-L Claude · Ctrl-O Open Code · Ctrl-S send plan · Ctrl-A approve"
+}
+
+#[derive(Debug, Clone)]
+pub enum SubmitAction {
+    Core(UserCommand),
+    Recovery(RecoveryCommand),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecoveryCommand {
+    Artifacts,
+    Handoff { executor: Option<String> },
+    Switch { executor: String },
 }
 
 #[derive(Clone, Copy)]
@@ -157,6 +177,10 @@ impl App {
 
     fn sys(&mut self, text: impl Into<String>, kind: SysKind) {
         self.blocks.push(Block::Sys(text.into(), kind));
+    }
+
+    pub fn note(&mut self, text: impl Into<String>) {
+        self.sys(text, SysKind::Note);
     }
 
     fn label_of(&self, agent: &Uuid) -> String {
@@ -415,6 +439,16 @@ impl App {
 
     /// Interpret the input line on Enter and clear it.
     pub fn submit_input(&mut self) -> Option<UserCommand> {
+        match self.submit_action()? {
+            SubmitAction::Core(cmd) => Some(cmd),
+            SubmitAction::Recovery(_) => None,
+        }
+    }
+
+    /// Interpret the input line on Enter and clear it. Local recovery commands
+    /// are returned separately because they are handled by the terminal
+    /// workspace, not the core orchestrator.
+    pub fn submit_action(&mut self) -> Option<SubmitAction> {
         let text = self.input.trim().to_string();
         self.input.clear();
 
@@ -451,37 +485,61 @@ impl App {
             }
             return None;
         }
+        if text == "/artifacts" {
+            return Some(SubmitAction::Recovery(RecoveryCommand::Artifacts));
+        }
+        if text == "/handoff" || text.starts_with("/handoff ") {
+            let arg = text["/handoff".len()..].trim();
+            let executor = if arg.is_empty() {
+                None
+            } else {
+                Some(self.resolve_executor(arg))
+            };
+            return Some(SubmitAction::Recovery(RecoveryCommand::Handoff {
+                executor,
+            }));
+        }
+        if text == "/switch" || text.starts_with("/switch ") {
+            let arg = text["/switch".len()..].trim();
+            if arg.is_empty() {
+                self.sys("usage: /switch <executor-or-number>", SysKind::Note);
+                return None;
+            }
+            return Some(SubmitAction::Recovery(RecoveryCommand::Switch {
+                executor: self.resolve_executor(arg),
+            }));
+        }
         if text == "/confirm" || text.starts_with("/confirm ") {
             let arg = text["/confirm".len()..].trim();
-            return Some(UserCommand::ConfirmExecution {
+            return Some(SubmitAction::Core(UserCommand::ConfirmExecution {
                 executor: self.resolve_executor(arg),
-            });
+            }));
         }
         if text == "/reject" {
-            return Some(UserCommand::Reject);
+            return Some(SubmitAction::Core(UserCommand::Reject));
         }
         if text == "/quit" {
             self.should_quit = true;
-            return Some(UserCommand::Shutdown);
+            return Some(SubmitAction::Core(UserCommand::Shutdown));
         }
         // A normal message — or attachments on their own.
         if text.is_empty() && self.pending_attachments.is_empty() {
             // At the gate, a bare Enter accepts the recommended executor.
             if self.awaiting {
                 if let Some(rec) = &self.recommended {
-                    return Some(UserCommand::ConfirmExecution {
+                    return Some(SubmitAction::Core(UserCommand::ConfirmExecution {
                         executor: rec.clone(),
-                    });
+                    }));
                 }
             }
             return None;
         }
         let attachments = std::mem::take(&mut self.pending_attachments);
-        Some(UserCommand::InjectNote {
+        Some(SubmitAction::Core(UserCommand::InjectNote {
             agent: Uuid::nil(),
             text,
             attachments,
-        })
+        }))
     }
 
     /// Resolve a `/confirm` argument to an executor label. Accepts a 1-based
@@ -512,7 +570,7 @@ impl App {
     pub fn footer_line(&self) -> Line<'static> {
         if !self.awaiting {
             return Line::from(Span::styled(
-                "type to talk · /help · /commands · /attach <file> · /confirm [agent] · /reject · /quit",
+                "type to talk · /help · /commands · /artifacts · /handoff · /switch <agent> · /quit",
                 Style::default().fg(FAINT),
             ));
         }
@@ -759,7 +817,7 @@ fn action_banner(out: &mut Vec<Line<'static>>, candidates: &[String], recommende
         out.push(Line::from(spans));
     }
     out.push(Line::from(Span::styled(
-        "  Enter accept · press 1-9 to pick · /reject to decline",
+        "  Enter accept · press 1-9 to pick · /switch <executor> to reopen · /reject to decline",
         Style::default().fg(DIM),
     )));
     out.push(Line::from(""));
@@ -1054,7 +1112,10 @@ mod tests {
         assert!(text_of(&app.render_lines(80)).contains("Tales help"));
         app.input = "/commands".into();
         assert!(app.submit_input().is_none());
-        assert!(text_of(&app.render_lines(80)).contains("/attach <path>"));
+        let commands = text_of(&app.render_lines(80));
+        assert!(commands.contains("/attach <path>"), "{commands}");
+        assert!(commands.contains("/artifacts"), "{commands}");
+        assert!(commands.contains("/switch <executor|number>"), "{commands}");
         app.recommended = Some("claude".into());
         app.input = "/confirm".into();
         match app.submit_input() {
@@ -1071,5 +1132,46 @@ mod tests {
         app.input = "/quit".into();
         assert!(matches!(app.submit_input(), Some(UserCommand::Shutdown)));
         assert!(app.should_quit);
+    }
+
+    #[test]
+    fn recovery_commands_map_correctly() {
+        let mut app = App::new("t".into());
+        app.set_candidates(vec!["claude".into(), "codex".into()]);
+        app.recommended = Some("claude".into());
+
+        app.input = "/artifacts".into();
+        assert!(matches!(
+            app.submit_action(),
+            Some(SubmitAction::Recovery(RecoveryCommand::Artifacts))
+        ));
+
+        app.input = "/handoff 2".into();
+        match app.submit_action() {
+            Some(SubmitAction::Recovery(RecoveryCommand::Handoff { executor })) => {
+                assert_eq!(executor.as_deref(), Some("codex"));
+            }
+            other => panic!("expected handoff recovery command, got {other:?}"),
+        }
+
+        app.input = "/handoff".into();
+        match app.submit_action() {
+            Some(SubmitAction::Recovery(RecoveryCommand::Handoff { executor })) => {
+                assert!(executor.is_none());
+            }
+            other => panic!("expected handoff recovery command, got {other:?}"),
+        }
+
+        app.input = "/switch Claude Code".into();
+        match app.submit_action() {
+            Some(SubmitAction::Recovery(RecoveryCommand::Switch { executor })) => {
+                assert_eq!(executor, "claude");
+            }
+            other => panic!("expected switch recovery command, got {other:?}"),
+        }
+
+        app.input = "/switch".into();
+        assert!(app.submit_action().is_none());
+        assert!(text_of(&app.render_lines(80)).contains("usage: /switch"));
     }
 }

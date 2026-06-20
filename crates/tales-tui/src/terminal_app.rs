@@ -6,7 +6,7 @@
 //! grid can replace the native PTY/line renderer without touching the planner.
 
 use std::collections::VecDeque;
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -21,7 +21,10 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block as RBlock, Borders, List, ListItem, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
-use tales_core::agent::{bin_path, tool_info, validate_roster, KNOWN_TOOLS};
+use serde_json::json;
+use tales_core::agent::{
+    bin_path, project_mcp_config_risks, tool_info, validate_roster, McpConfigRisk, KNOWN_TOOLS,
+};
 use tales_core::bus::EventBus;
 use tales_core::conductor::Role;
 use tales_core::event::{OrchestratorEvent, UserCommand};
@@ -29,13 +32,14 @@ use tokio::sync::broadcast::error::TryRecvError;
 use tokio::sync::mpsc;
 use tokio::time::{self, Duration};
 
-use crate::app::{commands_message, help_message, App};
+use crate::app::{commands_message, help_message, App, RecoveryCommand, SubmitAction};
 use crate::theme::{color_for, pretty, ACCENT, DIM, ERRC, FAINT, TEXT};
 use crate::{run_session, Args, Connection};
 
 const MAX_SCROLLBACK: usize = 2_000;
 const PLAN_DIR: &str = ".tales";
 const LAST_PLAN_FILE: &str = "last-plan.md";
+const RUNS_DIR: &str = "runs";
 
 type PaneId = u64;
 type ChildInput = Arc<Mutex<Box<dyn Write + Send>>>;
@@ -250,6 +254,7 @@ impl Workspace {
             self.notice = format!("unknown agent: {key}");
             return None;
         };
+        let (args, safety_note) = agent_launch_args(info.key, &self.cfg.cwd);
         let pane = ProcessPane::spawn(
             id,
             SessionKind::Agent {
@@ -257,13 +262,20 @@ impl Workspace {
             },
             info.pretty.to_string(),
             info.bin.to_string(),
-            Vec::new(),
+            args,
             self.cfg.cwd.clone(),
             self.tx.clone(),
         );
         self.panes.push(Pane::Process(pane));
         self.active = self.panes.len() - 1;
-        self.notice = format!("opened {} pane", info.pretty);
+        if let Some(note) = safety_note {
+            if let Some(Pane::Process(proc)) = self.panes.get_mut(self.active) {
+                proc.push_line(note.clone());
+            }
+            self.notice = note;
+        } else {
+            self.notice = format!("opened {} pane", info.pretty);
+        }
         Some(self.active)
     }
 
@@ -274,22 +286,71 @@ impl Workspace {
                 prompt,
                 plan_path,
             } => {
-                let Some(index) = self.spawn_agent(&key) else {
-                    return;
-                };
-                if let Some(Pane::Process(proc)) = self.panes.get_mut(index) {
-                    proc.reset_for_execution(plan_path.as_deref());
-                    proc.write(prompt.as_bytes());
-                    proc.write(b"\r");
-                    self.notice = match plan_path {
-                        Some(path) => {
-                            format!("launched {} with {}", proc.title, path.display())
-                        }
-                        None => format!("launched {} executor pane", proc.title),
-                    };
+                self.launch_executor_with_prompt(&key, &prompt, plan_path.as_deref());
+            }
+            TalesAction::Handoff {
+                executor,
+                prompt,
+                plan_path,
+            } => {
+                if let Some(index) = self.reusable_agent_pane(executor.as_deref()) {
+                    if let Some(Pane::Process(proc)) = self.panes.get_mut(index) {
+                        proc.write(prompt.as_bytes());
+                        proc.write(b"\r");
+                        self.active = index;
+                        self.notice = match plan_path {
+                            Some(path) => {
+                                format!("resent plan to {} from {}", proc.title, path.display())
+                            }
+                            None => format!("resent plan to {}", proc.title),
+                        };
+                    }
+                } else if let Some(key) = executor {
+                    self.launch_executor_with_prompt(&key, &prompt, plan_path.as_deref());
+                } else {
+                    self.notice =
+                        "no live executor pane; use /switch <executor> from Tales".to_string();
                 }
             }
         }
+    }
+
+    fn launch_executor_with_prompt(&mut self, key: &str, prompt: &str, plan_path: Option<&Path>) {
+        let Some(index) = self.spawn_agent(key) else {
+            return;
+        };
+        if let Some(Pane::Process(proc)) = self.panes.get_mut(index) {
+            proc.reset_for_execution(plan_path);
+            proc.write(prompt.as_bytes());
+            proc.write(b"\r");
+            self.notice = match plan_path {
+                Some(path) => format!("launched {} with {}", proc.title, path.display()),
+                None => format!("launched {} executor pane", proc.title),
+            };
+        }
+    }
+
+    fn reusable_agent_pane(&self, key: Option<&str>) -> Option<usize> {
+        self.panes
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, pane)| {
+                let Pane::Process(proc) = pane else {
+                    return None;
+                };
+                if !proc.can_receive_input() {
+                    return None;
+                }
+                match &proc.kind {
+                    SessionKind::Agent { key: pane_key }
+                        if key.is_none_or(|wanted| wanted.eq_ignore_ascii_case(pane_key)) =>
+                    {
+                        Some(index)
+                    }
+                    _ => None,
+                }
+            })
     }
 
     fn send_handoff_to_active(&mut self) {
@@ -538,7 +599,7 @@ impl Workspace {
 
     fn draw_footer(&self, f: &mut Frame, area: Rect) {
         let help = if self.active_is_process() {
-            "Tab switch · Ctrl-T Tales · Ctrl-A approve · Ctrl-Q quit"
+            "Tab switch · Ctrl-T Tales for /handoff or /switch · Ctrl-A approve · Ctrl-Q quit"
         } else {
             "Tab switch · Ctrl-T Tales · Ctrl-N shell · Ctrl-X Codex · Ctrl-L Claude · Ctrl-S send plan · Ctrl-A approve · Ctrl-Q quit"
         };
@@ -579,12 +640,15 @@ struct TalesPane {
     state: PaneState,
     app: App,
     cfg: WorkspaceConfig,
+    artifacts: Option<RunArtifacts>,
+    mcp_risks: Vec<McpConfigRisk>,
     bus: Option<EventBus>,
     commands: Option<mpsc::Sender<UserCommand>>,
     events: Option<tokio::sync::broadcast::Receiver<OrchestratorEvent>>,
     started: bool,
     startup_page: StartupPage,
     notice: String,
+    last_executor: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -600,21 +664,147 @@ enum TalesAction {
         prompt: String,
         plan_path: Option<PathBuf>,
     },
+    Handoff {
+        executor: Option<String>,
+        prompt: String,
+        plan_path: Option<PathBuf>,
+    },
+}
+
+#[derive(Clone)]
+struct RunArtifacts {
+    dir: PathBuf,
+    manifest_path: PathBuf,
+    events_path: PathBuf,
+    plan_path: PathBuf,
+    started_at: u64,
+    task: String,
+    workspace: PathBuf,
+    roster: Vec<String>,
+}
+
+impl RunArtifacts {
+    fn create(workspace: &Path, task: &str, roster: &[String]) -> io::Result<Self> {
+        let started_at = unix_time();
+        let run_id = format!("{started_at}-{}", slug(task));
+        let dir = workspace.join(PLAN_DIR).join(RUNS_DIR).join(run_id);
+        fs::create_dir_all(&dir)?;
+        let artifacts = Self {
+            manifest_path: dir.join("manifest.json"),
+            events_path: dir.join("events.jsonl"),
+            plan_path: dir.join("plan.md"),
+            dir,
+            started_at,
+            task: task.to_string(),
+            workspace: workspace.to_path_buf(),
+            roster: roster.to_vec(),
+        };
+        artifacts.write_manifest("planning", None)?;
+        artifacts.write_plan_markdown("planning", None, "")?;
+        artifacts.append_manual_event("run_started", task)?;
+        Ok(artifacts)
+    }
+
+    fn relative_dir(&self) -> String {
+        self.dir
+            .strip_prefix(&self.workspace)
+            .unwrap_or(&self.dir)
+            .display()
+            .to_string()
+    }
+
+    fn write_manifest(&self, status: &str, executor: Option<&str>) -> io::Result<()> {
+        let value = json!({
+            "task": self.task,
+            "workspace": self.workspace.display().to_string(),
+            "run_dir": self.dir.display().to_string(),
+            "started_unix": self.started_at,
+            "updated_unix": unix_time(),
+            "status": status,
+            "executor": executor,
+            "roster": self.roster,
+            "plan_path": self.plan_path.display().to_string(),
+            "events_path": self.events_path.display().to_string(),
+        });
+        fs::write(&self.manifest_path, format!("{value:#}\n"))
+    }
+
+    fn append_manual_event(&self, kind: &str, message: &str) -> io::Result<()> {
+        let value = json!({
+            "time_unix": unix_time(),
+            "kind": kind,
+            "message": message,
+        });
+        self.append_json(value)
+    }
+
+    fn append_event(&self, ev: &OrchestratorEvent) -> io::Result<()> {
+        self.append_json(event_record(ev))
+    }
+
+    fn append_json(&self, value: serde_json::Value) -> io::Result<()> {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.events_path)?;
+        writeln!(file, "{value}")
+    }
+
+    fn write_plan_markdown(
+        &self,
+        status: &str,
+        executor: Option<&str>,
+        transcript: &str,
+    ) -> io::Result<()> {
+        let roster = self
+            .roster
+            .iter()
+            .map(|key| pretty(key))
+            .collect::<Vec<_>>()
+            .join(" + ");
+        let executor_line = executor
+            .map(|key| format!("- Executor: {} (`{key}`)\n", pretty(key)))
+            .unwrap_or_default();
+        let transcript = if transcript.trim().is_empty() {
+            "_Planning has started. No transcript has been captured yet._"
+        } else {
+            transcript.trim()
+        };
+        let text = format!(
+            "# Tales run plan\n\n\
+             - Status: {status}\n\
+             - Task: {}\n\
+             - Workspace: {}\n\
+             - Roster: {roster}\n\
+             - Started unix time: {}\n\
+             {executor_line}\n\
+             ## Current transcript and plan\n\n\
+             {transcript}\n",
+            self.task,
+            self.workspace.display(),
+            self.started_at
+        );
+        fs::write(&self.plan_path, text)
+    }
 }
 
 impl TalesPane {
     fn new(_id: PaneId, cfg: WorkspaceConfig) -> Self {
+        let mcp_risks = project_mcp_config_risks(&cfg.cwd);
         Self {
             title: "Tales orchestrator".to_string(),
             state: PaneState::WaitingForInput,
             app: App::new("new plan".to_string()),
             cfg,
+            artifacts: None,
+            mcp_risks,
             bus: None,
             commands: None,
             events: None,
             started: false,
             startup_page: StartupPage::Welcome,
             notice: "type help, commands, or a planning prompt".to_string(),
+            last_executor: None,
         }
     }
 
@@ -636,8 +826,8 @@ impl TalesPane {
                     } else {
                         self.start(task);
                     }
-                } else if let Some(cmd) = self.app.submit_input() {
-                    if let Some(action) = self.handle_command(cmd).await {
+                } else if let Some(action) = self.app.submit_action() {
+                    if let Some(action) = self.handle_submit_action(action).await {
                         return Some(action);
                     }
                 }
@@ -655,7 +845,7 @@ impl TalesPane {
             // At the gate, a bare digit picks that executor; otherwise type it.
             (KeyCode::Char(c), _) => {
                 if let Some(cmd) = self.app.gate_pick(c) {
-                    if let Some(action) = self.handle_command(cmd).await {
+                    if let Some(action) = self.handle_submit_action(SubmitAction::Core(cmd)).await {
                         return Some(action);
                     }
                 } else {
@@ -683,9 +873,9 @@ impl TalesPane {
         }
     }
 
-    async fn handle_command(&mut self, cmd: UserCommand) -> Option<TalesAction> {
-        match cmd {
-            UserCommand::ConfirmExecution { executor } if self.app.awaiting => {
+    async fn handle_submit_action(&mut self, action: SubmitAction) -> Option<TalesAction> {
+        match action {
+            SubmitAction::Core(UserCommand::ConfirmExecution { executor }) if self.app.awaiting => {
                 if let Some(commands) = &self.commands {
                     let _ = commands.send(UserCommand::Shutdown).await;
                 }
@@ -696,6 +886,7 @@ impl TalesPane {
                 self.app.recommended = None;
                 self.state = PaneState::WaitingForInput;
                 let prompt = self.executor_prompt();
+                self.last_executor = Some(executor.clone());
                 let plan_path = match self.save_executor_plan(&executor, &prompt) {
                     Ok(path) => {
                         self.notice = format!("saved plan to {}", path.display());
@@ -712,11 +903,78 @@ impl TalesPane {
                     plan_path,
                 })
             }
-            other => {
+            SubmitAction::Core(other) => {
                 if let Some(commands) = &self.commands {
                     let _ = commands.send(other).await;
                 }
                 None
+            }
+            SubmitAction::Recovery(recovery) => self.handle_recovery_command(recovery),
+        }
+    }
+
+    fn handle_recovery_command(&mut self, cmd: RecoveryCommand) -> Option<TalesAction> {
+        match cmd {
+            RecoveryCommand::Artifacts => {
+                self.show_artifacts();
+                None
+            }
+            RecoveryCommand::Handoff { executor } => {
+                let executor = executor
+                    .or_else(|| self.last_executor.clone())
+                    .or_else(|| self.app.recommended.clone());
+                let Some(executor) = executor else {
+                    self.app
+                        .note("No executor has been selected yet. Use /switch <executor> after a plan exists, or wait for the executor gate.");
+                    self.notice = "no executor selected for handoff".to_string();
+                    return None;
+                };
+                let prompt = self.executor_prompt();
+                self.last_executor = Some(executor.clone());
+                let plan_path = match self.save_executor_plan_for(
+                    &executor,
+                    &prompt,
+                    "handoff_ready",
+                    "executor_handoff_ready",
+                ) {
+                    Ok(path) => {
+                        self.notice = format!("handoff saved to {}", path.display());
+                        Some(path)
+                    }
+                    Err(e) => {
+                        self.notice = format!("could not save handoff: {e}");
+                        None
+                    }
+                };
+                Some(TalesAction::Handoff {
+                    executor: Some(executor),
+                    prompt,
+                    plan_path,
+                })
+            }
+            RecoveryCommand::Switch { executor } => {
+                let prompt = self.executor_prompt();
+                self.last_executor = Some(executor.clone());
+                let plan_path = match self.save_executor_plan_for(
+                    &executor,
+                    &prompt,
+                    "executor_switched",
+                    "executor_switched",
+                ) {
+                    Ok(path) => {
+                        self.notice = format!("switch plan saved to {}", path.display());
+                        Some(path)
+                    }
+                    Err(e) => {
+                        self.notice = format!("could not save switch plan: {e}");
+                        None
+                    }
+                };
+                Some(TalesAction::LaunchExecutor {
+                    key: executor,
+                    prompt,
+                    plan_path,
+                })
             }
         }
     }
@@ -736,6 +994,16 @@ impl TalesPane {
             self.notice = e.to_string();
             return;
         }
+        let artifacts = match RunArtifacts::create(&self.cfg.cwd, &task, &keys) {
+            Ok(artifacts) => {
+                self.notice = format!("artifacts: {}", artifacts.relative_dir());
+                Some(artifacts)
+            }
+            Err(e) => {
+                self.notice = format!("planning started; artifacts unavailable: {e}");
+                None
+            }
+        };
         let roster = keys
             .iter()
             .enumerate()
@@ -758,9 +1026,34 @@ impl TalesPane {
         self.app = App::new(task.clone());
         self.app.set_candidates(candidates);
         self.app.input.clear();
+        self.artifacts = artifacts;
         self.state = PaneState::Running;
         self.started = true;
-        self.notice = "planning started".to_string();
+        if self.notice.is_empty() {
+            self.notice = "planning started".to_string();
+        }
+        if let Some(artifacts) = &self.artifacts {
+            self.app.apply(OrchestratorEvent::Log {
+                level: "info".to_string(),
+                msg: format!(
+                    "Artifacts are being saved to {}/ (plan.md, events.jsonl, manifest.json)",
+                    artifacts.relative_dir()
+                ),
+            });
+        }
+        if !self.mcp_risks.is_empty() {
+            let warning = mcp_warning_text(&self.mcp_risks);
+            self.app.apply(OrchestratorEvent::Log {
+                level: "warn".to_string(),
+                msg: warning.clone(),
+            });
+            if let Some(artifacts) = &self.artifacts {
+                let _ = artifacts.append_manual_event("mcp_config_warning", &warning);
+            }
+        }
+        if let Some(artifacts) = &self.artifacts {
+            let _ = artifacts.write_plan_markdown("planning", None, &self.app.transcript_text());
+        }
 
         {
             let bus = bus.clone();
@@ -785,12 +1078,27 @@ impl TalesPane {
     }
 
     fn poll_events(&mut self) {
-        let Some(events) = &mut self.events else {
-            return;
-        };
         loop {
-            match events.try_recv() {
+            let received = match self.events.as_mut() {
+                Some(events) => events.try_recv(),
+                None => return,
+            };
+            match received {
                 Ok(ev) => {
+                    if let Some(artifacts) = &self.artifacts {
+                        let _ = artifacts.append_event(&ev);
+                    }
+                    let write_snapshot = matches!(
+                        &ev,
+                        OrchestratorEvent::Message { .. }
+                            | OrchestratorEvent::RecommendationReady { .. }
+                            | OrchestratorEvent::ExecutionPacket { .. }
+                            | OrchestratorEvent::AwaitingConfirmation { .. }
+                            | OrchestratorEvent::SessionReport { .. }
+                            | OrchestratorEvent::Fatal { .. }
+                            | OrchestratorEvent::PhaseChanged { .. }
+                    );
+                    let status = event_status(&ev);
                     if matches!(ev, OrchestratorEvent::AwaitingConfirmation { .. }) {
                         self.state = PaneState::AwaitingApproval;
                     } else if matches!(ev, OrchestratorEvent::AgentExited { .. })
@@ -801,6 +1109,9 @@ impl TalesPane {
                         self.state = PaneState::Running;
                     }
                     self.app.apply(ev);
+                    if write_snapshot {
+                        self.persist_plan_snapshot(status);
+                    }
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Lagged(_)) => continue,
@@ -816,14 +1127,32 @@ impl TalesPane {
         self.app.executor_handoff_prompt()
     }
 
+    fn persist_plan_snapshot(&self, status: &str) {
+        if let Some(artifacts) = &self.artifacts {
+            let _ = artifacts.write_plan_markdown(
+                status,
+                self.app.recommended.as_deref(),
+                &self.app.transcript_text(),
+            );
+            let _ = artifacts.write_manifest(status, self.app.recommended.as_deref());
+        }
+    }
+
     fn save_executor_plan(&self, executor: &str, prompt: &str) -> io::Result<PathBuf> {
+        self.save_executor_plan_for(executor, prompt, "executor_launched", "executor_launched")
+    }
+
+    fn save_executor_plan_for(
+        &self,
+        executor: &str,
+        prompt: &str,
+        status: &str,
+        event: &str,
+    ) -> io::Result<PathBuf> {
         let dir = self.cfg.cwd.join(PLAN_DIR);
         fs::create_dir_all(&dir)?;
         let path = dir.join(LAST_PLAN_FILE);
-        let saved_at = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let saved_at = unix_time();
         let text = format!(
             "# Tales executor plan\n\n\
              - Executor: {}\n\
@@ -836,7 +1165,45 @@ impl TalesPane {
             self.cfg.cwd.display()
         );
         fs::write(&path, text)?;
+        if let Some(artifacts) = &self.artifacts {
+            let run_path = artifacts.dir.join("executor-plan.md");
+            fs::write(&run_path, fs::read_to_string(&path)?)?;
+            let _ =
+                artifacts.write_plan_markdown(status, Some(executor), &self.app.transcript_text());
+            let _ = artifacts.write_manifest(status, Some(executor));
+            let _ = artifacts.append_manual_event(event, &format!("executor={executor}"));
+        }
         Ok(path)
+    }
+
+    fn show_artifacts(&mut self) {
+        let text = match &self.artifacts {
+            Some(artifacts) => format!(
+                "Artifacts\n\
+                 run dir: {}\n\
+                 plan: {}\n\
+                 events: {}\n\
+                 manifest: {}\n\
+                 executor handoff: {}\n\
+                 Recovery: use /handoff to resend the plan, or /switch <executor> to launch a fresh pane.",
+                artifacts.relative_dir(),
+                artifacts.plan_path.display(),
+                artifacts.events_path.display(),
+                artifacts.manifest_path.display(),
+                self.cfg.cwd.join(PLAN_DIR).join(LAST_PLAN_FILE).display()
+            ),
+            None if self.started => {
+                "Artifacts are unavailable for this run. Use /handoff or /switch <executor> to recreate .tales/last-plan.md from the current transcript.".to_string()
+            }
+            None => {
+                "Artifacts are created after you start planning. Type a task first, then use /artifacts during the run.".to_string()
+            }
+        };
+        if let Some(artifacts) = &self.artifacts {
+            let _ = artifacts.append_manual_event("artifacts_requested", "user ran /artifacts");
+        }
+        self.app.note(text);
+        self.notice = "showing artifact paths".to_string();
     }
 
     fn draw(&self, f: &mut Frame, area: Rect) {
@@ -886,6 +1253,7 @@ fn welcome_lines(cfg: &WorkspaceConfig) -> Vec<Line<'static>> {
         .map(|key| pretty(key))
         .collect::<Vec<_>>()
         .join(" + ");
+    let mcp_risks = project_mcp_config_risks(&cfg.cwd);
 
     let mut lines = pixel_logo_lines();
     lines.extend([
@@ -921,6 +1289,13 @@ fn welcome_lines(cfg: &WorkspaceConfig) -> Vec<Line<'static>> {
             format!("Planner roster: {roster_text}"),
             Style::default().fg(DIM),
         )),
+        Line::from(Span::styled(
+            format!(
+                "Artifacts: {}/{}/<run>/plan.md + events.jsonl; executor handoff: {}/{}",
+                PLAN_DIR, RUNS_DIR, PLAN_DIR, LAST_PLAN_FILE
+            ),
+            Style::default().fg(DIM),
+        )),
         Line::from(""),
         Line::from(Span::styled(
             "Available CLIs",
@@ -951,6 +1326,24 @@ fn welcome_lines(cfg: &WorkspaceConfig) -> Vec<Line<'static>> {
         ]));
     }
 
+    if !mcp_risks.is_empty() {
+        lines.extend([
+            Line::from(""),
+            Line::from(Span::styled(
+                "Safety notice",
+                Style::default().fg(ERRC).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                "  Project-local MCP/tool config files were found. Claude launches with project MCP loading disabled.",
+                Style::default().fg(TEXT),
+            )),
+            Line::from(Span::styled(
+                format!("  {}", risk_paths_summary(&mcp_risks)),
+                Style::default().fg(DIM),
+            )),
+        ]);
+    }
+
     lines.extend([
         Line::from(""),
         Line::from(Span::styled(
@@ -967,6 +1360,10 @@ fn welcome_lines(cfg: &WorkspaceConfig) -> Vec<Line<'static>> {
         )),
         Line::from(Span::styled(
             "  - Once the executor pane opens, type directly there if it asks for input.",
+            Style::default().fg(TEXT),
+        )),
+        Line::from(Span::styled(
+            "  - If a run stalls, recover from the saved run artifact plan.md.",
             Style::default().fg(TEXT),
         )),
         Line::from(Span::styled(
@@ -1048,6 +1445,227 @@ fn startup_commands_lines() -> Vec<Line<'static>> {
         Style::default().fg(TEXT),
     )));
     lines
+}
+
+fn unix_time() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn slug(input: &str) -> String {
+    let mut out = String::new();
+    for ch in input.chars().flat_map(|c| c.to_lowercase()) {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+        } else if (ch.is_whitespace() || ch == '-' || ch == '_') && !out.ends_with('-') {
+            out.push('-');
+        }
+        if out.len() >= 48 {
+            break;
+        }
+    }
+    let out = out.trim_matches('-').to_string();
+    if out.is_empty() {
+        "run".to_string()
+    } else {
+        out
+    }
+}
+
+fn risk_paths_summary(risks: &[McpConfigRisk]) -> String {
+    risks
+        .iter()
+        .map(|risk| {
+            let path = risk.path.display().to_string();
+            if risk.markers.is_empty() {
+                path
+            } else {
+                format!("{path} ({})", risk.markers.join(", "))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn mcp_warning_text(risks: &[McpConfigRisk]) -> String {
+    format!(
+        "Project-local MCP/tool config detected: {}. Claude planner/executor launches disable project MCP loading for this run; inspect these files before using other CLIs that may load them.",
+        risk_paths_summary(risks)
+    )
+}
+
+fn agent_launch_args(key: &str, cwd: &Path) -> (Vec<String>, Option<String>) {
+    let risks = project_mcp_config_risks(cwd);
+    if key == "claude" && !risks.is_empty() {
+        return (
+            vec![
+                "--strict-mcp-config".to_string(),
+                "--mcp-config".to_string(),
+                r#"{"mcpServers":{}}"#.to_string(),
+                "--setting-sources".to_string(),
+                "user".to_string(),
+            ],
+            Some(
+                "project MCP config detected; launched Claude with project MCP loading disabled"
+                    .to_string(),
+            ),
+        );
+    }
+    let note = if !risks.is_empty() {
+        Some(format!(
+            "project MCP config detected; inspect before using this CLI: {}",
+            risk_paths_summary(&risks)
+        ))
+    } else {
+        None
+    };
+    (Vec::new(), note)
+}
+
+fn event_status(ev: &OrchestratorEvent) -> &'static str {
+    match ev {
+        OrchestratorEvent::AwaitingConfirmation { .. } => "awaiting_executor",
+        OrchestratorEvent::RecommendationReady { .. } => "recommended",
+        OrchestratorEvent::ExecutionPacket { .. } => "execution_packet",
+        OrchestratorEvent::SessionReport { .. } => "report_ready",
+        OrchestratorEvent::Fatal { .. } => "failed",
+        OrchestratorEvent::PhaseChanged { phase } if phase == "done" => "done",
+        OrchestratorEvent::PhaseChanged { phase } if phase == "executing" => "executing",
+        OrchestratorEvent::PhaseChanged { phase } if phase == "recommending" => "recommending",
+        _ => "planning",
+    }
+}
+
+fn event_record(ev: &OrchestratorEvent) -> serde_json::Value {
+    match ev {
+        OrchestratorEvent::AgentSpawned {
+            agent,
+            label,
+            session_id,
+        } => json!({
+            "time_unix": unix_time(),
+            "kind": "agent_spawned",
+            "agent": agent.to_string(),
+            "label": label,
+            "session_id": session_id,
+        }),
+        OrchestratorEvent::Token { agent, text } => json!({
+            "time_unix": unix_time(),
+            "kind": "token",
+            "agent": agent.to_string(),
+            "chars": text.chars().count(),
+            "preview": preview(text, 240),
+        }),
+        OrchestratorEvent::TurnStarted { agent, role } => json!({
+            "time_unix": unix_time(),
+            "kind": "turn_started",
+            "agent": agent.to_string(),
+            "role": role,
+        }),
+        OrchestratorEvent::Message { agent, text } => json!({
+            "time_unix": unix_time(),
+            "kind": "message",
+            "agent": agent.to_string(),
+            "chars": text.chars().count(),
+            "text": text,
+        }),
+        OrchestratorEvent::UserMessage { text } => json!({
+            "time_unix": unix_time(),
+            "kind": "user_message",
+            "chars": text.chars().count(),
+            "text": text,
+        }),
+        OrchestratorEvent::ToolActivity { agent, summary } => json!({
+            "time_unix": unix_time(),
+            "kind": "tool_activity",
+            "agent": agent.to_string(),
+            "summary": summary,
+        }),
+        OrchestratorEvent::TurnComplete {
+            agent,
+            cost_usd,
+            token_usage,
+        } => json!({
+            "time_unix": unix_time(),
+            "kind": "turn_complete",
+            "agent": agent.to_string(),
+            "cost_usd": cost_usd,
+            "token_usage": token_usage.as_ref().map(|usage| json!({
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+                "total_tokens": usage.total_tokens,
+            })),
+        }),
+        OrchestratorEvent::AgentExited { agent, code } => json!({
+            "time_unix": unix_time(),
+            "kind": "agent_exited",
+            "agent": agent.to_string(),
+            "code": code,
+        }),
+        OrchestratorEvent::PhaseChanged { phase } => json!({
+            "time_unix": unix_time(),
+            "kind": "phase_changed",
+            "phase": phase,
+        }),
+        OrchestratorEvent::RecommendationReady {
+            executor,
+            rationale,
+            confident,
+            scores,
+        } => json!({
+            "time_unix": unix_time(),
+            "kind": "recommendation_ready",
+            "executor": executor,
+            "rationale": rationale,
+            "confident": confident,
+            "scores": scores,
+        }),
+        OrchestratorEvent::ExecutionPacket {
+            executor,
+            text,
+            included_in_prompt,
+        } => json!({
+            "time_unix": unix_time(),
+            "kind": "execution_packet",
+            "executor": executor,
+            "chars": text.chars().count(),
+            "included_in_prompt": included_in_prompt,
+            "text": text,
+        }),
+        OrchestratorEvent::SessionReport { markdown, summary } => json!({
+            "time_unix": unix_time(),
+            "kind": "session_report",
+            "markdown_chars": markdown.chars().count(),
+            "markdown": markdown,
+            "summary": summary,
+        }),
+        OrchestratorEvent::AwaitingConfirmation { prompt } => json!({
+            "time_unix": unix_time(),
+            "kind": "awaiting_confirmation",
+            "prompt": prompt,
+        }),
+        OrchestratorEvent::Log { level, msg } => json!({
+            "time_unix": unix_time(),
+            "kind": "log",
+            "level": level,
+            "message": msg,
+        }),
+        OrchestratorEvent::Fatal { msg } => json!({
+            "time_unix": unix_time(),
+            "kind": "fatal",
+            "message": msg,
+        }),
+    }
+}
+
+fn preview(text: &str, limit: usize) -> String {
+    let mut out = text.chars().take(limit).collect::<String>();
+    if text.chars().count() > limit {
+        out.push_str("...");
+    }
+    out
 }
 
 fn message_lines(title: &str, text: &str) -> Vec<Line<'static>> {
@@ -1136,6 +1754,10 @@ impl ProcessPane {
             let _ = w.write_all(bytes);
             let _ = w.flush();
         }
+    }
+
+    fn can_receive_input(&self) -> bool {
+        self.state != PaneState::Exited && self.writer.is_some()
     }
 
     fn reset_for_execution(&mut self, plan_path: Option<&Path>) {
@@ -1712,6 +2334,158 @@ mod tests {
         assert_eq!(path, cwd.join(PLAN_DIR).join(LAST_PLAN_FILE));
         assert!(text.contains("Executor key: codex"));
         assert!(text.contains("Execute this saved handoff."));
+
+        let _ = fs::remove_dir_all(&cwd);
+    }
+
+    #[test]
+    fn show_artifacts_lists_recovery_paths() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let cwd = std::env::temp_dir().join(format!(
+            "tales-artifacts-command-test-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&cwd).unwrap();
+
+        let mut pane = TalesPane::new(1, test_workspace_config(cwd.clone()));
+        pane.started = true;
+        pane.artifacts = Some(
+            RunArtifacts::create(
+                &cwd,
+                "Recover a stuck executor",
+                &["claude".into(), "codex".into()],
+            )
+            .unwrap(),
+        );
+        pane.show_artifacts();
+
+        let text = lines_text(&pane.app.render_lines(120));
+        assert!(text.contains("Artifacts"), "{text}");
+        assert!(text.contains("plan.md"), "{text}");
+        assert!(text.contains("events.jsonl"), "{text}");
+        assert!(text.contains("/handoff"), "{text}");
+        assert!(text.contains("/switch <executor>"), "{text}");
+
+        let _ = fs::remove_dir_all(&cwd);
+    }
+
+    #[test]
+    fn save_executor_plan_for_records_recovery_status() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let cwd = std::env::temp_dir().join(format!(
+            "tales-handoff-status-test-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&cwd).unwrap();
+
+        let mut pane = TalesPane::new(1, test_workspace_config(cwd.clone()));
+        pane.artifacts = Some(
+            RunArtifacts::create(
+                &cwd,
+                "Retry the executor",
+                &["claude".into(), "codex".into()],
+            )
+            .unwrap(),
+        );
+        pane.save_executor_plan_for(
+            "claude",
+            "Retry this plan.",
+            "handoff_ready",
+            "executor_handoff_ready",
+        )
+        .unwrap();
+
+        let artifacts = pane.artifacts.as_ref().unwrap();
+        let manifest = fs::read_to_string(&artifacts.manifest_path).unwrap();
+        let events = fs::read_to_string(&artifacts.events_path).unwrap();
+        let plan = fs::read_to_string(&artifacts.plan_path).unwrap();
+
+        assert!(manifest.contains("handoff_ready"), "{manifest}");
+        assert!(events.contains("executor_handoff_ready"), "{events}");
+        assert!(plan.contains("Executor: Claude Code"), "{plan}");
+        assert!(plan.contains("handoff_ready"), "{plan}");
+
+        let _ = fs::remove_dir_all(&cwd);
+    }
+
+    #[test]
+    fn run_artifacts_write_manifest_events_and_plan() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let cwd = std::env::temp_dir().join(format!(
+            "tales-run-artifacts-test-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&cwd).unwrap();
+
+        let artifacts = RunArtifacts::create(
+            &cwd,
+            "Fix the timeout and save plan",
+            &["claude".into(), "codex".into()],
+        )
+        .unwrap();
+        artifacts
+            .append_manual_event("test_event", "artifact smoke test")
+            .unwrap();
+        artifacts
+            .write_plan_markdown(
+                "recommended",
+                Some("codex"),
+                "Codex should execute the plan.",
+            )
+            .unwrap();
+
+        let manifest = fs::read_to_string(&artifacts.manifest_path).unwrap();
+        let events = fs::read_to_string(&artifacts.events_path).unwrap();
+        let plan = fs::read_to_string(&artifacts.plan_path).unwrap();
+
+        assert!(manifest.contains("Fix the timeout"), "{manifest}");
+        assert!(events.contains("test_event"), "{events}");
+        assert!(plan.contains("Status: recommended"), "{plan}");
+        assert!(plan.contains("Executor: Codex"), "{plan}");
+
+        let _ = fs::remove_dir_all(&cwd);
+    }
+
+    #[test]
+    fn claude_launch_disables_project_mcp_when_config_exists() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let cwd = std::env::temp_dir().join(format!(
+            "tales-mcp-risk-test-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&cwd).unwrap();
+        fs::write(
+            cwd.join(".mcp.json"),
+            r#"{"env":{"SUPABASE_ACCESS_TOKEN":"example"}}"#,
+        )
+        .unwrap();
+
+        let (args, note) = agent_launch_args("claude", &cwd);
+        assert!(
+            args.contains(&"--strict-mcp-config".to_string()),
+            "{args:?}"
+        );
+        assert!(
+            args.contains(&r#"{"mcpServers":{}}"#.to_string()),
+            "{args:?}"
+        );
+        assert!(note.unwrap().contains("disabled"));
+
+        let text = lines_text(&welcome_lines(&test_workspace_config(cwd.clone())));
+        assert!(text.contains("Safety notice"), "{text}");
+        assert!(text.contains("SUPABASE_ACCESS_TOKEN"), "{text}");
 
         let _ = fs::remove_dir_all(&cwd);
     }

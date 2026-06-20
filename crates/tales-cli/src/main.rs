@@ -11,6 +11,7 @@
 //! the same bus.
 
 use std::collections::HashMap;
+use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -58,6 +59,9 @@ use tales_core::workspace_profile::{
 use tales_core::worktree::{MergeOutcome, WorktreeManager};
 use tales_core::TokenUsage;
 
+const TALES_DIR: &str = ".tales";
+const RUNS_DIR: &str = "runs";
+
 #[derive(Parser, Debug)]
 #[command(
     name = "tales",
@@ -81,6 +85,23 @@ enum Command {
     Term,
     /// Print the Tales command reference.
     Commands,
+    /// List or inspect saved `.tales/runs` artifacts.
+    Recover {
+        /// Working directory (default: current).
+        #[arg(long)]
+        cwd: Option<String>,
+        /// Inspect the newest saved run.
+        #[arg(long)]
+        latest: bool,
+        /// Print the saved plan.md for the selected run.
+        #[arg(long)]
+        print: bool,
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+        /// Run id, run directory name, or path to a run artifact directory.
+        run: Option<String>,
+    },
     /// Preflight local model CLIs and project context without model calls.
     Doctor {
         /// Working directory (default: current).
@@ -988,6 +1009,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             json,
             output,
         ),
+        Command::Recover {
+            cwd,
+            latest,
+            print,
+            json,
+            run,
+        } => run_recover(cwd, run, latest, print, json),
         // `tales open` needs no async runtime or agents — it just spawns a new
         // Terminal window. Kept dead-simple so `/tales` is a zero-reasoning launcher.
         Command::Open { connect, task } => run_open(connect, task),
@@ -1127,6 +1155,9 @@ fn print_commands_reference() {
     println!("  /attach <path>        Attach an image or PDF to your next note");
     println!("  /confirm [tool|n]     Approve the recommended executor or choose one");
     println!("  /reject               Stop before execution");
+    println!("  /artifacts            Show saved run files for recovery");
+    println!("  /handoff [tool|n]     Resend the current plan or reopen the executor");
+    println!("  /switch <tool|n>      Open a fresh executor pane with the current plan");
     println!("  /quit                 Leave Tales");
     println!();
     println!("Useful shortcuts");
@@ -1138,6 +1169,14 @@ fn print_commands_reference() {
     println!("  Ctrl-A approve        Answer yes to an approval prompt in the focused pane");
     println!("  Tab / Shift-Tab       Switch panes");
     println!("  Ctrl-Q                Quit");
+    println!();
+    println!("Artifacts and recovery");
+    println!("  .tales/runs/<run>/plan.md       Rolling plan and transcript snapshot");
+    println!("  .tales/runs/<run>/events.jsonl  Event log for stalled or timed-out runs");
+    println!("  .tales/runs/<run>/manifest.json Run metadata and current status");
+    println!("  .tales/last-plan.md             Latest executor handoff");
+    println!("  tales recover                   List saved run artifacts");
+    println!("  tales recover --latest --print  Print the newest saved plan");
     println!();
     println!("Scriptable commands");
     println!("  tales doctor --all    Check installed CLIs and workspace context");
@@ -1536,10 +1575,25 @@ async fn run_discuss(
         );
     }
 
+    let roster = preflight_agents
+        .iter()
+        .map(|agent| agent.key.clone())
+        .collect::<Vec<_>>();
+    let artifacts = RunArtifacts::create(
+        &cwd,
+        "discuss",
+        &prompt,
+        &roster,
+        report_path.as_deref(),
+        report_json_path.as_deref(),
+    )?;
+    println!("● artifacts: {}", artifacts.relative_dir());
+
     let (bus, _commands_rx) = EventBus::new(1024, 64);
 
     // Console frontend: render the conversation as it streams onto the bus.
     let printer = spawn_printer(&bus);
+    let artifact_writer = spawn_artifact_writer(&bus, artifacts.clone());
     let report_writer = spawn_report_writer(&bus, report_path, report_json_path);
 
     let mut orch = Orchestrator::new(bus.clone());
@@ -1610,7 +1664,7 @@ async fn run_discuss(
         "\n=== discussion{}: {prompt} ({turns} turns) ===",
         if demo { " demo" } else { "" }
     );
-    orch.run_discussion(&prompt, turns).await?;
+    let discuss_result = orch.run_discussion(&prompt, turns).await;
     orch.shutdown().await;
 
     if let Some(handle) = report_writer {
@@ -1622,7 +1676,14 @@ async fn run_discuss(
     // on its own.
     sleep(Duration::from_millis(200)).await;
     printer.abort();
+    artifact_writer.abort();
 
+    match &discuss_result {
+        Ok(_) => artifacts.mark_finished("done", None),
+        Err(e) => artifacts.mark_failed(&e.to_string(), None),
+    }
+
+    discuss_result?;
     println!("\n=== discussion complete ===");
     Ok(())
 }
@@ -1789,6 +1850,692 @@ fn write_text_file(path: &Path, text: &str) -> std::io::Result<()> {
 
 fn resolve_report_path(cwd: &Path, path: Option<PathBuf>) -> Option<PathBuf> {
     path.map(|p| if p.is_absolute() { p } else { cwd.join(p) })
+}
+
+#[derive(Clone, Debug)]
+struct RecoverRun {
+    id: String,
+    path: PathBuf,
+    task: Option<String>,
+    status: Option<String>,
+    executor: Option<String>,
+    updated_unix: Option<u64>,
+}
+
+fn run_recover(
+    cwd: Option<String>,
+    run: Option<String>,
+    latest: bool,
+    print: bool,
+    json_output: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let cwd = cwd.map(PathBuf::from).unwrap_or(std::env::current_dir()?);
+    let runs = collect_recover_runs(&cwd)?;
+    if runs.is_empty() {
+        if json_output {
+            println!("{}", json!({ "runs": [] }));
+        } else {
+            println!(
+                "No Tales run artifacts found under {}",
+                runs_dir(&cwd).display()
+            );
+        }
+        return Ok(());
+    }
+
+    let selected = match (run.as_deref(), latest) {
+        (Some(id), _) => Some(resolve_recover_run(&cwd, &runs, id)?),
+        (None, true) => runs.first().cloned(),
+        (None, false) => None,
+    };
+
+    if let Some(selected) = selected {
+        if json_output {
+            let plan = if print {
+                fs::read_to_string(selected.path.join("plan.md")).ok()
+            } else {
+                None
+            };
+            println!(
+                "{}",
+                json!({
+                    "run": recover_run_json(&selected),
+                    "plan": plan,
+                })
+            );
+        } else {
+            print_recover_run(&selected);
+            if print {
+                let path = selected.path.join("plan.md");
+                println!("\n──────── {} ────────", path.display());
+                match fs::read_to_string(&path) {
+                    Ok(text) => println!("{text}"),
+                    Err(e) => println!("Could not read plan: {e}"),
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    if json_output {
+        let value = json!({
+            "runs": runs.iter().map(recover_run_json).collect::<Vec<_>>(),
+        });
+        println!("{value}");
+    } else {
+        println!("Tales run artifacts in {}", runs_dir(&cwd).display());
+        for run in &runs {
+            print_recover_run_line(run);
+        }
+        println!("\nUse `tales recover --latest --print` or `tales recover <run-id> --print`.");
+    }
+    Ok(())
+}
+
+fn runs_dir(cwd: &Path) -> PathBuf {
+    cwd.join(TALES_DIR).join(RUNS_DIR)
+}
+
+fn collect_recover_runs(cwd: &Path) -> std::io::Result<Vec<RecoverRun>> {
+    let dir = runs_dir(cwd);
+    let mut runs = Vec::new();
+    if !dir.is_dir() {
+        return Ok(runs);
+    }
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        runs.push(load_recover_run(path));
+    }
+    runs.sort_by(|a, b| {
+        b.updated_unix
+            .cmp(&a.updated_unix)
+            .then_with(|| b.id.cmp(&a.id))
+    });
+    Ok(runs)
+}
+
+fn load_recover_run(path: PathBuf) -> RecoverRun {
+    let id = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("run")
+        .to_string();
+    let manifest = fs::read_to_string(path.join("manifest.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok());
+    let fallback_updated_unix = id
+        .split('-')
+        .next()
+        .and_then(|prefix| prefix.parse::<u64>().ok());
+    RecoverRun {
+        id,
+        path,
+        task: manifest
+            .as_ref()
+            .and_then(|value| value.get("task"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        status: manifest
+            .as_ref()
+            .and_then(|value| value.get("status"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        executor: manifest
+            .as_ref()
+            .and_then(|value| value.get("executor"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        updated_unix: manifest
+            .as_ref()
+            .and_then(|value| value.get("updated_unix"))
+            .and_then(Value::as_u64)
+            .or(fallback_updated_unix),
+    }
+}
+
+fn resolve_recover_run(
+    cwd: &Path,
+    runs: &[RecoverRun],
+    id_or_path: &str,
+) -> std::io::Result<RecoverRun> {
+    if let Some(run) = runs.iter().find(|run| run.id == id_or_path) {
+        return Ok(run.clone());
+    }
+    let path = PathBuf::from(id_or_path);
+    let path = if path.is_absolute() {
+        path
+    } else {
+        runs_dir(cwd).join(path)
+    };
+    if path.is_dir() {
+        return Ok(load_recover_run(path));
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        format!("no Tales run artifact found for {id_or_path}"),
+    ))
+}
+
+fn recover_run_json(run: &RecoverRun) -> Value {
+    json!({
+        "id": run.id,
+        "path": run.path.display().to_string(),
+        "task": run.task,
+        "status": run.status,
+        "executor": run.executor,
+        "updated_unix": run.updated_unix,
+        "plan_path": run.path.join("plan.md").display().to_string(),
+        "events_path": run.path.join("events.jsonl").display().to_string(),
+        "manifest_path": run.path.join("manifest.json").display().to_string(),
+    })
+}
+
+fn print_recover_run(run: &RecoverRun) {
+    print_recover_run_line(run);
+    println!("  plan: {}", run.path.join("plan.md").display());
+    println!("  events: {}", run.path.join("events.jsonl").display());
+    println!("  manifest: {}", run.path.join("manifest.json").display());
+}
+
+fn print_recover_run_line(run: &RecoverRun) {
+    println!(
+        "- {}  status={}  executor={}  updated={}  task={}",
+        run.id,
+        run.status.as_deref().unwrap_or("unknown"),
+        run.executor.as_deref().unwrap_or("-"),
+        run.updated_unix
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        run.task.as_deref().unwrap_or("-")
+    );
+}
+
+#[derive(Clone)]
+struct RunArtifacts {
+    dir: PathBuf,
+    manifest_path: PathBuf,
+    events_path: PathBuf,
+    plan_path: PathBuf,
+    started_at: u64,
+    mode: String,
+    task: String,
+    workspace: PathBuf,
+    roster: Vec<String>,
+    report_path: Option<PathBuf>,
+    report_json_path: Option<PathBuf>,
+}
+
+impl RunArtifacts {
+    fn create(
+        workspace: &Path,
+        mode: &str,
+        task: &str,
+        roster: &[String],
+        report_path: Option<&Path>,
+        report_json_path: Option<&Path>,
+    ) -> std::io::Result<Self> {
+        let started_at = unix_time();
+        let base_name = format!("{started_at}-{}", slug(task));
+        let root = runs_dir(workspace);
+        fs::create_dir_all(&root)?;
+        let mut dir = root.join(&base_name);
+        let mut suffix = 2;
+        while dir.exists() {
+            dir = root.join(format!("{base_name}-{suffix}"));
+            suffix += 1;
+        }
+        fs::create_dir_all(&dir)?;
+        let artifacts = Self {
+            manifest_path: dir.join("manifest.json"),
+            events_path: dir.join("events.jsonl"),
+            plan_path: dir.join("plan.md"),
+            dir,
+            started_at,
+            mode: mode.to_string(),
+            task: task.to_string(),
+            workspace: workspace.to_path_buf(),
+            roster: roster.to_vec(),
+            report_path: report_path.map(Path::to_path_buf),
+            report_json_path: report_json_path.map(Path::to_path_buf),
+        };
+        artifacts.write_manifest("planning", None)?;
+        artifacts.write_plan_markdown("planning", None, "")?;
+        artifacts.append_manual_event("run_started", &format!("{mode}: {task}"))?;
+        Ok(artifacts)
+    }
+
+    fn relative_dir(&self) -> String {
+        self.dir
+            .strip_prefix(&self.workspace)
+            .unwrap_or(&self.dir)
+            .display()
+            .to_string()
+    }
+
+    fn write_manifest(&self, status: &str, executor: Option<&str>) -> std::io::Result<()> {
+        let value = json!({
+            "kind": "tales_run_manifest",
+            "schema_version": 1,
+            "mode": self.mode,
+            "task": self.task,
+            "workspace": self.workspace.display().to_string(),
+            "run_dir": self.dir.display().to_string(),
+            "started_unix": self.started_at,
+            "updated_unix": unix_time(),
+            "status": status,
+            "executor": executor,
+            "roster": self.roster,
+            "plan_path": self.plan_path.display().to_string(),
+            "events_path": self.events_path.display().to_string(),
+            "report_path": self.report_path.as_ref().map(|path| path.display().to_string()),
+            "report_json_path": self.report_json_path.as_ref().map(|path| path.display().to_string()),
+        });
+        write_text_file(&self.manifest_path, &format!("{value:#}\n"))
+    }
+
+    fn append_manual_event(&self, kind: &str, message: &str) -> std::io::Result<()> {
+        self.append_json(json!({
+            "time_unix": unix_time(),
+            "kind": kind,
+            "message": message,
+        }))
+    }
+
+    fn append_event(&self, ev: &OrchestratorEvent) -> std::io::Result<()> {
+        self.append_json(event_record(ev))
+    }
+
+    fn append_json(&self, value: Value) -> std::io::Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.events_path)?;
+        writeln!(file, "{value}")
+    }
+
+    fn write_plan_markdown(
+        &self,
+        status: &str,
+        executor: Option<&str>,
+        transcript: &str,
+    ) -> std::io::Result<()> {
+        let roster = self
+            .roster
+            .iter()
+            .map(|key| tool_label(key))
+            .collect::<Vec<_>>()
+            .join(" + ");
+        let executor_line = executor
+            .map(|key| format!("- Executor: {} (`{key}`)\n", tool_label(key)))
+            .unwrap_or_default();
+        let report_lines = match (&self.report_path, &self.report_json_path) {
+            (Some(markdown), Some(json)) => format!(
+                "- Report markdown: {}\n- Report JSON: {}\n",
+                markdown.display(),
+                json.display()
+            ),
+            (Some(markdown), None) => format!("- Report markdown: {}\n", markdown.display()),
+            (None, Some(json)) => format!("- Report JSON: {}\n", json.display()),
+            (None, None) => String::new(),
+        };
+        let transcript = if transcript.trim().is_empty() {
+            "_Planning has started. No transcript has been captured yet._"
+        } else {
+            transcript.trim()
+        };
+        let text = format!(
+            "# Tales {} plan\n\n\
+             - Status: {status}\n\
+             - Task: {}\n\
+             - Workspace: {}\n\
+             - Roster: {roster}\n\
+             - Started unix time: {}\n\
+             {executor_line}\
+             {report_lines}\
+             ## Current transcript and plan\n\n\
+             {transcript}\n",
+            self.mode,
+            self.task,
+            self.workspace.display(),
+            self.started_at
+        );
+        write_text_file(&self.plan_path, &text)
+    }
+
+    fn mark_finished(&self, status: &str, executor: Option<&str>) {
+        let _ = self.append_manual_event("run_finished", status);
+        let _ = self.write_manifest(status, executor);
+    }
+
+    fn mark_failed(&self, message: &str, executor: Option<&str>) {
+        let _ = self.append_manual_event("run_failed", message);
+        let _ = self.write_manifest("failed", executor);
+    }
+}
+
+struct ArtifactSnapshot {
+    labels: HashMap<Uuid, String>,
+    transcript: String,
+    status: String,
+    executor: Option<String>,
+}
+
+impl ArtifactSnapshot {
+    fn new() -> Self {
+        Self {
+            labels: HashMap::new(),
+            transcript: String::new(),
+            status: "planning".to_string(),
+            executor: None,
+        }
+    }
+
+    fn label_for(&self, agent: &Uuid) -> String {
+        self.labels
+            .get(agent)
+            .cloned()
+            .unwrap_or_else(|| agent.to_string())
+    }
+
+    fn push_section(&mut self, title: &str, body: &str) {
+        if !self.transcript.is_empty() {
+            self.transcript.push_str("\n\n");
+        }
+        self.transcript.push_str("## ");
+        self.transcript.push_str(title);
+        self.transcript.push_str("\n\n");
+        self.transcript.push_str(body.trim());
+        self.transcript.push('\n');
+    }
+
+    fn apply(&mut self, ev: &OrchestratorEvent) -> bool {
+        match ev {
+            OrchestratorEvent::AgentSpawned { agent, label, .. } => {
+                self.labels.insert(*agent, label.clone());
+                false
+            }
+            OrchestratorEvent::Message { agent, text } => {
+                self.push_section(&self.label_for(agent), text);
+                true
+            }
+            OrchestratorEvent::UserMessage { text } => {
+                self.push_section("You", text);
+                true
+            }
+            OrchestratorEvent::ToolActivity { agent, summary } => {
+                let body = format!("{}: {summary}", self.label_for(agent));
+                self.push_section("Tool activity", &body);
+                true
+            }
+            OrchestratorEvent::RecommendationReady {
+                executor,
+                rationale,
+                confident,
+                scores,
+            } => {
+                self.status = "recommended".to_string();
+                self.executor = Some(executor.clone());
+                let body = format!(
+                    "Executor: {} (`{executor}`)\nConfidence: {}\n{}\n\n{rationale}",
+                    tool_label(executor),
+                    if *confident {
+                        "consensus"
+                    } else {
+                        "needs review"
+                    },
+                    format_scores(scores)
+                );
+                self.push_section("Recommendation", &body);
+                true
+            }
+            OrchestratorEvent::ExecutionPacket {
+                executor,
+                text,
+                included_in_prompt,
+            } => {
+                self.status = "execution_packet".to_string();
+                self.executor = Some(executor.clone());
+                let body = format!(
+                    "Executor: {} (`{executor}`)\nDelivery: {}\n\n{text}",
+                    tool_label(executor),
+                    if *included_in_prompt {
+                        "sent to prompt"
+                    } else {
+                        "session audit"
+                    }
+                );
+                self.push_section("Execution packet", &body);
+                true
+            }
+            OrchestratorEvent::SessionReport { markdown, .. } => {
+                if self.status != "done" && self.status != "failed" {
+                    self.status = "report_ready".to_string();
+                }
+                self.push_section("Session report", markdown);
+                true
+            }
+            OrchestratorEvent::AwaitingConfirmation { prompt } => {
+                self.status = "awaiting_executor".to_string();
+                self.push_section("Awaiting confirmation", prompt);
+                true
+            }
+            OrchestratorEvent::PhaseChanged { phase } => {
+                self.status = event_status(ev).to_string();
+                self.push_section("Phase", phase);
+                true
+            }
+            OrchestratorEvent::Log { level, msg } if level == "warn" || level == "error" => {
+                let body = format!("{level}: {msg}");
+                self.push_section("Log", &body);
+                true
+            }
+            OrchestratorEvent::Fatal { msg } => {
+                self.status = "failed".to_string();
+                self.push_section("Fatal error", msg);
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+fn spawn_artifact_writer(bus: &EventBus, artifacts: RunArtifacts) -> tokio::task::JoinHandle<()> {
+    let mut events = bus.subscribe();
+    tokio::spawn(async move {
+        let mut snapshot = ArtifactSnapshot::new();
+        while let Ok(ev) = events.recv().await {
+            let _ = artifacts.append_event(&ev);
+            if snapshot.apply(&ev) {
+                let _ = artifacts.write_manifest(&snapshot.status, snapshot.executor.as_deref());
+                let _ = artifacts.write_plan_markdown(
+                    &snapshot.status,
+                    snapshot.executor.as_deref(),
+                    &snapshot.transcript,
+                );
+            }
+        }
+    })
+}
+
+fn event_status(ev: &OrchestratorEvent) -> &'static str {
+    match ev {
+        OrchestratorEvent::AwaitingConfirmation { .. } => "awaiting_executor",
+        OrchestratorEvent::RecommendationReady { .. } => "recommended",
+        OrchestratorEvent::ExecutionPacket { .. } => "execution_packet",
+        OrchestratorEvent::SessionReport { .. } => "report_ready",
+        OrchestratorEvent::Fatal { .. } => "failed",
+        OrchestratorEvent::PhaseChanged { phase } if phase == "done" => "done",
+        OrchestratorEvent::PhaseChanged { phase } if phase == "executing" => "executing",
+        OrchestratorEvent::PhaseChanged { phase } if phase == "recommending" => "recommending",
+        _ => "planning",
+    }
+}
+
+fn event_record(ev: &OrchestratorEvent) -> Value {
+    match ev {
+        OrchestratorEvent::AgentSpawned {
+            agent,
+            label,
+            session_id,
+        } => json!({
+            "time_unix": unix_time(),
+            "kind": "agent_spawned",
+            "agent": agent.to_string(),
+            "label": label,
+            "session_id": session_id,
+        }),
+        OrchestratorEvent::Token { agent, text } => json!({
+            "time_unix": unix_time(),
+            "kind": "token",
+            "agent": agent.to_string(),
+            "chars": text.chars().count(),
+            "preview": json_preview(text, 240),
+        }),
+        OrchestratorEvent::TurnStarted { agent, role } => json!({
+            "time_unix": unix_time(),
+            "kind": "turn_started",
+            "agent": agent.to_string(),
+            "role": role,
+        }),
+        OrchestratorEvent::Message { agent, text } => json!({
+            "time_unix": unix_time(),
+            "kind": "message",
+            "agent": agent.to_string(),
+            "chars": text.chars().count(),
+            "text": text,
+        }),
+        OrchestratorEvent::UserMessage { text } => json!({
+            "time_unix": unix_time(),
+            "kind": "user_message",
+            "chars": text.chars().count(),
+            "text": text,
+        }),
+        OrchestratorEvent::ToolActivity { agent, summary } => json!({
+            "time_unix": unix_time(),
+            "kind": "tool_activity",
+            "agent": agent.to_string(),
+            "summary": summary,
+        }),
+        OrchestratorEvent::TurnComplete {
+            agent,
+            cost_usd,
+            token_usage,
+        } => json!({
+            "time_unix": unix_time(),
+            "kind": "turn_complete",
+            "agent": agent.to_string(),
+            "cost_usd": cost_usd,
+            "token_usage": token_usage.as_ref().map(|usage| json!({
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+                "total_tokens": usage.total_tokens,
+            })),
+        }),
+        OrchestratorEvent::AgentExited { agent, code } => json!({
+            "time_unix": unix_time(),
+            "kind": "agent_exited",
+            "agent": agent.to_string(),
+            "code": code,
+        }),
+        OrchestratorEvent::PhaseChanged { phase } => json!({
+            "time_unix": unix_time(),
+            "kind": "phase_changed",
+            "phase": phase,
+        }),
+        OrchestratorEvent::RecommendationReady {
+            executor,
+            rationale,
+            confident,
+            scores,
+        } => json!({
+            "time_unix": unix_time(),
+            "kind": "recommendation_ready",
+            "executor": executor,
+            "rationale": rationale,
+            "confident": confident,
+            "scores": scores,
+        }),
+        OrchestratorEvent::ExecutionPacket {
+            executor,
+            text,
+            included_in_prompt,
+        } => json!({
+            "time_unix": unix_time(),
+            "kind": "execution_packet",
+            "executor": executor,
+            "chars": text.chars().count(),
+            "included_in_prompt": included_in_prompt,
+            "text": text,
+        }),
+        OrchestratorEvent::SessionReport { markdown, summary } => json!({
+            "time_unix": unix_time(),
+            "kind": "session_report",
+            "markdown_chars": markdown.chars().count(),
+            "markdown": markdown,
+            "summary": summary,
+        }),
+        OrchestratorEvent::AwaitingConfirmation { prompt } => json!({
+            "time_unix": unix_time(),
+            "kind": "awaiting_confirmation",
+            "prompt": prompt,
+        }),
+        OrchestratorEvent::Log { level, msg } => json!({
+            "time_unix": unix_time(),
+            "kind": "log",
+            "level": level,
+            "message": msg,
+        }),
+        OrchestratorEvent::Fatal { msg } => json!({
+            "time_unix": unix_time(),
+            "kind": "fatal",
+            "message": msg,
+        }),
+    }
+}
+
+fn unix_time() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn slug(input: &str) -> String {
+    let mut out = String::new();
+    for ch in input.chars().flat_map(|c| c.to_lowercase()) {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+        } else if (ch.is_whitespace() || ch == '-' || ch == '_') && !out.ends_with('-') {
+            out.push('-');
+        }
+        if out.len() >= 48 {
+            break;
+        }
+    }
+    let out = out.trim_matches('-').to_string();
+    if out.is_empty() {
+        "run".to_string()
+    } else {
+        out
+    }
+}
+
+fn json_preview(text: &str, limit: usize) -> String {
+    let mut out = text.chars().take(limit).collect::<String>();
+    if text.chars().count() > limit {
+        out.push_str("...");
+    }
+    out
+}
+
+fn tool_label(key: &str) -> String {
+    tool_info(key)
+        .map(|info| info.pretty.to_string())
+        .unwrap_or_else(|| key.to_string())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3020,10 +3767,25 @@ async fn run_pipeline(
         .await;
     }
 
+    let roster = preflight_agents
+        .iter()
+        .map(|agent| agent.key.clone())
+        .collect::<Vec<_>>();
+    let artifacts = RunArtifacts::create(
+        &cwd,
+        "run",
+        &prompt,
+        &roster,
+        report_path.as_deref(),
+        report_json_path.as_deref(),
+    )?;
+    println!("● artifacts: {}", artifacts.relative_dir());
+
     let (bus, mut commands_rx) = EventBus::new(2048, 64);
     let commands_tx = bus.commands();
 
     let printer = spawn_printer(&bus);
+    let artifact_writer = spawn_artifact_writer(&bus, artifacts.clone());
     let report_path_for_profile = report_path.clone();
     let report_writer = spawn_report_writer(&bus, report_path.clone(), report_json_path.clone());
 
@@ -3238,6 +4000,7 @@ async fn run_pipeline(
     }
     sleep(Duration::from_millis(200)).await;
     printer.abort();
+    artifact_writer.abort();
 
     // Merge the executor's worktree on success, and prune it on EVERY path.
     if let Some(mut mgr) = wt_mgr {
@@ -3266,7 +4029,16 @@ async fn run_pipeline(
         }
     }
 
-    let outcome = run_result?;
+    let outcome = match run_result {
+        Ok(outcome) => {
+            artifacts.mark_finished("done", Some(&execute));
+            outcome
+        }
+        Err(e) => {
+            artifacts.mark_failed(&e.to_string(), Some(&execute));
+            return Err(e);
+        }
+    };
     update_workspace_profile_after_run(
         &cwd,
         &prompt,
@@ -3342,6 +4114,121 @@ mod tests {
     }
 
     #[test]
+    fn recover_subcommand_parses() {
+        let cli = Cli::parse_from(["tales", "recover", "--latest", "--print"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Recover {
+                latest: true,
+                print: true,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn recover_runs_sort_by_manifest_update_time() {
+        let cwd = temp_test_dir("tales-recover-runs");
+        let runs = cwd.join(".tales").join("runs");
+        let old = runs.join("100-old");
+        let new = runs.join("200-new");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&new).unwrap();
+        std::fs::write(
+            old.join("manifest.json"),
+            r#"{"task":"old task","status":"planning","updated_unix":100}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            new.join("manifest.json"),
+            r#"{"task":"new task","status":"done","executor":"codex","updated_unix":200}"#,
+        )
+        .unwrap();
+        std::fs::write(new.join("plan.md"), "# New plan").unwrap();
+
+        let found = collect_recover_runs(&cwd).unwrap();
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].id, "200-new");
+        assert_eq!(found[0].task.as_deref(), Some("new task"));
+        assert_eq!(found[0].executor.as_deref(), Some("codex"));
+        assert_eq!(
+            resolve_recover_run(&cwd, &found, "100-old").unwrap().id,
+            "100-old"
+        );
+
+        let _ = std::fs::remove_dir_all(&cwd);
+    }
+
+    #[test]
+    fn run_artifacts_write_manifest_events_and_plan() {
+        let cwd = temp_test_dir("tales-run-artifacts");
+        let report_path = cwd.join(".tales").join("report.md");
+        let artifacts = RunArtifacts::create(
+            &cwd,
+            "run",
+            "Fix artifact persistence",
+            &["claude".into(), "codex".into()],
+            Some(&report_path),
+            None,
+        )
+        .unwrap();
+
+        let agent = Uuid::new_v4();
+        let mut snapshot = ArtifactSnapshot::new();
+        assert!(!snapshot.apply(&OrchestratorEvent::AgentSpawned {
+            agent,
+            label: "claude".into(),
+            session_id: "session-1".into(),
+        }));
+        assert!(snapshot.apply(&OrchestratorEvent::Message {
+            agent,
+            text: "Draft the persistence plan.".into(),
+        }));
+        let recommendation = OrchestratorEvent::RecommendationReady {
+            executor: "codex".into(),
+            rationale: "Codex can make the local CLI patch.".into(),
+            confident: true,
+            scores: vec![("codex".into(), 0.9)],
+        };
+        artifacts.append_event(&recommendation).unwrap();
+        assert!(snapshot.apply(&recommendation));
+        artifacts
+            .write_manifest(&snapshot.status, snapshot.executor.as_deref())
+            .unwrap();
+        artifacts
+            .write_plan_markdown(
+                &snapshot.status,
+                snapshot.executor.as_deref(),
+                &snapshot.transcript,
+            )
+            .unwrap();
+
+        let manifest = std::fs::read_to_string(&artifacts.manifest_path).unwrap();
+        let events = std::fs::read_to_string(&artifacts.events_path).unwrap();
+        let plan = std::fs::read_to_string(&artifacts.plan_path).unwrap();
+
+        assert!(manifest.contains("\"mode\": \"run\""), "{manifest}");
+        assert!(
+            manifest.contains("\"status\": \"recommended\""),
+            "{manifest}"
+        );
+        assert!(
+            manifest.contains(report_path.to_string_lossy().as_ref()),
+            "{manifest}"
+        );
+        assert!(events.contains("\"kind\":\"run_started\""), "{events}");
+        assert!(
+            events.contains("\"kind\":\"recommendation_ready\""),
+            "{events}"
+        );
+        assert!(plan.contains("Status: recommended"), "{plan}");
+        assert!(plan.contains("Executor: Codex"), "{plan}");
+        assert!(plan.contains("Draft the persistence plan."), "{plan}");
+
+        let _ = std::fs::remove_dir_all(&cwd);
+    }
+
+    #[test]
     fn report_paths_resolve_relative_to_cwd() {
         let cwd = PathBuf::from("/tmp/tales-cwd");
         assert_eq!(
@@ -3352,6 +4239,14 @@ mod tests {
             resolve_report_path(&cwd, Some(PathBuf::from("/tmp/report.md"))).unwrap(),
             PathBuf::from("/tmp/report.md")
         );
+    }
+
+    fn temp_test_dir(label: &str) -> PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!("{label}-{}-{unique}", std::process::id()))
     }
 
     #[test]

@@ -20,6 +20,54 @@ pub mod generic;
 pub mod mock;
 pub mod opencode;
 
+/// Project-local MCP/tool config files that can cause CLIs to load external
+/// tools or secrets just by starting inside a repository.
+pub const PROJECT_MCP_CONFIG_PATHS: &[&str] = &[
+    ".mcp.json",
+    ".cursor/mcp.json",
+    ".antigravity/mcp.json",
+    ".claude/settings.local.json",
+    ".vscode/mcp.json",
+    ".windsurf/mcp.json",
+];
+
+/// A risky project-local MCP/tool config found in a workspace.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct McpConfigRisk {
+    pub path: PathBuf,
+    pub markers: Vec<&'static str>,
+}
+
+/// Detect project-local MCP config files before launching agent CLIs. Presence
+/// alone matters because some CLIs load these files at startup; markers are a
+/// best-effort hint that the file may also contain an inline credential.
+pub fn project_mcp_config_risks(cwd: &Path) -> Vec<McpConfigRisk> {
+    PROJECT_MCP_CONFIG_PATHS
+        .iter()
+        .filter_map(|relative| {
+            let path = cwd.join(relative);
+            if !path.is_file() {
+                return None;
+            }
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            let mut markers = Vec::new();
+            for (marker, label) in [
+                ("SUPABASE_ACCESS_TOKEN", "SUPABASE_ACCESS_TOKEN"),
+                ("sbp_", "supabase-token"),
+                ("gho_", "github-token"),
+                ("sk-", "api-key"),
+                ("AIza", "google-api-key"),
+                ("re_", "resend-key"),
+            ] {
+                if text.contains(marker) {
+                    markers.push(label);
+                }
+            }
+            Some(McpConfigRisk { path, markers })
+        })
+        .collect()
+}
+
 /// Monotonic per-agent turn counter.
 pub type TurnId = u64;
 
@@ -907,6 +955,55 @@ mod registry_tests {
         assert_eq!(status["schema_version"], 1);
         assert_eq!(tools.len(), KNOWN_TOOLS.len());
         assert!(tools.iter().any(|tool| tool["key"] == "codex"));
+    }
+
+    #[test]
+    fn project_mcp_config_risks_detects_known_configs_and_secret_markers() {
+        let dir = std::env::temp_dir().join(format!(
+            "tales-mcp-risk-test-{}-detects",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".cursor")).unwrap();
+        std::fs::write(
+            dir.join(".cursor/mcp.json"),
+            r#"{"env":{"SUPABASE_ACCESS_TOKEN":"sbp_redacted","OPENAI_API_KEY":"sk-redacted"}}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.join("mcp.json"), r#"{"not":"project-local"}"#).unwrap();
+
+        let risks = project_mcp_config_risks(&dir);
+
+        assert_eq!(risks.len(), 1);
+        assert_eq!(risks[0].path, dir.join(".cursor/mcp.json"));
+        assert!(risks[0].markers.contains(&"SUPABASE_ACCESS_TOKEN"));
+        assert!(risks[0].markers.contains(&"supabase-token"));
+        assert!(risks[0].markers.contains(&"api-key"));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn project_mcp_config_risks_reports_presence_without_secret_markers() {
+        let dir = std::env::temp_dir().join(format!(
+            "tales-mcp-risk-test-{}-presence",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".claude")).unwrap();
+        std::fs::write(
+            dir.join(".claude/settings.local.json"),
+            r#"{"permissions":{"allow":["Read"]}}"#,
+        )
+        .unwrap();
+
+        let risks = project_mcp_config_risks(&dir);
+
+        assert_eq!(risks.len(), 1);
+        assert_eq!(risks[0].path, dir.join(".claude/settings.local.json"));
+        assert!(risks[0].markers.is_empty());
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

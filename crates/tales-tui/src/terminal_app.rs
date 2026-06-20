@@ -161,6 +161,7 @@ enum FolderEntryKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum OnboardingPhase {
     Browse,
+    PathInput,
     Permissions,
 }
 
@@ -198,6 +199,7 @@ struct WorkspaceOnboardingScreen {
     current: PathBuf,
     entries: Vec<FolderEntry>,
     selected: usize,
+    path_input: String,
     permission_selected: usize,
     notice: String,
     mcp_risks: Vec<McpConfigRisk>,
@@ -212,6 +214,7 @@ impl WorkspaceOnboardingScreen {
             current,
             entries,
             selected: 0,
+            path_input: String::new(),
             permission_selected: permission_index_for(default_sandbox),
             notice: "Select the folder Tales should use as its workspace".to_string(),
             mcp_risks: Vec::new(),
@@ -222,17 +225,20 @@ impl WorkspaceOnboardingScreen {
         if key.kind == KeyEventKind::Release {
             return Ok(None);
         }
-        if matches!(key.code, KeyCode::Char('q')) {
+        if matches!((key.code, key.modifiers), (KeyCode::Char('q'), modifiers) if modifiers.contains(KeyModifiers::CONTROL))
+        {
             return Ok(Some(OnboardingOutcome::Quit));
         }
         match self.phase {
             OnboardingPhase::Browse => self.handle_browser_key(key),
+            OnboardingPhase::PathInput => self.handle_path_key(key),
             OnboardingPhase::Permissions => self.handle_permission_key(key),
         }
     }
 
     fn handle_browser_key(&mut self, key: KeyEvent) -> io::Result<Option<OnboardingOutcome>> {
         match key.code {
+            KeyCode::Char('q') => return Ok(Some(OnboardingOutcome::Quit)),
             KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
             KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
             KeyCode::PageUp => self.move_selection(-8),
@@ -245,6 +251,8 @@ impl WorkspaceOnboardingScreen {
                     self.change_dir(PathBuf::from(home))?;
                 }
             }
+            KeyCode::Char('p') | KeyCode::Char(':') => self.open_path_input(""),
+            KeyCode::Char('/') => self.open_path_input("/"),
             KeyCode::Char('c') | KeyCode::Char(' ') => self.confirm_current(),
             KeyCode::Enter => self.activate_selected()?,
             _ => {}
@@ -252,8 +260,26 @@ impl WorkspaceOnboardingScreen {
         Ok(None)
     }
 
+    fn handle_path_key(&mut self, key: KeyEvent) -> io::Result<Option<OnboardingOutcome>> {
+        match key.code {
+            KeyCode::Esc => {
+                self.phase = OnboardingPhase::Browse;
+                self.path_input.clear();
+                self.notice = "Path entry cancelled".to_string();
+            }
+            KeyCode::Enter => self.confirm_path_input()?,
+            KeyCode::Backspace => {
+                self.path_input.pop();
+            }
+            KeyCode::Char(c) => self.path_input.push(c),
+            _ => {}
+        }
+        Ok(None)
+    }
+
     fn handle_permission_key(&mut self, key: KeyEvent) -> io::Result<Option<OnboardingOutcome>> {
         match key.code {
+            KeyCode::Char('q') => return Ok(Some(OnboardingOutcome::Quit)),
             KeyCode::Up | KeyCode::Char('k') => {
                 self.permission_selected = self.permission_selected.saturating_sub(1);
             }
@@ -331,6 +357,35 @@ impl WorkspaceOnboardingScreen {
         Ok(())
     }
 
+    fn open_path_input(&mut self, seed: &str) {
+        self.phase = OnboardingPhase::PathInput;
+        self.path_input = seed.to_string();
+        self.notice =
+            "Type an absolute, home-relative, or workspace-relative path, then press Enter"
+                .to_string();
+    }
+
+    fn confirm_path_input(&mut self) -> io::Result<()> {
+        match resolve_cd_path(&self.current, &self.path_input)
+            .and_then(normalize_workspace_dir)
+            .and_then(|dir| {
+                let entries = load_folder_entries(&dir)?;
+                Ok((dir, entries))
+            }) {
+            Ok((dir, entries)) => {
+                self.current = dir;
+                self.entries = entries;
+                self.selected = 0;
+                self.path_input.clear();
+                self.confirm_current();
+            }
+            Err(e) => {
+                self.notice = format!("Could not cd to path: {e}");
+            }
+        }
+        Ok(())
+    }
+
     fn confirm_current(&mut self) {
         self.mcp_risks = project_mcp_config_risks(&self.current);
         self.phase = OnboardingPhase::Permissions;
@@ -340,6 +395,7 @@ impl WorkspaceOnboardingScreen {
     fn draw(&self, f: &mut Frame) {
         match self.phase {
             OnboardingPhase::Browse => self.draw_browser(f),
+            OnboardingPhase::PathInput => self.draw_path_input(f),
             OnboardingPhase::Permissions => self.draw_permissions(f),
         }
     }
@@ -404,7 +460,61 @@ impl WorkspaceOnboardingScreen {
         f.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(
-                    "Enter open/select · c use current · Backspace parent · ~ home · q quit",
+                    "Enter open/select · c use current · p or : cd path · / absolute path · Backspace parent · q quit",
+                    Style::default().fg(FAINT),
+                ),
+                Span::styled(format!(" · {}", self.notice), Style::default().fg(DIM)),
+            ])),
+            chunks[2],
+        );
+    }
+
+    fn draw_path_input(&self, f: &mut Frame) {
+        let area = f.area();
+        let chunks = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Min(8),
+            Constraint::Length(2),
+        ])
+        .split(area);
+        f.render_widget(onboarding_header("cd path"), chunks[0]);
+
+        let block = RBlock::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(FAINT))
+            .title("Change workspace by path");
+        let inner = block.inner(chunks[1]);
+        f.render_widget(block, chunks[1]);
+
+        let lines = vec![
+            Line::from(Span::styled(
+                "Technical path entry",
+                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                "Use this when you already know the workspace path.",
+                Style::default().fg(DIM),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                format!("Current: {}", self.current.display()),
+                Style::default().fg(DIM),
+            )),
+            Line::from(vec![
+                Span::styled("cd ", Style::default().fg(ACCENT)),
+                Span::styled(self.path_input.clone(), Style::default().fg(TEXT)),
+            ]),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Examples: /Users/cesar/Documents/Tales · ~/Documents/Tales · ../OtherRepo · cd ~/repo",
+                Style::default().fg(FAINT),
+            )),
+        ];
+        f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    "Enter cd and continue to permissions · Esc cancel · Ctrl-Q quit",
                     Style::default().fg(FAINT),
                 ),
                 Span::styled(format!(" · {}", self.notice), Style::default().fg(DIM)),
@@ -526,6 +636,32 @@ fn normalize_workspace_dir(path: PathBuf) -> io::Result<PathBuf> {
             io::ErrorKind::InvalidInput,
             format!("{} is not a directory", path.display()),
         ))
+    }
+}
+
+fn resolve_cd_path(current: &Path, input: &str) -> io::Result<PathBuf> {
+    let mut text = input.trim();
+    if let Some(rest) = text.strip_prefix("cd ") {
+        text = rest.trim_start();
+    }
+    if text.is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "path is empty"));
+    }
+    if text == "~" {
+        return std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is not set"));
+    }
+    if let Some(rest) = text.strip_prefix("~/") {
+        return std::env::var_os("HOME")
+            .map(|home| PathBuf::from(home).join(rest))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is not set"));
+    }
+    let path = PathBuf::from(text);
+    if path.is_absolute() {
+        Ok(path)
+    } else {
+        Ok(current.join(path))
     }
 }
 
@@ -2808,6 +2944,36 @@ mod tests {
     }
 
     #[test]
+    fn cd_path_resolver_supports_absolute_relative_home_and_cd_prefix() {
+        let current = PathBuf::from("/tmp/tales-current");
+
+        assert_eq!(
+            resolve_cd_path(&current, "/tmp/target").unwrap(),
+            PathBuf::from("/tmp/target")
+        );
+        assert_eq!(
+            resolve_cd_path(&current, "child/repo").unwrap(),
+            PathBuf::from("/tmp/tales-current/child/repo")
+        );
+        assert_eq!(
+            resolve_cd_path(&current, "cd ../other").unwrap(),
+            PathBuf::from("/tmp/tales-current/../other")
+        );
+
+        if let Some(home) = std::env::var_os("HOME") {
+            assert_eq!(
+                resolve_cd_path(&current, "~").unwrap(),
+                PathBuf::from(&home)
+            );
+            assert_eq!(
+                resolve_cd_path(&current, "~/repo").unwrap(),
+                PathBuf::from(home).join("repo")
+            );
+        }
+        assert!(resolve_cd_path(&current, "   ").is_err());
+    }
+
+    #[test]
     fn onboarding_screen_confirm_current_opens_permission_phase() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -2831,6 +2997,30 @@ mod tests {
         assert_eq!(screen.current, fs::canonicalize(&cwd).unwrap());
         assert_eq!(screen.permission_selected, 0);
         assert_eq!(screen.mcp_risks.len(), 1);
+
+        let _ = fs::remove_dir_all(&cwd);
+    }
+
+    #[test]
+    fn onboarding_cd_path_jumps_to_permissions_for_known_path() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let cwd = std::env::temp_dir().join(format!(
+            "tales-onboarding-cd-test-{}-{unique}",
+            std::process::id()
+        ));
+        let target = cwd.join("repo");
+        fs::create_dir_all(&target).unwrap();
+
+        let mut screen = WorkspaceOnboardingScreen::new(cwd.clone(), "workspace-write").unwrap();
+        screen.open_path_input("repo");
+        screen.confirm_path_input().unwrap();
+
+        assert_eq!(screen.phase, OnboardingPhase::Permissions);
+        assert_eq!(screen.current, fs::canonicalize(&target).unwrap());
+        assert!(screen.path_input.is_empty());
 
         let _ = fs::remove_dir_all(&cwd);
     }

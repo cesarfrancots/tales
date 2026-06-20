@@ -37,7 +37,9 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use tales_core::agent::mock::MockAdapter;
-use tales_core::agent::{make_adapter, validate_roster, SpawnCtx};
+use tales_core::agent::{
+    make_adapter, model_or_default, validate_effort, validate_tool_readiness, SpawnCtx,
+};
 use tales_core::build_info;
 use tales_core::bus::EventBus;
 use tales_core::conductor::Role;
@@ -515,7 +517,10 @@ async fn run_session(
             orch.add_agent(Box::new(critic), ctx(Uuid::new_v4(), &c_label, &cwd, None, None, &sandbox), Role::Critic).await?;
         } else {
             let keys: Vec<String> = roster.iter().map(|c| c.tool.clone()).collect();
-            validate_roster(&keys)?;
+            validate_tool_readiness(&keys)?;
+            for c in &roster {
+                validate_effort(&c.tool, c.effort.as_deref())?;
+            }
             for c in &roster {
                 let adapter = make_adapter(&c.tool)?;
                 orch.add_agent(
@@ -560,7 +565,7 @@ fn ctx(
         agent,
         label: label.to_string(),
         cwd: cwd.to_path_buf(),
-        model,
+        model: model_or_default(label, model),
         effort,
         permission_mode: "acceptEdits".to_string(),
         sandbox: sandbox.to_string(),

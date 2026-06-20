@@ -219,7 +219,7 @@ impl Manager {
 
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
-        tokio::spawn(stderr_task(stderr, agent));
+        let stderr_handle = tokio::spawn(stderr_task(stderr, agent));
 
         let _ = self
             .events_tx
@@ -241,10 +241,29 @@ impl Manager {
             }
         }
 
+        let code = child.wait().await.ok().and_then(|s| s.code());
+        let stderr_lines = stderr_handle.await.unwrap_or_default();
+
         // The child exited. If it never emitted a terminal turn event (crash,
-        // killed, truncated stream), synthesize a TurnComplete so the
-        // orchestrator never deadlocks waiting for one.
+        // killed, truncated stream), surface the stderr and synthesize a
+        // TurnComplete so the orchestrator never deadlocks waiting for one.
         if !terminal_seen {
+            let detail = if stderr_lines.is_empty() {
+                format!("codex exited before emitting JSON turn events (exit {code:?})")
+            } else {
+                format!(
+                    "codex exited before emitting JSON turn events (exit {code:?}): {}",
+                    stderr_lines.join(" | ")
+                )
+            };
+            let _ = self
+                .events_tx
+                .send(AgentEvent::Error {
+                    agent,
+                    message: detail,
+                    fatal: true,
+                })
+                .await;
             let _ = self
                 .events_tx
                 .send(AgentEvent::TurnComplete {
@@ -256,7 +275,7 @@ impl Manager {
                 .await;
         }
 
-        child.wait().await.ok().and_then(|s| s.code())
+        code
     }
 
     /// Returns `true` if this event terminated the turn (`turn.completed` or
@@ -394,8 +413,9 @@ impl Manager {
     }
 }
 
-async fn stderr_task(stderr: tokio::process::ChildStderr, agent: AgentId) {
+async fn stderr_task(stderr: tokio::process::ChildStderr, agent: AgentId) -> Vec<String> {
     let mut lines = BufReader::new(stderr).lines();
+    let mut captured = Vec::new();
     while let Ok(Some(line)) = lines.next_line().await {
         let t = line.trim();
         if t.is_empty() {
@@ -408,9 +428,13 @@ async fn stderr_task(stderr: tokio::process::ChildStderr, agent: AgentId) {
         if is_benign_codex_noise(t) {
             tracing::debug!(%agent, "codex: {t}");
         } else {
+            if captured.len() < 20 {
+                captured.push(t.to_string());
+            }
             tracing::warn!(%agent, "codex stderr: {t}");
         }
     }
+    captured
 }
 
 /// True for Codex stderr lines that are noise relative to the turn — its
@@ -419,12 +443,25 @@ async fn stderr_task(stderr: tokio::process::ChildStderr, agent: AgentId) {
 fn is_benign_codex_noise(line: &str) -> bool {
     const NOISE: &[&str] = &[
         "Reading additional input from stdin",
+        "codex_core_plugins::loader: failed to load plugin: missing or invalid plugin.json",
+        "codex_core_plugins::manifest: ignoring interface.defaultPrompt",
+        "codex_core_skills::loader: ignoring interface.icon_small",
+        "codex_core_skills::loader: ignoring interface.icon_large",
+        "codex_core::shell_snapshot: Failed to create shell snapshot for powershell",
+        "Shell snapshot not supported yet for PowerShell",
+        "codex_core::goals: failed to read thread goal",
+        "codex_core::goals: failed to pause active thread goal",
+        "codex_core::session::turn: failed to load discoverable tool suggestions",
+        "codex_mcp::rmcp_client: failed to initialize MCP client during shutdown",
         "rmcp::transport",
         "worker quit with fatal",
         "Transport channel closed",
         "AuthRequired",
         "oauth-protected-resource",
     ];
+    if line.starts_with("ERROR: The process ") && line.ends_with(" not found.") {
+        return true;
+    }
     NOISE.iter().any(|n| line.contains(n))
 }
 
@@ -577,7 +614,25 @@ mod tests {
         assert!(is_benign_codex_noise(
             "ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(...)"
         ));
+        assert!(is_benign_codex_noise(
+            r#"2026-06-20T18:33:37.680668Z  WARN codex_core_plugins::loader: failed to load plugin: missing or invalid plugin.json plugin="chrome@openai-bundled""#
+        ));
+        assert!(is_benign_codex_noise(
+            "2026-06-20T18:33:53.026879Z  WARN codex_core_skills::loader: ignoring interface.icon_small: icon path must not contain '..'"
+        ));
+        assert!(is_benign_codex_noise(
+            "2026-06-20T18:33:40.139889Z  WARN codex_core::shell_snapshot: Failed to create shell snapshot for powershell: Shell snapshot not supported yet for PowerShell"
+        ));
+        assert!(is_benign_codex_noise(
+            "2026-06-20T18:43:55.058311Z  WARN codex_core::session::turn: failed to load discoverable tool suggestions: request failed with status 403 Forbidden"
+        ));
+        assert!(is_benign_codex_noise(
+            "ERROR: The process \"14864\" not found."
+        ));
         assert!(!is_benign_codex_noise("error: rate limit exceeded"));
+        assert!(!is_benign_codex_noise(
+            "error: model gpt-5.5 is not available"
+        ));
     }
 
     #[test]

@@ -386,14 +386,14 @@ mod tests {
     #[test]
     fn cycle_model_walks_suggestions_then_back_to_default() {
         let mut s = ConnectScreen::new(&[]);
-        // Point at claude (models: opus, sonnet, haiku) and enable it.
+        // Point at claude (models: opus 4.8, sonnet, haiku) and enable it.
         let idx = s.rows.iter().position(|r| r.key == "claude").unwrap();
         s.cursor = idx;
         s.rows[idx].installed = true;
         s.rows[idx].enabled = true;
         assert_eq!(s.rows[idx].model(), None); // default
         s.cycle_model();
-        assert_eq!(s.rows[idx].model().as_deref(), Some("opus"));
+        assert_eq!(s.rows[idx].model().as_deref(), Some("claude-opus-4-8"));
         s.cycle_model();
         assert_eq!(s.rows[idx].model().as_deref(), Some("sonnet"));
         // …through the last, then wraps back to default.
@@ -424,16 +424,20 @@ mod tests {
     #[test]
     fn choices_carry_model_and_effort() {
         let mut s = ConnectScreen::new(&[]);
+        let cl = s.rows.iter().position(|r| r.key == "claude").unwrap();
+        s.rows[cl].installed = true;
+        s.rows[cl].enabled = true;
+        s.rows[cl].model_sel = Some(0); // opus 4.8
+
         let cx = s.rows.iter().position(|r| r.key == "codex").unwrap();
         s.rows[cx].installed = true;
         s.rows[cx].enabled = true;
-        s.rows[cx].model_sel = Some(0); // gpt-5-codex
         s.rows[cx].effort_sel = Some(2); // high
-        let other = if cx == 0 { 1 } else { 0 };
-        s.rows[other].installed = true;
-        s.rows[other].enabled = true;
-        let choice = s.choices().into_iter().find(|c| c.key == "codex").unwrap();
-        assert_eq!(choice.model.as_deref(), Some("gpt-5-codex"));
+
+        let choices = s.choices();
+        let choice = choices.iter().find(|c| c.key == "claude").unwrap();
+        assert_eq!(choice.model.as_deref(), Some("claude-opus-4-8"));
+        let choice = choices.iter().find(|c| c.key == "codex").unwrap();
         assert_eq!(choice.effort.as_deref(), Some("high"));
     }
 

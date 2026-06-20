@@ -29,7 +29,7 @@ use uuid::Uuid;
 
 use tales_core::agent::mock::MockAdapter;
 use tales_core::agent::{
-    known_tools_status_json, make_adapter, validate_effort, validate_roster,
+    known_tools_status_json, make_adapter, model_or_default, validate_effort, validate_roster,
     validate_tool_readiness, SpawnCtx,
 };
 use tales_core::build_info;
@@ -456,11 +456,20 @@ fn session_config_json(cfg: &Args, preview: &SessionPreview) -> Value {
         Some("critic")
     };
     let (executor_model, executor_effort) = if separate_executor {
-        (cfg.execute_model.clone(), cfg.execute_effort.clone())
+        (
+            model_or_default(&cfg.execute, cfg.execute_model.clone()),
+            cfg.execute_effort.clone(),
+        )
     } else if cfg.drafter.eq_ignore_ascii_case(&cfg.execute) {
-        (cfg.drafter_model.clone(), cfg.drafter_effort.clone())
+        (
+            model_or_default(&cfg.drafter, cfg.drafter_model.clone()),
+            cfg.drafter_effort.clone(),
+        )
     } else {
-        (cfg.critic_model.clone(), cfg.critic_effort.clone())
+        (
+            model_or_default(&cfg.critic, cfg.critic_model.clone()),
+            cfg.critic_effort.clone(),
+        )
     };
 
     let project_context_json = project_context_status_json(
@@ -562,13 +571,13 @@ fn session_config_json(cfg: &Args, preview: &SessionPreview) -> Value {
             {
                 "role": "drafter",
                 "key": cfg.drafter,
-                "model": cfg.drafter_model,
+                "model": model_or_default(&cfg.drafter, cfg.drafter_model.clone()),
                 "effort": cfg.drafter_effort,
             },
             {
                 "role": "critic",
                 "key": cfg.critic,
-                "model": cfg.critic_model,
+                "model": model_or_default(&cfg.critic, cfg.critic_model.clone()),
                 "effort": cfg.critic_effort,
             },
             {
@@ -593,7 +602,7 @@ fn resolved_session_config(
         AgentSeatConfig {
             role: "drafter".into(),
             tool_key: cfg.drafter.clone(),
-            model: cfg.drafter_model.clone(),
+            model: model_or_default(&cfg.drafter, cfg.drafter_model.clone()),
             effort: cfg.drafter_effort.clone(),
             cwd_policy: CwdPolicy::Shared,
             execution_permission: ExecutionPermission::ReadOnly,
@@ -601,7 +610,7 @@ fn resolved_session_config(
         AgentSeatConfig {
             role: "critic".into(),
             tool_key: cfg.critic.clone(),
-            model: cfg.critic_model.clone(),
+            model: model_or_default(&cfg.critic, cfg.critic_model.clone()),
             effort: cfg.critic_effort.clone(),
             cwd_policy: CwdPolicy::Shared,
             execution_permission: ExecutionPermission::ReadOnly,
@@ -887,7 +896,7 @@ fn ctx(
         agent,
         label: label.to_string(),
         cwd: cwd.to_path_buf(),
-        model,
+        model: model_or_default(label, model),
         effort,
         permission_mode: "acceptEdits".to_string(),
         sandbox: sandbox.to_string(),

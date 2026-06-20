@@ -23,8 +23,10 @@ use ratatui::widgets::{Block as RBlock, Borders, List, ListItem, Paragraph, Wrap
 use ratatui::{Frame, Terminal};
 use serde_json::json;
 use tales_core::agent::{
-    bin_path, project_mcp_config_risks, tool_info, validate_roster, McpConfigRisk, KNOWN_TOOLS,
+    bin_path, default_model_for, project_mcp_config_risks, tool_info, validate_tool_readiness,
+    McpConfigRisk, KNOWN_TOOLS,
 };
+use tales_core::build_info;
 use tales_core::bus::EventBus;
 use tales_core::conductor::Role;
 use tales_core::event::{OrchestratorEvent, UserCommand};
@@ -420,7 +422,7 @@ impl WorkspaceOnboardingScreen {
         let visible = visible_entry_range(
             self.entries.len(),
             self.selected,
-            inner.height.saturating_sub(5) as usize,
+            inner.height.saturating_sub(7) as usize,
         );
         let mut lines = vec![
             Line::from(Span::styled(
@@ -429,6 +431,18 @@ impl WorkspaceOnboardingScreen {
             )),
             Line::from(Span::styled(
                 format!("Current: {}", self.current.display()),
+                Style::default().fg(DIM),
+            )),
+            Line::from(Span::styled(
+                format!("Version: {}", build_info::long_version()),
+                Style::default().fg(DIM),
+            )),
+            Line::from(Span::styled(
+                format!(
+                    "Default models: Claude Code {} + Codex {}",
+                    default_model_for("claude").unwrap_or("default"),
+                    default_model_for("codex").unwrap_or("default")
+                ),
                 Style::default().fg(DIM),
             )),
             Line::from(""),
@@ -1609,8 +1623,11 @@ impl TalesPane {
         } else {
             roster_keys.into_iter().take(2).collect::<Vec<_>>()
         };
-        if let Err(e) = validate_roster(&keys) {
-            self.notice = e.to_string();
+        if let Err(e) = validate_tool_readiness(&keys) {
+            self.notice = format!(
+                "{}. Fix it, then restart Tales or pass --connect with the tools to use.",
+                e
+            );
             return;
         }
         let artifacts = match RunArtifacts::create(&self.cfg.cwd, &task, &keys) {
@@ -1905,7 +1922,19 @@ fn welcome_lines(cfg: &WorkspaceConfig) -> Vec<Line<'static>> {
             Style::default().fg(DIM),
         )),
         Line::from(Span::styled(
+            format!("Version: {}", build_info::long_version()),
+            Style::default().fg(DIM),
+        )),
+        Line::from(Span::styled(
             format!("Planner roster: {roster_text}"),
+            Style::default().fg(DIM),
+        )),
+        Line::from(Span::styled(
+            format!(
+                "Default models: Claude Code {} + Codex {}",
+                default_model_for("claude").unwrap_or("default"),
+                default_model_for("codex").unwrap_or("default")
+            ),
             Style::default().fg(DIM),
         )),
         Line::from(Span::styled(
@@ -2817,6 +2846,7 @@ fn strip_ansi(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::backend::TestBackend;
 
     fn test_pane() -> ProcessPane {
         ProcessPane {
@@ -2865,8 +2895,42 @@ mod tests {
         assert!(text.contains("████████"), "{text}");
         assert!(text.contains("help"), "{text}");
         assert!(text.contains("commands"), "{text}");
+        assert!(text.contains("Version:"), "{text}");
+        assert!(text.contains("claude-opus-4-8"), "{text}");
+        assert!(text.contains("gpt-5.5"), "{text}");
         assert!(text.contains("Tips"), "{text}");
         assert!(text.contains("tales doctor --all"), "{text}");
+    }
+
+    #[test]
+    fn onboarding_screen_shows_version_and_default_models() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let cwd = std::env::temp_dir().join(format!(
+            "tales-onboarding-render-test-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&cwd).unwrap();
+
+        let screen = WorkspaceOnboardingScreen::new(cwd.clone(), "workspace-write").unwrap();
+        let mut term = ratatui::Terminal::new(TestBackend::new(100, 30)).unwrap();
+        term.draw(|f| screen.draw(f)).unwrap();
+        let buf = term.backend().buffer().clone();
+        let mut text = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                text.push_str(buf[(x, y)].symbol());
+            }
+            text.push('\n');
+        }
+
+        assert!(text.contains("Version:"), "{text}");
+        assert!(text.contains("claude-opus-4-8"), "{text}");
+        assert!(text.contains("gpt-5.5"), "{text}");
+
+        let _ = fs::remove_dir_all(&cwd);
     }
 
     #[test]

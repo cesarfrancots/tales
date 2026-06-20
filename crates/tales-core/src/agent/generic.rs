@@ -61,8 +61,12 @@ impl GenericAdapter {
 
     /// Build the adapter from a registry row.
     pub fn from_info(info: &ToolInfo) -> Self {
+        Self::from_info_with_bin(info, info.bin.to_string())
+    }
+
+    pub fn from_info_with_bin(info: &ToolInfo, bin: String) -> Self {
         Self::new(GenericSpec {
-            bin: info.bin.to_string(),
+            bin,
             run_args: info.run_args.iter().map(|s| s.to_string()).collect(),
             model_flag: info.model_flag.to_string(),
             prompt_flag: info.prompt_flag.to_string(),

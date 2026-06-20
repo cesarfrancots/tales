@@ -294,7 +294,7 @@ pub const KNOWN_TOOLS: &[ToolInfo] = &[
         install:
             "https://docs.anthropic.com/en/docs/claude-code  (npm i -g @anthropic-ai/claude-code)",
         kind: AdapterKind::Claude,
-        models: &["opus", "sonnet", "haiku"],
+        models: &["claude-opus-4-8", "sonnet", "haiku"],
         efforts: &["low", "medium", "high", "xhigh", "max"],
         supports_resume: true,
         supports_structured_output: false,
@@ -316,7 +316,7 @@ pub const KNOWN_TOOLS: &[ToolInfo] = &[
         bin: "codex",
         install: "npm i -g @openai/codex",
         kind: AdapterKind::Codex,
-        models: &["gpt-5-codex", "gpt-5"],
+        models: &["gpt-5.5"],
         efforts: &["low", "medium", "high"],
         supports_resume: false,
         supports_structured_output: true,
@@ -427,6 +427,18 @@ pub fn tool_info(key: &str) -> Option<&'static ToolInfo> {
     KNOWN_TOOLS.iter().find(|t| t.key.eq_ignore_ascii_case(key))
 }
 
+pub fn default_model_for(key: &str) -> Option<&'static str> {
+    match tool_info(key)?.key {
+        "claude" => Some("claude-opus-4-8"),
+        "codex" => Some("gpt-5.5"),
+        _ => None,
+    }
+}
+
+pub fn model_or_default(key: &str, model: Option<String>) -> Option<String> {
+    model.or_else(|| default_model_for(key).map(str::to_string))
+}
+
 /// Whether `bin` resolves to an executable on `PATH` — a dependency-free `which`
 /// so a frontend can show which tools are actually installed. On unix it also
 /// checks the execute bit; elsewhere it accepts any matching file (incl. `.exe`).
@@ -439,7 +451,16 @@ pub fn bin_path(bin: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     let candidates = |dir: &std::path::Path| -> Vec<PathBuf> {
         if cfg!(windows) {
-            vec![dir.join(bin), dir.join(format!("{bin}.exe"))]
+            // Prefer Windows-native launchers over extensionless npm shims.
+            // The extensionless npm file is a sh script; Rust cannot run it on
+            // Windows, while the sibling .cmd shim is runnable.
+            vec![
+                dir.join(format!("{bin}.exe")),
+                dir.join(format!("{bin}.cmd")),
+                dir.join(format!("{bin}.bat")),
+                dir.join(format!("{bin}.com")),
+                dir.join(bin),
+            ]
         } else {
             vec![dir.join(bin)]
         }
@@ -792,8 +813,8 @@ pub fn validate_tool_readiness(tool_keys: &[String]) -> Result<()> {
         };
         if bin_path(info.bin).is_none() {
             issues.push(format!(
-                "{} CLI '{}' not found on PATH; install: {}",
-                info.pretty, info.bin, info.install
+                "{} CLI '{}' not found on PATH; install: {}; then reconnect with `tales --connect {}` or run `tales doctor --all`",
+                info.pretty, info.bin, info.install, info.key
             ));
         }
     }
@@ -855,11 +876,14 @@ pub fn make_adapter(name: &str) -> Result<Box<dyn AgentAdapter>> {
             "unknown agent '{name}' (known: {known})"
         )));
     };
+    let bin = bin_path(info.bin)
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| info.bin.to_string());
     Ok(match info.kind {
-        AdapterKind::Claude => Box::new(claude::ClaudeAdapter::new()),
-        AdapterKind::Codex => Box::new(codex::CodexAdapter::new()),
-        AdapterKind::OpenCode => Box::new(opencode::OpenCodeAdapter::new()),
-        AdapterKind::Generic => Box::new(generic::GenericAdapter::from_info(info)),
+        AdapterKind::Claude => Box::new(claude::ClaudeAdapter::with_bin(bin)),
+        AdapterKind::Codex => Box::new(codex::CodexAdapter::with_bin(bin)),
+        AdapterKind::OpenCode => Box::new(opencode::OpenCodeAdapter::with_bin(bin)),
+        AdapterKind::Generic => Box::new(generic::GenericAdapter::from_info_with_bin(info, bin)),
     })
 }
 
@@ -938,12 +962,19 @@ mod registry_tests {
         assert_eq!(status["key"], "claude");
         assert_eq!(status["kind"], "claude-stream");
         assert_eq!(status["known"], true);
-        assert_eq!(status["models"][0], "opus");
-        assert_eq!(status["suggested_models"][0], "opus");
+        assert_eq!(status["models"][0], "claude-opus-4-8");
+        assert_eq!(status["suggested_models"][0], "claude-opus-4-8");
         assert_eq!(status["caps"]["resumable"], true);
         assert_eq!(status["caps"]["resume"], true);
         assert_eq!(status["caps"]["midturn_injection"], true);
         assert_eq!(status["caps"]["midturn"], true);
+    }
+
+    #[test]
+    fn default_models_match_primary_planners() {
+        assert_eq!(default_model_for("claude"), Some("claude-opus-4-8"));
+        assert_eq!(default_model_for("codex"), Some("gpt-5.5"));
+        assert_eq!(default_model_for("opencode"), None);
     }
 
     #[test]

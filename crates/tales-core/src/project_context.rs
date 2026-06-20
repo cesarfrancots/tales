@@ -879,6 +879,8 @@ mod tests {
             .open(root.join("src/lib.rs"))
             .unwrap();
         writeln!(file, "pub fn changed() {{}}").unwrap();
+        file.flush().unwrap();
+        drop(file);
         let third = load_or_build(&root, opts).unwrap();
         assert!(!third.cache_hit);
 

@@ -23,9 +23,10 @@ use uuid::Uuid;
 
 use tales_core::agent::mock::MockAdapter;
 use tales_core::agent::{
-    adapter_kind_label, agent_caps_json, bin_path, make_adapter, tool_info, tool_info_status_json,
-    tool_roster_advice_json, validate_effort, validate_roster, validate_tool_readiness, AgentCaps,
-    AgentCommand, AgentEvent, Attachment, SpawnCtx, KNOWN_TOOLS,
+    adapter_kind_label, agent_caps_json, bin_path, make_adapter, model_or_default, tool_info,
+    tool_info_status_json, tool_roster_advice_json, validate_effort, validate_roster,
+    validate_tool_readiness, AgentCaps, AgentCommand, AgentEvent, Attachment, SpawnCtx,
+    KNOWN_TOOLS,
 };
 use tales_core::build_info;
 use tales_core::bus::EventBus;
@@ -1520,6 +1521,7 @@ async fn run_solo(
     let cwd = cwd.map(PathBuf::from).unwrap_or(std::env::current_dir()?);
     validate_tool_readiness(std::slice::from_ref(&agent_name))?;
     validate_effort(&agent_name, effort.as_deref())?;
+    let model = model_or_default(&agent_name, model);
     let agent = Uuid::new_v4();
     let allowed_tools = if agent_name.eq_ignore_ascii_case("claude") {
         Some(vec![
@@ -1639,6 +1641,8 @@ async fn run_discuss(
         validate_effort(&drafter, drafter_effort.as_deref())?;
         validate_effort(&critic, critic_effort.as_deref())?;
     }
+    let drafter_model = model_or_default(&drafter, drafter_model);
+    let critic_model = model_or_default(&critic, critic_model);
     let cwd = cwd.map(PathBuf::from).unwrap_or(std::env::current_dir()?);
     let report_path = resolve_report_path(&cwd, report_path);
     let report_json_path = resolve_report_path(&cwd, report_json_path);
@@ -2654,7 +2658,7 @@ fn mk_ctx(
         agent,
         label: label.to_string(),
         cwd: cwd.to_path_buf(),
-        model,
+        model: model_or_default(label, model),
         effort,
         permission_mode: permission_mode.to_string(),
         sandbox: sandbox.to_string(),
@@ -3807,6 +3811,13 @@ async fn run_pipeline(
             separate_executor,
         )?;
     }
+    let drafter_model = model_or_default(&drafter, drafter_model);
+    let critic_model = model_or_default(&critic, critic_model);
+    let execute_model = if separate_executor {
+        model_or_default(&execute, execute_model)
+    } else {
+        execute_model
+    };
 
     let cwd = cwd.map(PathBuf::from).unwrap_or(std::env::current_dir()?);
     let report_path = resolve_report_path(&cwd, report_path);

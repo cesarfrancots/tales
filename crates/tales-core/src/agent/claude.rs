@@ -26,7 +26,10 @@ use tokio::sync::{mpsc, oneshot};
 
 use base64::Engine as _;
 
-use super::{AgentAdapter, AgentCaps, AgentCommand, AgentEvent, Attachment, SpawnCtx, TurnId};
+use super::{
+    project_mcp_config_risks, AgentAdapter, AgentCaps, AgentCommand, AgentEvent, Attachment,
+    SpawnCtx, TurnId,
+};
 use crate::{AgentId, Result, TalesError};
 
 /// Adapter for the `claude` CLI.
@@ -90,6 +93,14 @@ impl AgentAdapter for ClaudeAdapter {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+
+        if !project_mcp_config_risks(&ctx.cwd).is_empty() {
+            cmd.arg("--strict-mcp-config")
+                .arg("--mcp-config")
+                .arg(r#"{"mcpServers":{}}"#)
+                .arg("--setting-sources")
+                .arg("user");
+        }
 
         if let Some(model) = &ctx.model {
             cmd.arg("--model").arg(model);

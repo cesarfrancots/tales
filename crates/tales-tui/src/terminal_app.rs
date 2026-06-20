@@ -34,7 +34,10 @@ use tokio::sync::broadcast::error::TryRecvError;
 use tokio::sync::mpsc;
 use tokio::time::{self, Duration};
 
-use crate::app::{commands_message, help_message, App, RecoveryCommand, SubmitAction};
+use crate::app::{
+    commands_message, help_message, input_area_height, input_view_lines, App, RecoveryCommand,
+    SubmitAction,
+};
 use crate::theme::{color_for, pretty, ACCENT, DIM, ERRC, FAINT, TEXT};
 use crate::{run_session, Args, Connection};
 
@@ -1101,10 +1104,19 @@ impl Workspace {
     }
 
     fn draw(&self, f: &mut Frame) {
+        let max_input_height = f.area().height.saturating_sub(3).min(8).max(1);
+        let min_input_height = 3.min(max_input_height);
+        let input_height = match self.panes.get(self.active) {
+            Some(Pane::Tales(tales)) => {
+                input_area_height("you ❯ ", &tales.app.input, f.area().width, max_input_height)
+                    .max(min_input_height)
+            }
+            _ => min_input_height,
+        };
         let chunks = Layout::vertical([
             Constraint::Length(1),
             Constraint::Min(3),
-            Constraint::Length(3),
+            Constraint::Length(input_height),
             Constraint::Length(1),
         ])
         .split(f.area());
@@ -1206,14 +1218,22 @@ impl Workspace {
     }
 
     fn draw_input(&self, f: &mut Frame, area: Rect) {
-        let line = match self.panes.get(self.active) {
-            Some(Pane::Tales(tales)) => Line::from(vec![
-                Span::styled(
+        if let Some(Pane::Tales(tales)) = self.panes.get(self.active) {
+            f.render_widget(
+                Paragraph::new(input_view_lines(
                     "you ❯ ",
-                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(tales.app.input.clone(), Style::default().fg(TEXT)),
-            ]),
+                    &tales.app.input,
+                    area.width,
+                    area.height,
+                    tales.input_scroll,
+                )),
+                area,
+            );
+            return;
+        }
+
+        let line = match self.panes.get(self.active) {
+            Some(Pane::Tales(_)) => Line::from(""),
             Some(Pane::Process(proc)) => Line::from(vec![
                 Span::styled("typing → ", Style::default().fg(ACCENT)),
                 Span::styled(
@@ -1234,7 +1254,7 @@ impl Workspace {
         let help = if self.active_is_process() {
             "Tab switch · Ctrl-T Tales for /handoff or /switch · Ctrl-A approve · Ctrl-Q quit"
         } else {
-            "Tab switch · Ctrl-T Tales · Ctrl-N shell · Ctrl-X Codex · Ctrl-L Claude · Ctrl-S send plan · Ctrl-A approve · Ctrl-Q quit"
+            "Tab switch · PageUp/PageDown prompt · Ctrl-N shell · Ctrl-X Codex · Ctrl-L Claude · Ctrl-S send plan · Ctrl-A approve · Ctrl-Q quit"
         };
         f.render_widget(
             Paragraph::new(Line::from(vec![
@@ -1280,6 +1300,7 @@ struct TalesPane {
     events: Option<tokio::sync::broadcast::Receiver<OrchestratorEvent>>,
     started: bool,
     startup_page: StartupPage,
+    input_scroll: usize,
     notice: String,
     last_executor: Option<String>,
 }
@@ -1436,6 +1457,7 @@ impl TalesPane {
             events: None,
             started: false,
             startup_page: StartupPage::Welcome,
+            input_scroll: 0,
             notice: "type help, commands, or a planning prompt".to_string(),
             last_executor: None,
         }
@@ -1464,16 +1486,25 @@ impl TalesPane {
                         return Some(action);
                     }
                 }
+                self.input_scroll = 0;
             }
             (KeyCode::Backspace, _) => {
                 self.app.input.pop();
+                self.input_scroll = 0;
             }
             (KeyCode::Esc, _) => {
                 self.app.input.clear();
+                self.input_scroll = 0;
                 if !self.started {
                     self.startup_page = StartupPage::Welcome;
                     self.notice = "back to welcome".to_string();
                 }
+            }
+            (KeyCode::PageUp, _) => {
+                self.input_scroll = self.input_scroll.saturating_add(4);
+            }
+            (KeyCode::PageDown, _) => {
+                self.input_scroll = self.input_scroll.saturating_sub(4);
             }
             // At the gate, a bare digit picks that executor; otherwise type it.
             (KeyCode::Char(c), _) => {
@@ -1483,6 +1514,7 @@ impl TalesPane {
                     }
                 } else {
                     self.app.input.push(c);
+                    self.input_scroll = 0;
                 }
             }
             _ => {}

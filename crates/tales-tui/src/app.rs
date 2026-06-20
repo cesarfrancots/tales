@@ -73,6 +73,75 @@ pub fn commands_message() -> &'static str {
      Ctrl-N shell · Ctrl-X Codex · Ctrl-L Claude · Ctrl-O Open Code · Ctrl-S send plan · Ctrl-A approve"
 }
 
+pub fn input_area_height(prefix: &str, input: &str, width: u16, max_height: u16) -> u16 {
+    let rows = wrapped_input_rows(prefix, input, width).len() as u16;
+    rows.clamp(1, max_height.max(1))
+}
+
+pub fn input_view_lines(
+    prefix: &str,
+    input: &str,
+    width: u16,
+    height: u16,
+    scroll: usize,
+) -> Vec<Line<'static>> {
+    let height = height.max(1) as usize;
+    let rows = wrapped_input_rows(prefix, input, width);
+    let max_scroll = rows.len().saturating_sub(height);
+    let end = rows.len() - scroll.min(max_scroll);
+    let start = end.saturating_sub(height);
+    let blank_prefix = " ".repeat(prefix.chars().count());
+
+    rows[start..end]
+        .iter()
+        .map(|(first, text)| {
+            let shown_prefix = if *first { prefix } else { &blank_prefix };
+            Line::from(vec![
+                Span::styled(
+                    shown_prefix.to_string(),
+                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(text.clone(), Style::default().fg(TEXT)),
+            ])
+        })
+        .collect()
+}
+
+fn wrapped_input_rows(prefix: &str, input: &str, width: u16) -> Vec<(bool, String)> {
+    let body_width = (width as usize)
+        .saturating_sub(prefix.chars().count())
+        .max(1);
+    let mut rows = Vec::new();
+    let mut first = true;
+
+    for logical in input.split('\n') {
+        if logical.is_empty() {
+            rows.push((first, String::new()));
+            first = false;
+            continue;
+        }
+
+        let mut row = String::new();
+        let mut row_width = 0;
+        for ch in logical.chars() {
+            if row_width >= body_width {
+                rows.push((first, std::mem::take(&mut row)));
+                first = false;
+                row_width = 0;
+            }
+            row.push(ch);
+            row_width += 1;
+        }
+        rows.push((first, row));
+        first = false;
+    }
+
+    if rows.is_empty() {
+        rows.push((true, String::new()));
+    }
+    rows
+}
+
 #[derive(Debug, Clone)]
 pub enum SubmitAction {
     Core(UserCommand),
@@ -870,6 +939,20 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn input_view_tails_and_scrolls_long_wrapped_text() {
+        assert_eq!(input_area_height("p> ", "abcdefgh", 5, 10), 4);
+
+        let bottom = text_of(&input_view_lines("p> ", "abcdefgh", 5, 2, 0));
+        assert!(bottom.contains("ef"), "{bottom}");
+        assert!(bottom.contains("gh"), "{bottom}");
+        assert!(!bottom.contains("ab"), "{bottom}");
+
+        let top = text_of(&input_view_lines("p> ", "abcdefgh", 5, 2, 2));
+        assert!(top.contains("ab"), "{top}");
+        assert!(top.contains("cd"), "{top}");
     }
 
     #[test]

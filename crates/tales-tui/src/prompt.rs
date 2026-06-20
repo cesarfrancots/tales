@@ -10,6 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
+use crate::app::{input_area_height, input_view_lines};
 use crate::theme::{color_for, pretty, ACCENT, DIM, FAINT, TEXT};
 
 /// What the user did on the prompt screen.
@@ -27,6 +28,7 @@ pub enum PromptOutcome {
 pub struct PromptScreen {
     connected: Vec<String>,
     pub input: String,
+    input_scroll: usize,
 }
 
 impl PromptScreen {
@@ -34,17 +36,38 @@ impl PromptScreen {
         Self {
             connected: connected.to_vec(),
             input: prefill.unwrap_or("").to_string(),
+            input_scroll: 0,
         }
     }
 
+    pub fn push(&mut self, c: char) {
+        self.input.push(c);
+        self.input_scroll = 0;
+    }
+
+    pub fn pop(&mut self) {
+        self.input.pop();
+        self.input_scroll = 0;
+    }
+
+    pub fn scroll_up(&mut self) {
+        self.input_scroll = self.input_scroll.saturating_add(4);
+    }
+
+    pub fn scroll_down(&mut self) {
+        self.input_scroll = self.input_scroll.saturating_sub(4);
+    }
+
     pub fn draw(&self, f: &mut Frame) {
+        let input_height = input_area_height("❯ ", &self.input, f.area().width, 12);
         let chunks = Layout::vertical([
             Constraint::Length(1), // header
             Constraint::Length(1), // spacer
             Constraint::Length(1), // connected summary
             Constraint::Length(1), // spacer
             Constraint::Length(1), // question
-            Constraint::Min(1),    // input
+            Constraint::Length(input_height),
+            Constraint::Min(0),    // spare room
             Constraint::Length(1), // footer
         ])
         .split(f.area());
@@ -95,21 +118,23 @@ impl PromptScreen {
             chunks[4],
         );
 
-        let input_line = Line::from(vec![
-            Span::styled(
+        f.render_widget(
+            Paragraph::new(input_view_lines(
                 "❯ ",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(self.input.clone(), Style::default().fg(TEXT)),
-        ]);
-        f.render_widget(Paragraph::new(input_line), chunks[5]);
+                &self.input,
+                chunks[5].width,
+                chunks[5].height,
+                self.input_scroll,
+            )),
+            chunks[5],
+        );
 
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                "Enter start planning · Esc back to tools · Ctrl-C quit",
+                "Enter start planning · PageUp/PageDown scroll prompt · Esc back · Ctrl-C quit",
                 Style::default().fg(FAINT),
             ))),
-            chunks[6],
+            chunks[7],
         );
     }
 }

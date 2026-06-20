@@ -30,7 +30,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Wrap};
+use ratatui::widgets::Paragraph;
 use ratatui::{Frame, Terminal};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
@@ -46,7 +46,7 @@ use tales_core::conductor::Role;
 use tales_core::event::{OrchestratorEvent, UserCommand};
 use tales_core::orchestrator::Orchestrator;
 
-use crate::app::App;
+use crate::app::{input_area_height, input_view_lines, App};
 use crate::connect::{ConnectScreen, ToolChoice};
 use crate::prompt::{PromptOutcome, PromptScreen};
 use crate::theme::{ACCENT, DIM, TEXT};
@@ -331,10 +331,10 @@ async fn run_prompt(
                             return Ok(PromptOutcome::Start(task));
                         }
                     }
-                    (KeyCode::Backspace, _) => {
-                        screen.input.pop();
-                    }
-                    (KeyCode::Char(c), _) => screen.input.push(c),
+                    (KeyCode::Backspace, _) => screen.pop(),
+                    (KeyCode::PageUp, _) => screen.scroll_up(),
+                    (KeyCode::PageDown, _) => screen.scroll_down(),
+                    (KeyCode::Char(c), _) => screen.push(c),
                     _ => {}
                 }
             }
@@ -354,10 +354,11 @@ async fn run_ui(
     let mut app = App::new(task);
     app.set_candidates(candidates);
     let commands = bus.commands();
+    let mut input_scroll = 0usize;
 
     loop {
         app.tick(); // advance the smooth-reveal + spinner animation
-        terminal.draw(|f| draw(f, &app))?;
+        terminal.draw(|f| draw(f, &app, input_scroll))?;
         if app.should_quit {
             break;
         }
@@ -390,15 +391,19 @@ async fn run_ui(
                             if let Some(cmd) = app.submit_input() {
                                 let _ = commands.send(cmd).await;
                             }
+                            input_scroll = 0;
                         }
-                        (KeyCode::Backspace, _) => { app.input.pop(); }
-                        (KeyCode::Esc, _) => { app.input.clear(); }
+                        (KeyCode::Backspace, _) => { app.input.pop(); input_scroll = 0; }
+                        (KeyCode::Esc, _) => { app.input.clear(); input_scroll = 0; }
+                        (KeyCode::PageUp, _) => { input_scroll = input_scroll.saturating_add(4); }
+                        (KeyCode::PageDown, _) => { input_scroll = input_scroll.saturating_sub(4); }
                         // At the gate, a bare digit picks that executor; otherwise type it.
                         (KeyCode::Char(c), _) => {
                             if let Some(cmd) = app.gate_pick(c) {
                                 let _ = commands.send(cmd).await;
                             } else {
                                 app.input.push(c);
+                                input_scroll = 0;
                             }
                         }
                         _ => {}
@@ -418,13 +423,23 @@ async fn run_ui(
     Ok(())
 }
 
-fn draw(f: &mut Frame, app: &App) {
+fn draw(f: &mut Frame, app: &App, input_scroll: usize) {
     let bold = Modifier::BOLD;
+    let max_input_height = f.area().height.saturating_sub(3).min(8).max(1);
+    let input_prefix = if app.pending_count() > 0 {
+        format!("you ❯ 📎{} ", app.pending_count())
+    } else {
+        "you ❯ ".to_string()
+    };
+    let min_input_height = 3.min(max_input_height);
+    let input_height =
+        input_area_height(&input_prefix, &app.input, f.area().width, max_input_height)
+            .max(min_input_height);
 
     let chunks = Layout::vertical([
         Constraint::Length(1), // header
         Constraint::Min(1),    // transcript
-        Constraint::Length(3), // input
+        Constraint::Length(input_height),
         Constraint::Length(1), // hint
     ])
     .split(f.area());
@@ -457,20 +472,14 @@ fn draw(f: &mut Frame, app: &App) {
     }
     f.render_widget(Paragraph::new(lines), body);
 
-    // Input line (with a 📎N indicator when media is queued).
-    let mut input_spans = vec![Span::styled(
-        "you ❯ ",
-        Style::default().fg(ACCENT).add_modifier(bold),
-    )];
-    if app.pending_count() > 0 {
-        input_spans.push(Span::styled(
-            format!("📎{} ", app.pending_count()),
-            Style::default().fg(ACCENT),
-        ));
-    }
-    input_spans.push(Span::styled(app.input.clone(), Style::default().fg(TEXT)));
     f.render_widget(
-        Paragraph::new(Line::from(input_spans)).wrap(Wrap { trim: false }),
+        Paragraph::new(input_view_lines(
+            &input_prefix,
+            &app.input,
+            chunks[2].width,
+            chunks[2].height,
+            input_scroll,
+        )),
         chunks[2],
     );
 
@@ -625,7 +634,7 @@ mod render_tests {
         app.advance(10.0); // reveal the buffered message bodies
 
         let mut term = ratatui::Terminal::new(TestBackend::new(74, 22)).unwrap();
-        term.draw(|f| draw(f, &app)).unwrap();
+        term.draw(|f| draw(f, &app, 0)).unwrap();
         let buf = term.backend().buffer().clone();
         let mut s = String::new();
         for y in 0..buf.area.height {

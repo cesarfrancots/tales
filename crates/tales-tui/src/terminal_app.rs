@@ -49,16 +49,26 @@ pub(crate) async fn run_terminal_workspace(
     keys: &mut EventStream,
     args: &Args,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let cwd = args
+    let initial_cwd = args
         .cwd
         .clone()
         .map(PathBuf::from)
         .unwrap_or(std::env::current_dir()?);
+    let (cwd, sandbox) = if args.cwd.is_none() {
+        let Some(selection) =
+            run_workspace_onboarding(terminal, keys, initial_cwd, &args.sandbox).await?
+        else {
+            return Ok(());
+        };
+        (selection.cwd, selection.sandbox)
+    } else {
+        (initial_cwd, args.sandbox.clone())
+    };
     let cfg = WorkspaceConfig {
         connect: args.connect.clone(),
         prefill: args.prefill.clone(),
         cwd,
-        sandbox: args.sandbox.clone(),
+        sandbox,
         turns: args.turns,
     };
     let (tx, mut rx) = mpsc::unbounded_channel();
@@ -101,6 +111,479 @@ pub(crate) async fn run_terminal_workspace(
 
     workspace.shutdown();
     Ok(())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct WorkspaceSelection {
+    cwd: PathBuf,
+    sandbox: String,
+}
+
+async fn run_workspace_onboarding(
+    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    keys: &mut EventStream,
+    initial_cwd: PathBuf,
+    default_sandbox: &str,
+) -> Result<Option<WorkspaceSelection>, Box<dyn std::error::Error>> {
+    let mut screen = WorkspaceOnboardingScreen::new(initial_cwd, default_sandbox)?;
+    loop {
+        terminal.draw(|f| screen.draw(f))?;
+        match keys.next().await {
+            Some(Ok(Event::Key(key))) => {
+                if let Some(outcome) = screen.handle_key(key)? {
+                    return match outcome {
+                        OnboardingOutcome::Selected(selection) => Ok(Some(selection)),
+                        OnboardingOutcome::Quit => Ok(None),
+                    };
+                }
+            }
+            Some(Ok(_)) => {}
+            Some(Err(e)) => return Err(e.into()),
+            None => return Ok(None),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FolderEntry {
+    label: String,
+    path: PathBuf,
+    kind: FolderEntryKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FolderEntryKind {
+    Current,
+    Parent,
+    Directory,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OnboardingPhase {
+    Browse,
+    Permissions,
+}
+
+enum OnboardingOutcome {
+    Selected(WorkspaceSelection),
+    Quit,
+}
+
+struct PermissionOption {
+    label: &'static str,
+    sandbox: &'static str,
+    detail: &'static str,
+}
+
+const PERMISSION_OPTIONS: &[PermissionOption] = &[
+    PermissionOption {
+        label: "Workspace write",
+        sandbox: "workspace-write",
+        detail: "Allow Tales and supported agent CLIs to read/edit files in this workspace and save .tales artifacts.",
+    },
+    PermissionOption {
+        label: "Read only",
+        sandbox: "read-only",
+        detail: "Allow planning and inspection only where supported. Some executor actions may be blocked.",
+    },
+    PermissionOption {
+        label: "Full access",
+        sandbox: "danger-full-access",
+        detail: "Run agent CLIs without workspace sandbox restrictions. Use only for trusted repositories.",
+    },
+];
+
+struct WorkspaceOnboardingScreen {
+    phase: OnboardingPhase,
+    current: PathBuf,
+    entries: Vec<FolderEntry>,
+    selected: usize,
+    permission_selected: usize,
+    notice: String,
+    mcp_risks: Vec<McpConfigRisk>,
+}
+
+impl WorkspaceOnboardingScreen {
+    fn new(initial_cwd: PathBuf, default_sandbox: &str) -> io::Result<Self> {
+        let current = normalize_workspace_dir(initial_cwd)?;
+        let entries = load_folder_entries(&current)?;
+        Ok(Self {
+            phase: OnboardingPhase::Browse,
+            current,
+            entries,
+            selected: 0,
+            permission_selected: permission_index_for(default_sandbox),
+            notice: "Select the folder Tales should use as its workspace".to_string(),
+            mcp_risks: Vec::new(),
+        })
+    }
+
+    fn handle_key(&mut self, key: KeyEvent) -> io::Result<Option<OnboardingOutcome>> {
+        if key.kind == KeyEventKind::Release {
+            return Ok(None);
+        }
+        if matches!(key.code, KeyCode::Char('q')) {
+            return Ok(Some(OnboardingOutcome::Quit));
+        }
+        match self.phase {
+            OnboardingPhase::Browse => self.handle_browser_key(key),
+            OnboardingPhase::Permissions => self.handle_permission_key(key),
+        }
+    }
+
+    fn handle_browser_key(&mut self, key: KeyEvent) -> io::Result<Option<OnboardingOutcome>> {
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
+            KeyCode::PageUp => self.move_selection(-8),
+            KeyCode::PageDown => self.move_selection(8),
+            KeyCode::Home => self.selected = 0,
+            KeyCode::End => self.selected = self.entries.len().saturating_sub(1),
+            KeyCode::Backspace | KeyCode::Char('h') => self.enter_parent()?,
+            KeyCode::Char('~') => {
+                if let Some(home) = std::env::var_os("HOME") {
+                    self.change_dir(PathBuf::from(home))?;
+                }
+            }
+            KeyCode::Char('c') | KeyCode::Char(' ') => self.confirm_current(),
+            KeyCode::Enter => self.activate_selected()?,
+            _ => {}
+        }
+        Ok(None)
+    }
+
+    fn handle_permission_key(&mut self, key: KeyEvent) -> io::Result<Option<OnboardingOutcome>> {
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.permission_selected = self.permission_selected.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.permission_selected =
+                    (self.permission_selected + 1).min(PERMISSION_OPTIONS.len() - 1);
+            }
+            KeyCode::Esc | KeyCode::Char('b') => {
+                self.phase = OnboardingPhase::Browse;
+                self.notice = "Choose another workspace or press c to continue".to_string();
+            }
+            KeyCode::Enter => {
+                let option = &PERMISSION_OPTIONS[self.permission_selected];
+                return Ok(Some(OnboardingOutcome::Selected(WorkspaceSelection {
+                    cwd: self.current.clone(),
+                    sandbox: option.sandbox.to_string(),
+                })));
+            }
+            _ => {}
+        }
+        Ok(None)
+    }
+
+    fn move_selection(&mut self, delta: isize) {
+        if self.entries.is_empty() {
+            self.selected = 0;
+            return;
+        }
+        let last = self.entries.len() - 1;
+        self.selected = if delta.is_negative() {
+            self.selected.saturating_sub(delta.unsigned_abs())
+        } else {
+            (self.selected + delta as usize).min(last)
+        };
+    }
+
+    fn activate_selected(&mut self) -> io::Result<()> {
+        let Some(entry) = self.entries.get(self.selected) else {
+            self.confirm_current();
+            return Ok(());
+        };
+        match entry.kind {
+            FolderEntryKind::Current => self.confirm_current(),
+            FolderEntryKind::Parent | FolderEntryKind::Directory => {
+                self.change_dir(entry.path.clone())?
+            }
+        }
+        Ok(())
+    }
+
+    fn enter_parent(&mut self) -> io::Result<()> {
+        if let Some(parent) = self.current.parent() {
+            self.change_dir(parent.to_path_buf())?;
+        }
+        Ok(())
+    }
+
+    fn change_dir(&mut self, path: PathBuf) -> io::Result<()> {
+        match normalize_workspace_dir(path).and_then(|dir| {
+            let entries = load_folder_entries(&dir)?;
+            Ok((dir, entries))
+        }) {
+            Ok((dir, entries)) => {
+                self.current = dir;
+                self.entries = entries;
+                self.selected = 0;
+                self.notice =
+                    "Press Enter on a folder to browse it, or c to use the current folder"
+                        .to_string();
+            }
+            Err(e) => {
+                self.notice = format!("Could not open folder: {e}");
+            }
+        }
+        Ok(())
+    }
+
+    fn confirm_current(&mut self) {
+        self.mcp_risks = project_mcp_config_risks(&self.current);
+        self.phase = OnboardingPhase::Permissions;
+        self.notice = "Approve workspace permissions to start Tales".to_string();
+    }
+
+    fn draw(&self, f: &mut Frame) {
+        match self.phase {
+            OnboardingPhase::Browse => self.draw_browser(f),
+            OnboardingPhase::Permissions => self.draw_permissions(f),
+        }
+    }
+
+    fn draw_browser(&self, f: &mut Frame) {
+        let area = f.area();
+        let chunks = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Min(8),
+            Constraint::Length(2),
+        ])
+        .split(area);
+        f.render_widget(onboarding_header("workspace"), chunks[0]);
+
+        let block = RBlock::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(FAINT))
+            .title("Select workspace folder");
+        let inner = block.inner(chunks[1]);
+        f.render_widget(block, chunks[1]);
+
+        let visible = visible_entry_range(
+            self.entries.len(),
+            self.selected,
+            inner.height.saturating_sub(5) as usize,
+        );
+        let mut lines = vec![
+            Line::from(Span::styled(
+                "Tales will run planners, shells, agent CLIs, and .tales artifacts from this folder.",
+                Style::default().fg(TEXT),
+            )),
+            Line::from(Span::styled(
+                format!("Current: {}", self.current.display()),
+                Style::default().fg(DIM),
+            )),
+            Line::from(""),
+        ];
+        for idx in visible {
+            if let Some(entry) = self.entries.get(idx) {
+                let selected = idx == self.selected;
+                let marker = if selected { ">" } else { " " };
+                let suffix = match entry.kind {
+                    FolderEntryKind::Current => " use this folder",
+                    FolderEntryKind::Parent => " parent",
+                    FolderEntryKind::Directory => "",
+                };
+                let style = if selected {
+                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(TEXT)
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(marker, Style::default().fg(ACCENT)),
+                    Span::raw(" "),
+                    Span::styled(entry.label.clone(), style),
+                    Span::styled(suffix, Style::default().fg(DIM)),
+                ]));
+            }
+        }
+
+        f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    "Enter open/select · c use current · Backspace parent · ~ home · q quit",
+                    Style::default().fg(FAINT),
+                ),
+                Span::styled(format!(" · {}", self.notice), Style::default().fg(DIM)),
+            ])),
+            chunks[2],
+        );
+    }
+
+    fn draw_permissions(&self, f: &mut Frame) {
+        let area = f.area();
+        let chunks = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Min(8),
+            Constraint::Length(2),
+        ])
+        .split(area);
+        f.render_widget(onboarding_header("permissions"), chunks[0]);
+
+        let block = RBlock::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(FAINT))
+            .title("Approve workspace permissions");
+        let inner = block.inner(chunks[1]);
+        f.render_widget(block, chunks[1]);
+
+        let mut lines = vec![
+            Line::from(Span::styled(
+                format!("Workspace: {}", self.current.display()),
+                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                "Tales needs permission to write .tales artifacts and to launch selected CLIs from this folder.",
+                Style::default().fg(DIM),
+            )),
+            Line::from(""),
+        ];
+
+        for (idx, option) in PERMISSION_OPTIONS.iter().enumerate() {
+            let selected = idx == self.permission_selected;
+            let label_style = if selected {
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+            } else if option.sandbox == "danger-full-access" {
+                Style::default().fg(ERRC)
+            } else {
+                Style::default().fg(TEXT)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    if selected { ">" } else { " " },
+                    Style::default().fg(ACCENT),
+                ),
+                Span::raw(" "),
+                Span::styled(option.label, label_style),
+                Span::styled(format!("  ({})", option.sandbox), Style::default().fg(DIM)),
+            ]));
+            lines.push(Line::from(Span::styled(
+                format!("    {}", option.detail),
+                Style::default().fg(FAINT),
+            )));
+        }
+
+        if !self.mcp_risks.is_empty() {
+            lines.extend([
+                Line::from(""),
+                Line::from(Span::styled(
+                    "Safety notice",
+                    Style::default().fg(ERRC).add_modifier(Modifier::BOLD),
+                )),
+                Line::from(Span::styled(
+                    format!(
+                        "Project-local MCP/tool config detected: {}",
+                        risk_paths_summary(&self.mcp_risks)
+                    ),
+                    Style::default().fg(DIM),
+                )),
+            ]);
+        }
+
+        f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    "Enter approve · b back to folder browser · q quit",
+                    Style::default().fg(FAINT),
+                ),
+                Span::styled(format!(" · {}", self.notice), Style::default().fg(DIM)),
+            ])),
+            chunks[2],
+        );
+    }
+}
+
+fn onboarding_header(step: &str) -> Paragraph<'static> {
+    Paragraph::new(Line::from(vec![
+        Span::styled(
+            "❯",
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            " tales ",
+            Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("setup ", Style::default().fg(DIM)),
+        Span::styled(format!("· {step}"), Style::default().fg(FAINT)),
+    ]))
+}
+
+fn normalize_workspace_dir(path: PathBuf) -> io::Result<PathBuf> {
+    let path = if path.as_os_str().is_empty() {
+        std::env::current_dir()?
+    } else {
+        path
+    };
+    let canonical = fs::canonicalize(&path)?;
+    if canonical.is_dir() {
+        Ok(canonical)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{} is not a directory", path.display()),
+        ))
+    }
+}
+
+fn load_folder_entries(current: &Path) -> io::Result<Vec<FolderEntry>> {
+    let mut entries = vec![FolderEntry {
+        label: ".".to_string(),
+        path: current.to_path_buf(),
+        kind: FolderEntryKind::Current,
+    }];
+    if let Some(parent) = current.parent() {
+        entries.push(FolderEntry {
+            label: "..".to_string(),
+            path: parent.to_path_buf(),
+            kind: FolderEntryKind::Parent,
+        });
+    }
+
+    let mut dirs = Vec::new();
+    for entry in fs::read_dir(current)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        dirs.push(FolderEntry {
+            label: name,
+            path,
+            kind: FolderEntryKind::Directory,
+        });
+    }
+    dirs.sort_by_key(|entry| entry.label.to_ascii_lowercase());
+    entries.extend(dirs);
+    Ok(entries)
+}
+
+fn permission_index_for(sandbox: &str) -> usize {
+    PERMISSION_OPTIONS
+        .iter()
+        .position(|option| option.sandbox == sandbox)
+        .unwrap_or(0)
+}
+
+fn visible_entry_range(total: usize, selected: usize, height: usize) -> std::ops::Range<usize> {
+    if total == 0 {
+        return 0..0;
+    }
+    let height = height.max(1).min(total);
+    let start = selected
+        .saturating_sub(height / 2)
+        .min(total.saturating_sub(height));
+    start..(start + height)
 }
 
 #[derive(Clone)]
@@ -2271,6 +2754,85 @@ mod tests {
         assert!(pane.handle_startup_command("/commands"));
         assert_eq!(pane.startup_page, StartupPage::Commands);
         assert!(!pane.handle_startup_command("build a feature"));
+    }
+
+    #[test]
+    fn folder_browser_entries_include_current_parent_and_sorted_dirs() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let cwd = std::env::temp_dir().join(format!(
+            "tales-folder-browser-test-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(cwd.join("zeta")).unwrap();
+        fs::create_dir_all(cwd.join("Alpha")).unwrap();
+        fs::write(cwd.join("not-a-dir.txt"), "skip").unwrap();
+
+        let entries = load_folder_entries(&cwd).unwrap();
+        let labels = entries
+            .iter()
+            .map(|entry| entry.label.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(labels[0], ".");
+        assert_eq!(entries[0].kind, FolderEntryKind::Current);
+        assert_eq!(labels[1], "..");
+        assert_eq!(entries[1].kind, FolderEntryKind::Parent);
+        assert_eq!(&labels[2..], ["Alpha", "zeta"]);
+
+        let _ = fs::remove_dir_all(&cwd);
+    }
+
+    #[test]
+    fn onboarding_permission_choices_map_to_sandbox_values() {
+        assert_eq!(permission_index_for("workspace-write"), 0);
+        assert_eq!(
+            PERMISSION_OPTIONS[permission_index_for("read-only")].sandbox,
+            "read-only"
+        );
+        assert_eq!(
+            PERMISSION_OPTIONS[permission_index_for("danger-full-access")].sandbox,
+            "danger-full-access"
+        );
+        assert_eq!(permission_index_for("unknown-sandbox"), 0);
+    }
+
+    #[test]
+    fn onboarding_visible_entry_range_tracks_selection() {
+        assert_eq!(visible_entry_range(0, 0, 5), 0..0);
+        assert_eq!(visible_entry_range(10, 0, 4), 0..4);
+        assert_eq!(visible_entry_range(10, 5, 4), 3..7);
+        assert_eq!(visible_entry_range(10, 9, 4), 6..10);
+    }
+
+    #[test]
+    fn onboarding_screen_confirm_current_opens_permission_phase() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let cwd = std::env::temp_dir().join(format!(
+            "tales-onboarding-confirm-test-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&cwd).unwrap();
+        fs::write(
+            cwd.join(".mcp.json"),
+            r#"{"env":{"SUPABASE_ACCESS_TOKEN":"example"}}"#,
+        )
+        .unwrap();
+
+        let mut screen = WorkspaceOnboardingScreen::new(cwd.clone(), "workspace-write").unwrap();
+        screen.confirm_current();
+
+        assert_eq!(screen.phase, OnboardingPhase::Permissions);
+        assert_eq!(screen.current, fs::canonicalize(&cwd).unwrap());
+        assert_eq!(screen.permission_selected, 0);
+        assert_eq!(screen.mcp_risks.len(), 1);
+
+        let _ = fs::remove_dir_all(&cwd);
     }
 
     #[test]

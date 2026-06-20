@@ -6,6 +6,8 @@ Tales uses one lockstep SemVer version for the Rust workspace. The version lives
 
 ## Unreleased
 
+- Added a startup workspace folder browser and permission prompt before the default Tales terminal opens.
+
 ## 0.3.0
 
 - Added `.tales/runs/<run>/` recovery artifacts for terminal, `tales run`, and `tales discuss` sessions with `plan.md`, `events.jsonl`, and `manifest.json`.

@@ -10,6 +10,7 @@
 //! freezing then dumping. While an agent is thinking with no output yet, an
 //! animated spinner makes the wait read as "working", not "frozen".
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -24,6 +25,8 @@ use crate::theme::{color_for, pretty, ACCENT, DIM, ERRC, FAINT, TEXT, YOU};
 
 /// Braille spinner frames for the "thinking" indicator.
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+/// Lines moved per PageUp/PageDown press when scrolling the transcript.
+pub const SCROLL_STEP: usize = 8;
 /// Seconds to drain whatever text is currently buffered — small so reveal stays
 /// snappy. Because the rate scales with the backlog, a big dump clears in about
 /// this long while a trickle reveals at [`MIN_CPS`].
@@ -52,6 +55,7 @@ pub fn help_message() -> &'static str {
     "Tales help\n\
      Type a normal message to add context while the agents are discussing.\n\
      Long prompt? Alt+Enter or Ctrl-J adds a newline; Enter sends. Paste multi-line text directly. Left/Right, Home/End, Ctrl-W, and Ctrl-U edit the line.\n\
+     PageUp/PageDown scroll the conversation; sending a message snaps back to the live tail.\n\
      At the executor gate, press Enter to accept the recommendation or press 1-9 to pick a tool.\n\
      The selected executor opens as a live CLI pane, so you can answer questions directly there.\n\
      Run artifacts are saved under .tales/runs/<run>/ and the executor handoff is copied to .tales/last-plan.md.\n\
@@ -142,6 +146,10 @@ pub struct App {
     last_tick: Option<Instant>,
     spin_accum: f64,
     spinner: usize,
+    /// Transcript scrollback offset in lines from the live bottom (0 = following
+    /// the newest output). A `Cell` so the render path can clamp it to the real
+    /// content height without the draw functions needing `&mut self`.
+    scroll: Cell<usize>,
 }
 
 impl App {
@@ -163,7 +171,48 @@ impl App {
             last_tick: None,
             spin_accum: 0.0,
             spinner: 0,
+            scroll: Cell::new(0),
         }
+    }
+
+    /// Scroll the transcript up (toward older messages) by `lines`.
+    pub fn scroll_up(&self, lines: usize) {
+        self.scroll.set(self.scroll.get().saturating_add(lines));
+    }
+
+    /// Scroll the transcript down (toward the live tail) by `lines`.
+    pub fn scroll_down(&self, lines: usize) {
+        self.scroll.set(self.scroll.get().saturating_sub(lines));
+    }
+
+    /// Jump back to following the newest output.
+    pub fn scroll_to_bottom(&self) {
+        self.scroll.set(0);
+    }
+
+    /// The transcript window to render in a `width × height` area, honoring the
+    /// scrollback offset and clamping it to the real content height (so you
+    /// can't scroll into blank space above the first line).
+    pub fn render_window(&self, width: usize, height: usize) -> Vec<Line<'static>> {
+        let all = self.render_lines(width);
+        let height = height.max(1);
+        if all.len() <= height {
+            self.scroll.set(0);
+            return all;
+        }
+        let max_scroll = all.len() - height;
+        let scroll = self.scroll.get().min(max_scroll);
+        self.scroll.set(scroll);
+        let end = all.len() - scroll;
+        let start = end - height;
+        all[start..end].to_vec()
+    }
+
+    /// A short "↑ N older lines · PageDown for live" indicator when scrolled up,
+    /// or `None` while following the live tail.
+    pub fn scroll_hint(&self) -> Option<String> {
+        let scroll = self.scroll.get();
+        (scroll > 0).then(|| format!("↑ scrolled {scroll} · PageDown for live"))
     }
 
     /// Record the connected tools so the gate can offer them as numbered
@@ -303,6 +352,7 @@ impl App {
             }
             OrchestratorEvent::AwaitingConfirmation { prompt } => {
                 self.awaiting = true;
+                self.scroll_to_bottom(); // snap to the live tail so the gate banner shows
                 self.sys(prompt, SysKind::Note);
             }
             OrchestratorEvent::AgentExited { agent, code } => {
@@ -454,6 +504,7 @@ impl App {
     pub fn submit_action(&mut self) -> Option<SubmitAction> {
         let text = self.input.trimmed();
         self.input.clear();
+        self.scroll_to_bottom(); // sending anything snaps back to the live tail
 
         // Match commands exactly (or followed by a space) so `/attachfoo` and
         // `/confirmation` fall through to a normal message rather than mis-firing.
@@ -874,6 +925,29 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn transcript_scrollback_windows_and_clamps() {
+        let mut app = App::new("t".into());
+        for i in 0..10 {
+            app.note(format!("note {i}"));
+        }
+        let height = 4;
+        let bottom = text_of(&app.render_window(40, height));
+        assert!(bottom.contains("note 9"), "{bottom}");
+        assert!(!bottom.contains("note 0"), "{bottom}");
+        assert!(app.scroll_hint().is_none());
+
+        app.scroll_up(100); // over-scroll is clamped to the top during render
+        let top = text_of(&app.render_window(40, height));
+        assert!(top.contains("note 0"), "{top}");
+        assert!(app.scroll_hint().is_some());
+
+        app.scroll_to_bottom();
+        let back = text_of(&app.render_window(40, height));
+        assert!(back.contains("note 9"), "{back}");
+        assert!(app.scroll_hint().is_none());
     }
 
     #[test]

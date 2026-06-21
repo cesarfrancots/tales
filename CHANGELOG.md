@@ -6,6 +6,12 @@ Tales uses one lockstep SemVer version for the Rust workspace. The version lives
 
 ## Unreleased
 
+## 0.6.0
+
+- Added transcript scrollback: PageUp/PageDown scroll the conversation so earlier discussion is readable once it grows past the viewport, with a right-aligned "↑ scrolled" indicator while scrolled up.
+- Sending a message, or the executor gate opening, snaps the view back to the live tail so you never miss new output or the action banner.
+- Repurposed the page keys from the input box (the editor now follows the cursor on its own) to the conversation, matching how a chat/pager is expected to behave.
+
 ## 0.5.0
 
 - Rewrote the Tales prompt as a full multi-line editor so long prompts are comfortable to write: insert and edit anywhere (not just append), Left/Right and Home/End motion, word motion (Alt+Left/Right), and word/line kills (Ctrl-W, Ctrl-U, Ctrl-K).

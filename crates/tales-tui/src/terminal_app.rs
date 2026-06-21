@@ -34,7 +34,7 @@ use tokio::sync::broadcast::error::TryRecvError;
 use tokio::sync::mpsc;
 use tokio::time::{self, Duration};
 
-use crate::app::{commands_message, help_message, App, RecoveryCommand, SubmitAction};
+use crate::app::{commands_message, help_message, App, RecoveryCommand, SubmitAction, SCROLL_STEP};
 use crate::input::Input;
 use crate::theme::{color_for, pretty, ACCENT, DIM, ERRC, FAINT, TEXT};
 use crate::{run_session, Args, Connection};
@@ -1273,6 +1273,16 @@ impl Workspace {
             ])),
             area,
         );
+        // Right-aligned scrollback indicator when the Tales transcript is scrolled.
+        if let Some(Pane::Tales(tales)) = self.panes.get(self.active) {
+            if let Some(hint) = tales.app.scroll_hint() {
+                f.render_widget(
+                    Paragraph::new(Line::from(Span::styled(hint, Style::default().fg(ACCENT))))
+                        .alignment(Alignment::Right),
+                    area,
+                );
+            }
+        }
     }
 }
 
@@ -1513,12 +1523,10 @@ impl TalesPane {
                     self.notice = "back to welcome".to_string();
                 }
             }
-            KeyCode::PageUp => {
-                self.input_scroll = self.input_scroll.saturating_add(4);
-            }
-            KeyCode::PageDown => {
-                self.input_scroll = self.input_scroll.saturating_sub(4);
-            }
+            // Page keys scroll the conversation; the input box follows the cursor.
+            // Only meaningful once a discussion is running (the welcome page is static).
+            KeyCode::PageUp if self.started => self.app.scroll_up(SCROLL_STEP),
+            KeyCode::PageDown if self.started => self.app.scroll_down(SCROLL_STEP),
             // At the gate, a bare digit picks that executor; otherwise type it.
             KeyCode::Char(c) if plain => {
                 if let Some(cmd) = self.app.gate_pick(c) {
@@ -1911,11 +1919,7 @@ impl TalesPane {
 
         let width = area.width as usize;
         let height = area.height as usize;
-        let mut lines = self.app.render_lines(width);
-        if lines.len() > height {
-            lines = lines.split_off(lines.len() - height);
-        }
-        f.render_widget(Paragraph::new(lines), area);
+        f.render_widget(Paragraph::new(self.app.render_window(width, height)), area);
     }
 }
 

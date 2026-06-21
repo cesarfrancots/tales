@@ -50,7 +50,7 @@ use tales_core::conductor::Role;
 use tales_core::event::{OrchestratorEvent, UserCommand};
 use tales_core::orchestrator::Orchestrator;
 
-use crate::app::App;
+use crate::app::{App, SCROLL_STEP};
 use crate::connect::{ConnectScreen, ToolChoice};
 use crate::prompt::{PromptOutcome, PromptScreen};
 use crate::theme::{ACCENT, DIM, TEXT};
@@ -414,8 +414,10 @@ async fn run_ui(
                                 input_scroll = 0;
                             }
                             KeyCode::Esc => { app.input.clear(); input_scroll = 0; }
-                            KeyCode::PageUp => { input_scroll = input_scroll.saturating_add(4); }
-                            KeyCode::PageDown => { input_scroll = input_scroll.saturating_sub(4); }
+                            // Page keys scroll the conversation; the input box
+                            // follows the cursor on its own.
+                            KeyCode::PageUp => app.scroll_up(SCROLL_STEP),
+                            KeyCode::PageDown => app.scroll_down(SCROLL_STEP),
                             // A bare digit at the gate picks an executor; otherwise type it.
                             KeyCode::Char(c) if plain => {
                                 if let Some(cmd) = app.gate_pick(c) {
@@ -494,15 +496,11 @@ fn draw(f: &mut Frame, app: &App, input_scroll: usize) {
         chunks[0],
     );
 
-    // Transcript, auto-tailed to the bottom (borderless).
+    // Transcript — follows the live tail, or shows the scrolled-back window.
     let body = chunks[1];
     let inner_w = body.width as usize;
     let inner_h = body.height as usize;
-    let mut lines = app.render_lines(inner_w);
-    if lines.len() > inner_h {
-        lines = lines.split_off(lines.len() - inner_h);
-    }
-    f.render_widget(Paragraph::new(lines), body);
+    f.render_widget(Paragraph::new(app.render_window(inner_w, inner_h)), body);
 
     f.render_widget(
         Paragraph::new(app.input.view_lines(
@@ -516,6 +514,14 @@ fn draw(f: &mut Frame, app: &App, input_scroll: usize) {
 
     // Hint — becomes the executor picker at the gate.
     f.render_widget(Paragraph::new(app.footer_line()), chunks[3]);
+    // Right-aligned scrollback indicator when the user has scrolled up.
+    if let Some(hint) = app.scroll_hint() {
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(hint, Style::default().fg(ACCENT))))
+                .alignment(Alignment::Right),
+            chunks[3],
+        );
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

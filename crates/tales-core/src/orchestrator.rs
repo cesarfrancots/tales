@@ -3068,7 +3068,16 @@ mod prompt_tests {
         assert!(drafter.contains("You are the DRAFTER"), "{drafter}");
         assert!(drafter.to_lowercase().contains("files"), "{drafter}");
         // Critic is told to green-light a sound approach instead of nitpicking.
-        let critic = compose_prompt(Role::Critic, "task", &bb, true, "THE-DRAFT", true, None, None);
+        let critic = compose_prompt(
+            Role::Critic,
+            "task",
+            &bb,
+            true,
+            "THE-DRAFT",
+            true,
+            None,
+            None,
+        );
         assert!(critic.contains("THE-DRAFT"), "{critic}");
         assert!(critic.to_lowercase().contains("sound"), "{critic}");
         // The parallel merge asks for an executable, file-level conclusion.

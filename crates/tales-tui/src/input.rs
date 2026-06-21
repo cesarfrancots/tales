@@ -493,14 +493,8 @@ mod tests {
     #[test]
     fn alt_enter_and_ctrl_j_insert_newlines() {
         let mut input = Input::from_text("x");
-        assert!(input.handle_edit_key(KeyEvent::new(
-            KeyCode::Enter,
-            KeyModifiers::ALT
-        )));
-        assert!(input.handle_edit_key(KeyEvent::new(
-            KeyCode::Char('j'),
-            KeyModifiers::CONTROL
-        )));
+        assert!(input.handle_edit_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT)));
+        assert!(input.handle_edit_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL)));
         assert_eq!(input.as_string(), "x\n\n");
         // Plain Enter is NOT consumed here (caller handles submit).
         assert!(!input.handle_edit_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
@@ -529,9 +523,9 @@ mod tests {
         let lines = input.view_lines("> ", 20, 1, 0);
         // The cursor cell is reverse-video; find a reversed span carrying 'h'.
         let has_cursor = lines.iter().any(|l| {
-            l.spans
-                .iter()
-                .any(|s| s.content.as_ref() == "h" && s.style.add_modifier.contains(Modifier::REVERSED))
+            l.spans.iter().any(|s| {
+                s.content.as_ref() == "h" && s.style.add_modifier.contains(Modifier::REVERSED)
+            })
         });
         assert!(has_cursor, "expected a reverse-video cursor on 'h'");
     }

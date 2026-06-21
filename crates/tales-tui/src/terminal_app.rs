@@ -1114,7 +1114,7 @@ impl Workspace {
     }
 
     fn draw(&self, f: &mut Frame) {
-        let max_input_height = f.area().height.saturating_sub(3).min(8).max(1);
+        let max_input_height = f.area().height.saturating_sub(3).clamp(1, 8);
         let min_input_height = 3.min(max_input_height);
         let input_height = match self.panes.get(self.active) {
             Some(Pane::Tales(tales)) => tales

@@ -458,7 +458,7 @@ async fn run_ui(
 
 fn draw(f: &mut Frame, app: &App, input_scroll: usize) {
     let bold = Modifier::BOLD;
-    let max_input_height = f.area().height.saturating_sub(3).min(8).max(1);
+    let max_input_height = f.area().height.saturating_sub(3).clamp(1, 8);
     let input_prefix = if app.pending_count() > 0 {
         format!("you ❯ 📎{} ", app.pending_count())
     } else {

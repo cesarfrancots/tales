@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Tales docs — orchestrate your AI coding tools</title>
   <meta name="description" content="Documentation for Tales: install, the interactive terminal, scriptable commands, tiered execution, architecture, and troubleshooting." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='10' fill='%23090c12'/%3E%3Cpath d='M18 20l12 12-12 12' fill='none' stroke='%232dd4bf' stroke-width='5' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M34 44h14' fill='none' stroke='%23d8dee8' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
@@ -129,7 +130,9 @@
     <div class="grp">
       <div class="grp-h">Guides</div>
       <a href="#terminal">The interactive terminal</a>
+      <a href="#browser">The browser UI</a>
       <a href="#commands">Scriptable commands</a>
+      <a href="#preflight">Preflight &amp; context</a>
       <a href="#tiered">Tiered execution</a>
       <a href="#thesis">The bet &amp; benchmark</a>
     </div>
@@ -161,7 +164,7 @@
       <h2>Install &amp; prerequisites</h2>
       <ul>
         <li><b>Rust toolchain</b> (stable) to build the workspace.</li>
-        <li>Developed and tested on <b>macOS and Linux</b>. <code>tales open</code> (the new-window launcher) is macOS-only; the other commands are Unix-oriented.</li>
+        <li>Runs on <b>macOS, Linux, and Windows</b> — all three are covered by CI. <code>tales open</code> opens a new terminal window on macOS, Windows, and common Linux desktop terminals; plain <code>tales</code> works inside any terminal you already have open.</li>
         <li>At least one AI coding CLI on your <code>PATH</code>, installed and authenticated. The default discussion pairs two, so for a single tool you pass explicit flags (see <a href="#troubleshooting">Troubleshooting</a>).</li>
       </ul>
       <p>Tales detects which tools are on <code>PATH</code> and shows the connectable ones — you only need the ones you intend to use. See <a href="#tools">Supported tools</a> for the adapters that ship today.</p>
@@ -171,12 +174,16 @@
 <span class="p">tales</span></pre>
       <p>Try the whole flow with <b>no API calls</b>:</p>
       <pre><button class="copy">copy</button><span class="p">tales-tui</span> --demo
-<span class="p">tales-web</span> <span class="s">"demo"</span> --demo</pre>
+<span class="p">tales-web</span> --demo</pre>
+      <div class="note"><span class="ic">i</span><div><b>Windows.</b> Run <code>.\target\release\tales.exe</code>, or add <code>target\release</code> to <code>PATH</code>. Release checks live at <code>scripts/release-check.sh</code> (macOS/Linux) and <code>.\scripts\release-check.ps1</code> (Windows).</div></div>
     </section>
 
     <section id="quickstart">
       <h2>Quickstart</h2>
-      <p>Type <code>tales</code> — that opens the interactive terminal. Connect your tools, type a task, watch them plan, then pick who executes. Or go straight in, scriptable:</p>
+      <p>Start with a local preflight, then open the interactive terminal. Connect your tools, type a task, watch them plan, then pick who executes. Or go straight in, scriptable:</p>
+      <pre><button class="copy">copy</button><span class="p">tales</span> doctor --all
+<span class="p">tales</span> context
+<span class="p">tales</span></pre>
       <pre><button class="copy">copy</button><span class="c"># two tools plan + argue, you confirm who executes</span>
 <span class="p">tales</span> run <span class="s">"add a /health endpoint"</span> \
   --drafter <span class="s">&lt;tool-a&gt;</span> --critic <span class="s">&lt;tool-b&gt;</span> --execute <span class="s">&lt;tool-a&gt;</span></pre>
@@ -187,8 +194,12 @@
       <h2>The interactive terminal</h2>
       <p>Type <code>tales</code> to open a multi-pane terminal workspace: a <b>Tales orchestrator pane</b> plus sibling shell and agent-CLI panes.</p>
       <ul>
-        <li><b>Plan.</b> In the Tales pane, type your task and press <code>Enter</code>; the drafter and critic discuss and draft a plan in place, streamed token-by-token.</li>
-        <li><b>Open panes as needed.</b> <code>Ctrl-N</code> shell · <code>Ctrl-X</code>/<code>Ctrl-L</code>/<code>Ctrl-O</code> open agent panes · <code>Tab</code> switches focus.</li>
+        <li><b>Onboard.</b> On launch, a folder browser picks the workspace (<code>Enter</code> open/select · <code>c</code> use current · <code>p</code> or <code>:</code> type a path · <code>Backspace</code> parent), then a permission prompt approves writing <code>.tales</code> artifacts and launching CLIs from that folder before any agent spawns.</li>
+        <li><b>Discuss.</b> In the Tales pane, type your task and press <code>Enter</code>; the drafter and critic discuss in place, streamed token-by-token. Discussion is the default — a formal plan is only requested when both agents say one is needed.</li>
+        <li><b>Write long prompts.</b> The prompt is a full multi-line editor: insert and edit anywhere with <code>Left/Right</code>, <code>Home/End</code>, word motion (<code>Alt+Left/Right</code>), and word/line kills (<code>Ctrl-W</code>, <code>Ctrl-U</code>, <code>Ctrl-K</code>). <code>Alt+Enter</code>, <code>Shift+Enter</code>, or <code>Ctrl-J</code> insert a newline; plain <code>Enter</code> sends. Pasting a multi-line block lands as one edit instead of firing several submits.</li>
+        <li><b>Scroll back.</b> <code>PageUp</code>/<code>PageDown</code> scroll the conversation once it grows past the viewport, with a right-aligned "↑ scrolled" indicator while scrolled up; sending a message or the gate opening snaps the view back to the live tail.</li>
+        <li><b>Discover commands.</b> Press <code>/</code> to turn the footer into a live, filtered list of the slash commands with one-line descriptions; it narrows as you type (<code>/ha</code> → <code>/handoff</code>) and disappears for normal messages or an unknown token.</li>
+        <li><b>Open panes as needed.</b> <code>Ctrl-N</code> shell · <code>Ctrl-X</code>/<code>Ctrl-L</code>/<code>Ctrl-O</code> open agent panes · <code>Ctrl-S</code> sends the handoff · <code>Tab</code> switches focus.</li>
         <li><b>Observe / intervene.</b> A focused agent pane receives your keystrokes directly. <code>Ctrl-A</code> sends an explicit approval, but only when that pane is waiting on one.</li>
         <li><b>Confirm &amp; hand off.</b> After the discussion, agents emit recommendations and Tales surfaces the aggregated pick. At the gate, <code>Enter</code> or <code>/confirm &lt;n&gt;</code> launches the executor in its own live pane and sends it the plan.</li>
       </ul>
@@ -199,9 +210,43 @@
 <span class="p">tales-tui</span> --connect <span class="s">&lt;tool-a&gt;</span> --prefill <span class="s">"Design a rate limiter"</span></pre>
     </section>
 
+    <section id="browser">
+      <h2>The browser UI</h2>
+      <p><code>tales-web</code> runs a local Axum server and streams the same bus events into a minimal browser terminal. Launch it with no task to pick a workspace and task in the UI; launch it with a task to auto-start the legacy flow.</p>
+      <pre><button class="copy">copy</button><span class="c"># taskless start: choose workspace + task in the browser</span>
+<span class="p">tales-web</span> --demo
+
+<span class="c"># direct start: old positional task flow still works</span>
+<span class="p">tales-web</span> <span class="s">"review this repo"</span> --demo --port 7878</pre>
+      <ul>
+        <li><b>Workspace selector.</b> The browser sends an absolute folder path to <code>/api/session/start</code>; the server canonicalizes it and rejects non-directories before any agents spawn.</li>
+        <li><b>Pre-session preview.</b> The header shows tool readiness, prompt forecast, context budget, cache status, report paths, and run advice before the WebSocket starts.</li>
+        <li><b>Same gate.</b> The browser can approve, override, or reject the recommended executor, and nothing executes until that gate releases.</li>
+      </ul>
+    </section>
+
     <section id="commands">
       <h2>Scriptable commands</h2>
       <p>The non-interactive counterparts — for scripts, CI, and dogfooding.</p>
+      <h3><code>tales doctor</code> — local readiness, no model calls</h3>
+      <pre><button class="copy">copy</button><span class="p">tales</span> doctor
+<span class="p">tales</span> doctor --all --json
+<span class="p">tales</span> doctor --agent claude --agent codex --refresh-project-context</pre>
+      <p>Checks known tools, PATH readiness, roster safety, adapter capabilities, and project-context cache metadata. <code>--all</code> inventories every registry row without failing on missing optional tools.</p>
+      <h3><code>tales context</code> — inspect the cached project map</h3>
+      <pre><button class="copy">copy</button><span class="p">tales</span> context
+<span class="p">tales</span> context --refresh --json --output .tales/context.txt</pre>
+      <p>The cache is deterministic and local: file map plus selected manifest excerpts, stored outside the repo and injected into first planning prompts so agents spend fewer tokens rediscovering shape.</p>
+      <h3><code>tales profile</code> — local workspace memory, no source snippets</h3>
+      <pre><button class="copy">copy</button><span class="p">tales</span> profile refresh
+<span class="p">tales</span> profile show --json
+<span class="p">tales</span> profile clear</pre>
+      <p>Profiles live under the Tales cache tree and store metadata only: detected commands, conventions, preferred installed tools, warnings, approved report paths, and run summaries.</p>
+      <h3><code>tales eval</code> — compare collaboration shapes without model calls</h3>
+      <pre><button class="copy">copy</button><span class="p">tales</span> eval run <span class="s">"fix lint errors"</span> --scenario debate_parallel --json
+<span class="p">tales</span> eval compare <span class="s">"fix lint errors"</span>
+<span class="p">tales</span> eval report .tales/evals/compare.json</pre>
+      <p>The eval harness records deterministic prompt forecasts, recommendation chips, and pass/fail checks for solo, debate, and tiered shapes. It does not spawn agents unless a future real-adapter eval mode is explicitly added.</p>
       <h3><code>tales solo</code> — one agent, one turn</h3>
       <pre><button class="copy">copy</button><span class="p">tales</span> solo --model <span class="s">&lt;model&gt;</span> <span class="s">"Reply with exactly: hello from tales"</span>
 <span class="p">tales</span> solo --agent <span class="s">&lt;tool&gt;</span> --image diagram.png <span class="s">"Explain this architecture"</span></pre>
@@ -214,6 +259,19 @@
       <p>The recommendation is computed and printed, but <b><code>--execute</code> decides who runs</b>. It can be one of the planners, or a different tool entirely (see <a href="#tiered">Tiered execution</a>). Add <code>--worktree</code> to run that executor in its own git worktree and merge back:</p>
       <pre><button class="copy">copy</button><span class="p">tales</span> run <span class="s">"Add a /health endpoint"</span> --execute <span class="s">&lt;tool&gt;</span> --worktree</pre>
       <div class="note"><span class="ic">i</span><div>This project's <code>landing/</code> page and these docs were drafted and reviewed <b>with Tales</b> via <code>tales discuss</code>, then finalized against the source.</div></div>
+    </section>
+
+    <section id="preflight">
+      <h2>Preflight &amp; context controls</h2>
+      <p>Planning defaults are optimized for fewer repeated tokens: parallel rounds, resumable adapter deltas, cached project context, and compact local-change handoffs. You can inspect and tune those controls without spending model calls.</p>
+      <ul>
+        <li><code>--context-budget-chars &lt;n&gt;</code> caps transcript/plan context pasted into stateless prompts; <code>0</code> disables the cap.</li>
+        <li><code>--no-project-context</code> disables the cached repo map; <code>--refresh-project-context</code> rebuilds it before a run.</li>
+        <li><code>--project-context-max-files</code> and <code>--project-context-max-manifest-chars</code> control how much repo shape is indexed.</li>
+        <li><code>--report-path</code> and <code>--report-json-path</code> write the final local report and structured summary, including prompt telemetry and optimization hints.</li>
+        <li><code>--dry-run --json</code> on <code>run</code>/<code>discuss</code> emits the resolved <code>SessionConfig</code>, prompt forecast, profile status, tool recommendations, run advice, tool readiness, and report destinations without spawning agents.</li>
+      </ul>
+      <div class="note"><span class="ic">i</span><div>Reports include provider token/cost data only when adapters expose machine-readable usage. Local prompt estimates are deterministic heuristics and remain separate from provider billing.</div></div>
     </section>
 
     <section id="tiered">
@@ -264,14 +322,17 @@
       <h2>Supported tools</h2>
       <p>Tales is tool-agnostic — each tool is one small <code>AgentAdapter</code> + a registry row. These ship today and are valid values for <code>--agent</code> / <code>--drafter</code> / <code>--critic</code> / <code>--execute</code> and the connect screen:</p>
       <table>
-        <thead><tr><th>Tool</th><th>Key</th><th>Install</th></tr></thead>
+        <thead><tr><th>Tool</th><th>Key</th><th>Capability notes</th><th>Install</th></tr></thead>
         <tbody>
-          <tr><td>Claude Code</td><td><code>claude</code></td><td><code>npm i -g @anthropic-ai/claude-code</code></td></tr>
-          <tr><td>Codex</td><td><code>codex</code></td><td><code>npm i -g @openai/codex</code></td></tr>
-          <tr><td>Open Code</td><td><code>opencode</code></td><td><code>npm i -g opencode-ai</code></td></tr>
+          <tr><td>Claude Code</td><td><code>claude</code></td><td>resumable, model/effort override, high strength/high price</td><td><code>npm i -g @anthropic-ai/claude-code</code></td></tr>
+          <tr><td>Codex</td><td><code>codex</code></td><td>structured output, sandbox, model/effort override</td><td><code>npm i -g @openai/codex</code></td></tr>
+          <tr><td>Open Code</td><td><code>opencode</code></td><td>resumable cwd session, model override, generic price tier</td><td><code>npm i -g opencode-ai</code></td></tr>
+          <tr><td>Gemini CLI</td><td><code>gemini</code></td><td>generic headless CLI, model override</td><td><code>npm i -g @google/gemini-cli</code></td></tr>
+          <tr><td>GLM</td><td><code>glm</code></td><td>generic low-price CLI row</td><td>vendor CLI</td></tr>
+          <tr><td>Kimi</td><td><code>kimi</code></td><td>generic low-price CLI row</td><td>Moonshot Kimi CLI</td></tr>
         </tbody>
       </table>
-      <p>Adding another is a small change: implement one <code>AgentAdapter</code>, add a <code>make_adapter</code> arm and a <code>KNOWN_TOOLS</code> row — the picker, CLI, and orchestrator all read that registry.</p>
+      <p>Adding another is a small change: implement one bespoke <code>AgentAdapter</code> or add one generic <code>KNOWN_TOOLS</code> row with <code>run_args</code>, <code>model_flag</code>, and <code>prompt_flag</code> — the picker, CLI, and orchestrator all read that registry.</p>
       <div class="note warn"><span class="ic">!</span><div><b>Roster rule.</b> A tool whose session continuity is keyed on the working directory (e.g. Open Code) can only be connected <b>once per run</b> — two would resume each other's session. Tales rejects this up front.</div></div>
     </section>
 
@@ -282,6 +343,10 @@
       <p>Each CLI implements one trait: <code>spawn()</code> launches the process and pumps normalized <code>AgentEvent</code>s (<code>TokenDelta</code>, <code>MessageFinal</code>, <code>ToolCall</code>, <code>TurnComplete</code>, <code>Error</code>) into a channel, and returns a command sender driven with <code>AgentCommand</code>s. The engine and frontends see only these enums — never the concrete tool. Differences between tools (e.g. bidirectional <code>stream-json</code> vs turn-based <code>exec</code>/<code>resume</code>) live only in <code>AgentCaps</code> flags, never an <code>if claude {…}</code>.</p>
       <h3>The bus</h3>
       <p><code>EventBus</code> owns a lossy <code>broadcast</code> channel for events (a slow frontend lags and recovers; it never blocks the engine) and an <code>mpsc</code> channel for commands (many interchangeable producers, one engine consumer).</p>
+      <h3>Project context &amp; telemetry</h3>
+      <p><code>project_context</code> builds a compact cached repo snapshot from filenames and important manifest excerpts. <code>prompt_forecast</code> estimates local prompt payloads before model calls, while session reports record prompt counts, prompt chars, provider token/cost data when available, local-change handoffs, and optimization hints.</p>
+      <h3>Session config, profile, and eval</h3>
+      <p><code>session</code> defines the shared <code>SessionConfig</code>, agent seat, prompt budget, report path, and approval-policy contract used by CLI and web preflight. <code>workspace_profile</code> stores local metadata memory under the Tales cache tree, and <code>eval_harness</code> compares collaboration shapes without model calls.</p>
       <h3>Worktree isolation</h3>
       <p><code>WorktreeManager</code> can give each agent its own git worktree on its own branch. Today <code>tales run --worktree</code> uses it for the <b>single selected executor</b>: create one worktree, run there, and on success merge back — <code>Clean</code>, <code>NoChanges</code>, or <code>Conflict { files }</code>. The worktree is pruned on every exit path.</p>
       <h3>Recommendation &amp; gate</h3>
@@ -295,6 +360,8 @@
         <li><b>Auth failures.</b> Tales doesn't manage credentials — authenticate the underlying CLI directly once, then retry.</li>
         <li><b>Only one tool installed.</b> The default discussion needs two participants; pass <code>--connect &lt;tool&gt;</code> (TUI) or explicit <code>--drafter</code>/<code>--critic</code> to run with a specific roster.</li>
         <li><b><code>--worktree</code> ignored.</b> The cwd isn't a git repo; Tales prints a note and runs without isolation.</li>
+        <li><b>Browser workspace rejected.</b> <code>tales-web</code> requires an absolute path to an existing directory; choose the launch cwd shortcut or paste a canonical folder path.</li>
+        <li><b>Context cache feels stale.</b> Use <code>tales context --refresh</code> or pass <code>--refresh-project-context</code> to rebuild before a run.</li>
         <li><b>Merge left mid-merge (<code>Conflict</code>).</b> The executor's branch conflicts with your base; resolve and commit, or <code>git merge --abort</code>.</li>
         <li><b>Can't connect a tool twice.</b> Expected for cwd-session tools — see the roster rule under <a href="#tools">Supported tools</a>.</li>
       </ul>
@@ -309,7 +376,9 @@
     <a href="#install">Install</a>
     <a href="#quickstart">Quickstart</a>
     <a href="#terminal">The terminal</a>
+    <a href="#browser">Browser UI</a>
     <a href="#commands">Commands</a>
+    <a href="#preflight">Preflight</a>
     <a href="#tiered">Tiered execution</a>
     <a href="#thesis">The bet &amp; benchmark</a>
     <a href="#tools">Supported tools</a>

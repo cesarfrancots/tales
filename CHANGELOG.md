@@ -6,6 +6,11 @@ Tales uses one lockstep SemVer version for the Rust workspace. The version lives
 
 ## Unreleased
 
+## 0.4.0
+
+- Changed the default Tales terminal flow from planning-first to discussion-first, with executor handoff proceeding unless both planner votes request a formal plan.
+- Added `needs_plan` vote/report metadata and surfaced formal-plan consensus at the executor gate.
+- Relabeled terminal guidance and recovery copy around discussions and executor handoffs while keeping `.tales/runs/<run>/plan.md` and `.tales/last-plan.md` compatible.
 - Added Windows/Linux CI, a Windows PowerShell release check, and cross-platform `tales open` launcher support.
 - Added a technical `cd` path prompt to the startup workspace browser.
 - Added a startup workspace folder browser and permission prompt before the default Tales terminal opens.

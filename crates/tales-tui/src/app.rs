@@ -49,11 +49,11 @@ fn recommendation_scores_line(scores: &[(String, f32)]) -> Option<String> {
 
 pub fn help_message() -> &'static str {
     "Tales help\n\
-     Type a normal message to add context while the planners are working.\n\
+     Type a normal message to add context while the agents are discussing.\n\
      At the executor gate, press Enter to accept the recommendation or press 1-9 to pick a tool.\n\
      The selected executor opens as a live CLI pane, so you can answer questions directly there.\n\
      Run artifacts are saved under .tales/runs/<run>/ and the executor handoff is copied to .tales/last-plan.md.\n\
-     If an executor stalls or exits, use /handoff to resend the plan or /switch <executor> to relaunch it.\n\
+     If an executor stalls or exits, use /handoff to resend the handoff or /switch <executor> to relaunch it.\n\
      Use /artifacts to show the saved run files for recovery.\n\
      Type /commands for every Tales command."
 }
@@ -66,11 +66,11 @@ pub fn commands_message() -> &'static str {
      /confirm [agent|number] — approve execution with the recommendation or a chosen executor\n\
      /reject — stop before execution\n\
      /artifacts — show saved run paths for recovery\n\
-     /handoff [executor|number] — resend the current plan to a live executor, or reopen the chosen one\n\
-     /switch <executor|number> — open a fresh executor pane with the current plan\n\
+     /handoff [executor|number] — resend the current handoff to a live executor, or reopen the chosen one\n\
+     /switch <executor|number> — open a fresh executor pane with the current handoff\n\
      /quit — leave Tales\n\
-     Artifacts — .tales/runs/<run>/plan.md, events.jsonl, manifest.json; latest executor plan at .tales/last-plan.md\n\
-     Ctrl-N shell · Ctrl-X Codex · Ctrl-L Claude · Ctrl-O Open Code · Ctrl-S send plan · Ctrl-A approve"
+     Artifacts — .tales/runs/<run>/plan.md, events.jsonl, manifest.json; latest executor handoff at .tales/last-plan.md\n\
+     Ctrl-N shell · Ctrl-X Codex · Ctrl-L Claude · Ctrl-O Open Code · Ctrl-S send handoff · Ctrl-A approve"
 }
 
 pub fn input_area_height(prefix: &str, input: &str, width: u16, max_height: u16) -> u16 {
@@ -368,8 +368,9 @@ impl App {
                     SysKind::Note,
                 );
             }
-            OrchestratorEvent::AwaitingConfirmation { .. } => {
+            OrchestratorEvent::AwaitingConfirmation { prompt } => {
                 self.awaiting = true;
+                self.sys(prompt, SysKind::Note);
             }
             OrchestratorEvent::AgentExited { agent, code } => {
                 // End the agent's live stream so it finalizes instead of
@@ -670,7 +671,7 @@ impl App {
         Line::from(spans)
     }
 
-    /// Plain-text transcript for handing a plan off to a live executor pane.
+    /// Plain-text transcript for handing the discussion off to a live executor pane.
     pub fn transcript_text(&self) -> String {
         let mut out = String::new();
         for b in &self.blocks {
@@ -705,16 +706,17 @@ impl App {
         out.trim().to_string()
     }
 
-    /// Executor prompt used when the terminal workspace sends the agreed plan to
+    /// Executor prompt used when the terminal workspace sends the discussion to
     /// a live Claude/Codex pane instead of letting the core run headlessly.
     pub fn executor_handoff_prompt(&self) -> String {
         format!(
-            "You are now EXECUTING the plan the team agreed on.\n\
+            "You are now EXECUTING from the team discussion.\n\
              Task: {}\n\n\
-             Discussion and plan:\n{}\n\n\
-             Implement it now. Use your file-writing tool (Write/Edit) to create \
-             every file the plan calls for. When finished, briefly summarize \
-             what you wrote.\n",
+             Discussion:\n{}\n\n\
+             If both agents explicitly requested a formal plan, write that concise \
+             plan first and ask the user before editing; otherwise implement it now. \
+             Use your file-writing tool (Write/Edit) to create every file the task \
+             needs. When finished, briefly summarize what you wrote.\n",
             self.task,
             self.transcript_text()
         )
@@ -857,7 +859,7 @@ fn action_banner(out: &mut Vec<Line<'static>>, candidates: &[String], recommende
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            "  —  pick who executes the plan",
+            "  —  pick who executes",
             Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
         ),
     ]));

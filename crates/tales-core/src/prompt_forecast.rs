@@ -253,6 +253,7 @@ pub fn prompt_forecast_to_json(forecast: &PromptForecast, turns: usize, sequenti
                 "executor",
                 "agent",
                 "tool",
+                "needs_plan",
                 "rationale",
                 "why",
                 "reason",

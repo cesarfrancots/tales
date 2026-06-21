@@ -2476,7 +2476,7 @@ fn event_status(ev: &OrchestratorEvent) -> &'static str {
         OrchestratorEvent::PhaseChanged { phase } if phase == "done" => "done",
         OrchestratorEvent::PhaseChanged { phase } if phase == "executing" => "executing",
         OrchestratorEvent::PhaseChanged { phase } if phase == "recommending" => "recommending",
-        _ => "planning",
+        _ => "discussion",
     }
 }
 
@@ -4354,15 +4354,16 @@ mod tests {
         let manifest = std::fs::read_to_string(&artifacts.manifest_path).unwrap();
         let events = std::fs::read_to_string(&artifacts.events_path).unwrap();
         let plan = std::fs::read_to_string(&artifacts.plan_path).unwrap();
+        let manifest_json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
 
         assert!(manifest.contains("\"mode\": \"run\""), "{manifest}");
         assert!(
             manifest.contains("\"status\": \"recommended\""),
             "{manifest}"
         );
-        assert!(
-            manifest.contains(report_path.to_string_lossy().as_ref()),
-            "{manifest}"
+        assert_eq!(
+            manifest_json["report_path"],
+            report_path.display().to_string()
         );
         assert!(events.contains("\"kind\":\"run_started\""), "{events}");
         assert!(

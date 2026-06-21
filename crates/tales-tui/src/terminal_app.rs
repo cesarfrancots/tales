@@ -190,7 +190,7 @@ const PERMISSION_OPTIONS: &[PermissionOption] = &[
     PermissionOption {
         label: "Read only",
         sandbox: "read-only",
-        detail: "Allow planning and inspection only where supported. Some executor actions may be blocked.",
+        detail: "Allow discussion and inspection only where supported. Some executor actions may be blocked.",
     },
     PermissionOption {
         label: "Full access",
@@ -936,9 +936,9 @@ impl Workspace {
                         self.active = index;
                         self.notice = match plan_path {
                             Some(path) => {
-                                format!("resent plan to {} from {}", proc.title, path.display())
+                                format!("resent handoff to {} from {}", proc.title, path.display())
                             }
-                            None => format!("resent plan to {}", proc.title),
+                            None => format!("resent handoff to {}", proc.title),
                         };
                     }
                 } else if let Some(key) = executor {
@@ -999,10 +999,10 @@ impl Workspace {
             Some(Pane::Process(proc)) => {
                 proc.write(prompt.as_bytes());
                 proc.write(b"\r");
-                self.notice = format!("sent plan to {}", proc.title);
+                self.notice = format!("sent handoff to {}", proc.title);
             }
             Some(Pane::Tales(_)) => {
-                self.notice = "focus an agent pane before sending the plan".to_string();
+                self.notice = "focus an agent pane before sending the handoff".to_string();
             }
             None => {}
         }
@@ -1254,7 +1254,7 @@ impl Workspace {
         let help = if self.active_is_process() {
             "Tab switch · Ctrl-T Tales for /handoff or /switch · Ctrl-A approve · Ctrl-Q quit"
         } else {
-            "Tab switch · PageUp/PageDown prompt · Ctrl-N shell · Ctrl-X Codex · Ctrl-L Claude · Ctrl-S send plan · Ctrl-A approve · Ctrl-Q quit"
+            "Tab switch · PageUp/PageDown prompt · Ctrl-N shell · Ctrl-X Codex · Ctrl-L Claude · Ctrl-S send handoff · Ctrl-A approve · Ctrl-Q quit"
         };
         f.render_widget(
             Paragraph::new(Line::from(vec![
@@ -1353,8 +1353,8 @@ impl RunArtifacts {
             workspace: workspace.to_path_buf(),
             roster: roster.to_vec(),
         };
-        artifacts.write_manifest("planning", None)?;
-        artifacts.write_plan_markdown("planning", None, "")?;
+        artifacts.write_manifest("discussion", None)?;
+        artifacts.write_plan_markdown("discussion", None, "")?;
         artifacts.append_manual_event("run_started", task)?;
         Ok(artifacts)
     }
@@ -1420,19 +1420,19 @@ impl RunArtifacts {
             .map(|key| format!("- Executor: {} (`{key}`)\n", pretty(key)))
             .unwrap_or_default();
         let transcript = if transcript.trim().is_empty() {
-            "_Planning has started. No transcript has been captured yet._"
+            "_Discussion has started. No transcript has been captured yet._"
         } else {
             transcript.trim()
         };
         let text = format!(
-            "# Tales run plan\n\n\
+            "# Tales discussion\n\n\
              - Status: {status}\n\
              - Task: {}\n\
              - Workspace: {}\n\
              - Roster: {roster}\n\
              - Started unix time: {}\n\
              {executor_line}\n\
-             ## Current transcript and plan\n\n\
+             ## Current transcript\n\n\
              {transcript}\n",
             self.task,
             self.workspace.display(),
@@ -1448,7 +1448,7 @@ impl TalesPane {
         Self {
             title: "Tales orchestrator".to_string(),
             state: PaneState::WaitingForInput,
-            app: App::new("new plan".to_string()),
+            app: App::new("new discussion".to_string()),
             cfg,
             artifacts: None,
             mcp_risks,
@@ -1458,7 +1458,7 @@ impl TalesPane {
             started: false,
             startup_page: StartupPage::Welcome,
             input_scroll: 0,
-            notice: "type help, commands, or a planning prompt".to_string(),
+            notice: "type help, commands, or a task to discuss".to_string(),
             last_executor: None,
         }
     }
@@ -1475,7 +1475,7 @@ impl TalesPane {
                 if !self.started {
                     let task = self.app.input.trim().to_string();
                     if task.is_empty() {
-                        self.notice = "type help, commands, or a planning prompt".to_string();
+                        self.notice = "type help, commands, or a task to discuss".to_string();
                     } else if self.handle_startup_command(&task) {
                         self.app.input.clear();
                     } else {
@@ -1554,11 +1554,11 @@ impl TalesPane {
                 self.last_executor = Some(executor.clone());
                 let plan_path = match self.save_executor_plan(&executor, &prompt) {
                     Ok(path) => {
-                        self.notice = format!("saved plan to {}", path.display());
+                        self.notice = format!("saved handoff to {}", path.display());
                         Some(path)
                     }
                     Err(e) => {
-                        self.notice = format!("could not save plan: {e}");
+                        self.notice = format!("could not save handoff: {e}");
                         None
                     }
                 };
@@ -1590,7 +1590,7 @@ impl TalesPane {
                     .or_else(|| self.app.recommended.clone());
                 let Some(executor) = executor else {
                     self.app
-                        .note("No executor has been selected yet. Use /switch <executor> after a plan exists, or wait for the executor gate.");
+                        .note("No executor has been selected yet. Use /switch <executor> after discussion starts, or wait for the executor gate.");
                     self.notice = "no executor selected for handoff".to_string();
                     return None;
                 };
@@ -1627,11 +1627,11 @@ impl TalesPane {
                     "executor_switched",
                 ) {
                     Ok(path) => {
-                        self.notice = format!("switch plan saved to {}", path.display());
+                        self.notice = format!("switch handoff saved to {}", path.display());
                         Some(path)
                     }
                     Err(e) => {
-                        self.notice = format!("could not save switch plan: {e}");
+                        self.notice = format!("could not save switch handoff: {e}");
                         None
                     }
                 };
@@ -1668,7 +1668,7 @@ impl TalesPane {
                 Some(artifacts)
             }
             Err(e) => {
-                self.notice = format!("planning started; artifacts unavailable: {e}");
+                self.notice = format!("discussion started; artifacts unavailable: {e}");
                 None
             }
         };
@@ -1698,7 +1698,7 @@ impl TalesPane {
         self.state = PaneState::Running;
         self.started = true;
         if self.notice.is_empty() {
-            self.notice = "planning started".to_string();
+            self.notice = "discussion started".to_string();
         }
         if let Some(artifacts) = &self.artifacts {
             self.app.apply(OrchestratorEvent::Log {
@@ -1720,7 +1720,7 @@ impl TalesPane {
             }
         }
         if let Some(artifacts) = &self.artifacts {
-            let _ = artifacts.write_plan_markdown("planning", None, &self.app.transcript_text());
+            let _ = artifacts.write_plan_markdown("discussion", None, &self.app.transcript_text());
         }
 
         {
@@ -1822,7 +1822,7 @@ impl TalesPane {
         let path = dir.join(LAST_PLAN_FILE);
         let saved_at = unix_time();
         let text = format!(
-            "# Tales executor plan\n\n\
+            "# Tales executor handoff\n\n\
              - Executor: {}\n\
              - Executor key: {executor}\n\
              - Saved unix time: {saved_at}\n\
@@ -1849,11 +1849,11 @@ impl TalesPane {
             Some(artifacts) => format!(
                 "Artifacts\n\
                  run dir: {}\n\
-                 plan: {}\n\
+                 discussion: {}\n\
                  events: {}\n\
                  manifest: {}\n\
                  executor handoff: {}\n\
-                 Recovery: use /handoff to resend the plan, or /switch <executor> to launch a fresh pane.",
+                 Recovery: use /handoff to resend the handoff, or /switch <executor> to launch a fresh pane.",
                 artifacts.relative_dir(),
                 artifacts.plan_path.display(),
                 artifacts.events_path.display(),
@@ -1864,7 +1864,7 @@ impl TalesPane {
                 "Artifacts are unavailable for this run. Use /handoff or /switch <executor> to recreate .tales/last-plan.md from the current transcript.".to_string()
             }
             None => {
-                "Artifacts are created after you start planning. Type a task first, then use /artifacts during the run.".to_string()
+                "Artifacts are created after you start a discussion. Type a task first, then use /artifacts during the run.".to_string()
             }
         };
         if let Some(artifacts) = &self.artifacts {
@@ -1927,7 +1927,7 @@ fn welcome_lines(cfg: &WorkspaceConfig) -> Vec<Line<'static>> {
     lines.extend([
         Line::from(""),
         Line::from(Span::styled(
-            "Plan with multiple coding CLIs, then hand the agreed plan to one live executor.",
+            "Discuss with multiple coding CLIs, then choose one live executor.",
             Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
         )),
         Line::from(vec![
@@ -1958,7 +1958,7 @@ fn welcome_lines(cfg: &WorkspaceConfig) -> Vec<Line<'static>> {
             Style::default().fg(DIM),
         )),
         Line::from(Span::styled(
-            format!("Planner roster: {roster_text}"),
+            format!("Discussion roster: {roster_text}"),
             Style::default().fg(DIM),
         )),
         Line::from(Span::styled(
@@ -1988,7 +1988,7 @@ fn welcome_lines(cfg: &WorkspaceConfig) -> Vec<Line<'static>> {
         let status = if installed { "ready" } else { "missing" };
         let status_color = if installed { ACCENT } else { FAINT };
         let caps = if tool.supports_headless {
-            "planner + executor"
+            "discussion + executor"
         } else {
             "executor"
         };
@@ -2051,7 +2051,7 @@ fn welcome_lines(cfg: &WorkspaceConfig) -> Vec<Line<'static>> {
             Style::default().fg(TEXT),
         )),
         Line::from(Span::styled(
-            format!("Saved executor plan: {}/{}", PLAN_DIR, LAST_PLAN_FILE),
+            format!("Saved executor handoff: {}/{}", PLAN_DIR, LAST_PLAN_FILE),
             Style::default().fg(DIM),
         )),
         Line::from(""),
@@ -2109,7 +2109,7 @@ fn startup_help_lines() -> Vec<Line<'static>> {
     lines.extend(message_lines("Help", help_message()));
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "Type commands for the command list, Esc for welcome, or enter a task to start planning.",
+        "Type commands for the command list, Esc for welcome, or enter a task to start discussion.",
         Style::default().fg(TEXT),
     )));
     lines
@@ -2214,7 +2214,7 @@ fn event_status(ev: &OrchestratorEvent) -> &'static str {
         OrchestratorEvent::PhaseChanged { phase } if phase == "done" => "done",
         OrchestratorEvent::PhaseChanged { phase } if phase == "executing" => "executing",
         OrchestratorEvent::PhaseChanged { phase } if phase == "recommending" => "recommending",
-        _ => "planning",
+        _ => "discussion",
     }
 }
 
@@ -2445,7 +2445,7 @@ impl ProcessPane {
         self.pending.clear();
         self.push_line(format!("{} executor started", self.title));
         if let Some(path) = plan_path {
-            self.push_line(format!("saved plan: {}", path.display()));
+            self.push_line(format!("saved handoff: {}", path.display()));
         }
         self.push_line("working on the handoff prompt now");
         self.push_line("");

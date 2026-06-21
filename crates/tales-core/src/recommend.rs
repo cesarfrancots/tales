@@ -17,6 +17,7 @@ pub struct ExecutionVote {
     pub voter_label: String,
     pub recommended_executor: String,
     pub confidence: f32,
+    pub needs_plan: bool,
     pub rationale: String,
     pub parse_source: VoteParseSource,
 }
@@ -31,6 +32,8 @@ pub struct Recommendation {
     pub votes: Vec<ExecutionVote>,
     /// Human-readable summary of why.
     pub rationale: String,
+    /// True only when every parsed planner vote says a formal plan is needed.
+    pub needs_plan: bool,
     /// `true` only when a candidate has a positive, unique top score. When
     /// `false`, `executor` is still the label Tales would preselect, but the
     /// user should treat it as "please choose" rather than real consensus.
@@ -56,6 +59,7 @@ impl VoteParseSource {
 pub struct ParsedVote {
     pub recommended_executor: String,
     pub confidence: f32,
+    pub needs_plan: bool,
     pub rationale: String,
     pub source: VoteParseSource,
 }
@@ -67,6 +71,8 @@ struct RawVote {
     recommended_executor: String,
     #[serde(default = "default_confidence")]
     confidence: f32,
+    #[serde(default)]
+    needs_plan: bool,
     #[serde(default, alias = "why", alias = "reason")]
     rationale: String,
 }
@@ -97,6 +103,7 @@ fn parse_vote_json(text: &str) -> Option<ParsedVote> {
     Some(ParsedVote {
         recommended_executor: raw.recommended_executor.trim().to_string(),
         confidence: conf,
+        needs_plan: raw.needs_plan,
         rationale: raw.rationale,
         source: VoteParseSource::Json,
     })
@@ -113,6 +120,7 @@ fn parse_single_candidate_mention(text: &str, candidates: &[String]) -> Option<P
     Some(ParsedVote {
         recommended_executor: mentioned[0].clone(),
         confidence: 0.5,
+        needs_plan: false,
         rationale: format!("salvaged from prose vote: {}", compact_one_line(text, 180)),
         source: VoteParseSource::CandidateMention,
     })
@@ -220,6 +228,7 @@ pub fn aggregate(votes: Vec<ExecutionVote>, candidates: &[String]) -> Option<Rec
             slot.1 += vote.confidence;
         }
     }
+    let needs_plan = votes.len() >= 2 && votes.iter().all(|vote| vote.needs_plan);
 
     // Highest score first; stable so ties keep candidate order (roster order).
     scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -246,12 +255,18 @@ pub fn aggregate(votes: Vec<ExecutionVote>, candidates: &[String]) -> Option<Rec
             score = top.1
         ));
     }
+    if needs_plan {
+        rationale.push_str(
+            "(both planner votes requested a formal plan; ask before turning this discussion into one)\n",
+        );
+    }
     for vote in &votes {
         rationale.push_str(&format!(
-            "- {} → {} (conf {:.2}): {}\n",
+            "- {} → {} (conf {:.2}, needs_plan={}): {}\n",
             vote.voter_label,
             vote.recommended_executor,
             vote.confidence,
+            vote.needs_plan,
             vote.rationale.trim()
         ));
     }
@@ -261,6 +276,7 @@ pub fn aggregate(votes: Vec<ExecutionVote>, candidates: &[String]) -> Option<Rec
         scores,
         votes,
         rationale,
+        needs_plan,
         confident,
     })
 }
@@ -292,12 +308,17 @@ mod tests {
         assert_eq!(vote.recommended_executor, "codex");
         assert!((vote.confidence - 0.7).abs() < f32::EPSILON);
         assert_eq!(vote.rationale, "cheap");
+        assert!(!vote.needs_plan);
         assert_eq!(vote.source, VoteParseSource::Json);
 
-        let vote =
-            parse_vote_lenient(r#"{"agent":"claude","reason":"best code"}"#, &candidates).unwrap();
+        let vote = parse_vote_lenient(
+            r#"{"agent":"claude","reason":"best code","needs_plan":true}"#,
+            &candidates,
+        )
+        .unwrap();
         assert_eq!(vote.recommended_executor, "claude");
         assert_eq!(vote.rationale, "best code");
+        assert!(vote.needs_plan);
         assert_eq!(vote.source, VoteParseSource::Json);
     }
 
@@ -313,6 +334,7 @@ mod tests {
         assert_eq!(vote.recommended_executor, "claude");
         assert_eq!(vote.source, VoteParseSource::CandidateMention);
         assert!((vote.confidence - 0.5).abs() < f32::EPSILON);
+        assert!(!vote.needs_plan);
         assert!(vote.rationale.contains("salvaged from prose vote"));
     }
 
@@ -337,6 +359,7 @@ mod tests {
                 voter_label: "claude".into(),
                 recommended_executor: "Claude".into(), // case-insensitive match
                 confidence: 0.8,
+                needs_plan: false,
                 rationale: "x".into(),
                 parse_source: VoteParseSource::Json,
             },
@@ -345,6 +368,7 @@ mod tests {
                 voter_label: "codex".into(),
                 recommended_executor: "claude".into(),
                 confidence: 0.6,
+                needs_plan: false,
                 rationale: "y".into(),
                 parse_source: VoteParseSource::Json,
             },
@@ -354,6 +378,28 @@ mod tests {
         assert_eq!(rec.scores[0].0, "claude");
         assert!((rec.scores[0].1 - 1.4).abs() < 1e-6);
         assert!(rec.confident);
+        assert!(!rec.needs_plan);
+    }
+
+    #[test]
+    fn aggregate_requires_all_planner_votes_to_need_plan() {
+        let candidates = vec!["claude".to_string(), "codex".to_string()];
+        let mk_vote = |needs_plan| ExecutionVote {
+            voter: Uuid::new_v4(),
+            voter_label: "agent".into(),
+            recommended_executor: "claude".into(),
+            confidence: 0.7,
+            needs_plan,
+            rationale: "x".into(),
+            parse_source: VoteParseSource::Json,
+        };
+
+        let rec = aggregate(vec![mk_vote(true), mk_vote(true)], &candidates).unwrap();
+        assert!(rec.needs_plan);
+        assert!(rec.rationale.contains("formal plan"));
+
+        let rec = aggregate(vec![mk_vote(true), mk_vote(false)], &candidates).unwrap();
+        assert!(!rec.needs_plan);
     }
 
     #[test]
@@ -365,6 +411,7 @@ mod tests {
                 voter_label: "claude".into(),
                 recommended_executor: "claude".into(),
                 confidence: 0.7,
+                needs_plan: false,
                 rationale: "strong local context".into(),
                 parse_source: VoteParseSource::Json,
             },
@@ -373,6 +420,7 @@ mod tests {
                 voter_label: "codex".into(),
                 recommended_executor: "codex".into(),
                 confidence: 0.7,
+                needs_plan: false,
                 rationale: "cheaper executor".into(),
                 parse_source: VoteParseSource::Json,
             },
@@ -399,6 +447,7 @@ mod tests {
             voter_label: "claude".into(),
             recommended_executor: "nonexistent".into(),
             confidence: 0.9,
+            needs_plan: false,
             rationale: "typo".into(),
             parse_source: VoteParseSource::Json,
         }];

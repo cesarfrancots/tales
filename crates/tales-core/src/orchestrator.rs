@@ -326,9 +326,12 @@ impl Orchestrator {
 
     fn set_phase(&mut self, phase: Phase) {
         self.phase = phase;
-        self.bus.emit(OrchestratorEvent::PhaseChanged {
-            phase: format!("{phase:?}").to_lowercase(),
-        });
+        let phase_name = match phase {
+            Phase::Planning => "discussion".to_string(),
+            _ => format!("{phase:?}").to_lowercase(),
+        };
+        self.bus
+            .emit(OrchestratorEvent::PhaseChanged { phase: phase_name });
     }
 
     /// Enroll an agent: spawn its adapter (fanning events into the shared
@@ -848,6 +851,7 @@ impl Orchestrator {
                     voter_label: entry.label.clone(),
                     recommended_executor: vote.recommended_executor,
                     confidence: vote.confidence,
+                    needs_plan: vote.needs_plan,
                     rationale: vote.rationale,
                     parse_source: vote.source,
                 }),
@@ -870,10 +874,17 @@ impl Orchestrator {
         });
         self.set_phase(Phase::AwaitingConfirmation);
         let gate_prompt = if recommendation.confident {
-            format!(
-                "Recommended executor: {}. Confirm, override, or reject.",
-                recommendation.executor
-            )
+            if recommendation.needs_plan {
+                format!(
+                    "Both agents recommend a formal plan first. Preselected executor: {}. Confirm, override, or reject.",
+                    recommendation.executor
+                )
+            } else {
+                format!(
+                    "Recommended executor: {}. Confirm, override, or reject.",
+                    recommendation.executor
+                )
+            }
         } else {
             format!(
                 "No clear executor consensus. Preselected executor: {}. Confirm, override, or reject.",
@@ -1216,7 +1227,7 @@ impl Orchestrator {
         self.blackboard.record("you".to_string(), Role::Human, text);
     }
 
-    /// Have the chosen executor implement the agreed plan, streamed like any
+    /// Have the chosen executor implement the agreed discussion, streamed like any
     /// other turn.
     async fn run_execution(&mut self, executor_label: &str, task: &str) -> Result<String> {
         let entry = self
@@ -1372,7 +1383,7 @@ fn ratio_percent(numerator: u64, denominator: u64) -> u64 {
 /// Prompt asking an agent to nominate an executor as a JSON object.
 ///
 /// Resumable agents already have the discussion in their native session, so keep
-/// this tiny. Stateless adapters get a compact planning context instead of the
+/// this tiny. Stateless adapters get a compact discussion context instead of the
 /// raw full transcript, so they can vote without rereading old back-and-forth.
 fn compose_vote_prompt(
     task: &str,
@@ -1383,17 +1394,20 @@ fn compose_vote_prompt(
     let context = if resumable {
         "Use the discussion already in this session.".to_string()
     } else if planning_context.trim().is_empty() {
-        "No planning context is available yet.".to_string()
+        "No discussion context is available yet.".to_string()
     } else {
-        format!("Planning context:\n{}", planning_context.trim())
+        format!("Discussion context:\n{}", planning_context.trim())
     };
     format!(
         "Based on our discussion of the task:\n{task}\n\n\
          {context}\n\n\
-         Which agent should EXECUTE the plan? Candidates: {}.\n\
+         Which agent should execute this? Candidates: {}.\n\
+         Set needs_plan=true only if this should become a formal plan before execution; \
+         if either planner says false, Tales will proceed to executor choice without making a plan.\n\
          Reply with ONLY a JSON object, no prose and no code fence:\n\
          {{\"recommended_executor\": \"<one of: {}>\", \
-         \"confidence\": <number 0.0-1.0>, \"rationale\": \"<one short sentence>\"}}",
+         \"confidence\": <number 0.0-1.0>, \"needs_plan\": <true|false>, \
+         \"rationale\": \"<one short sentence>\"}}",
         candidates.join(", "),
         candidates.join(" | ")
     )
@@ -1411,9 +1425,9 @@ fn compose_vote_repair_prompt(
     let context = if resumable {
         "Use the discussion already in this session.".to_string()
     } else if planning_context.trim().is_empty() {
-        "No planning context is available yet.".to_string()
+        "No discussion context is available yet.".to_string()
     } else {
-        format!("Planning context:\n{}", planning_context.trim())
+        format!("Discussion context:\n{}", planning_context.trim())
     };
     format!(
         "Your previous executor vote was not valid JSON.\n\
@@ -1422,13 +1436,14 @@ fn compose_vote_repair_prompt(
          Previous response, for reference:\n{}\n\n\
          Reply with ONLY this JSON object, no prose and no code fence:\n\
          {{\"recommended_executor\": \"<one of: {}>\", \
-         \"confidence\": <number 0.0-1.0>, \"rationale\": \"<one short sentence>\"}}",
+         \"confidence\": <number 0.0-1.0>, \"needs_plan\": <true|false>, \
+         \"rationale\": \"<one short sentence>\"}}",
         bounded_context(previous_response, Some(VOTE_REPAIR_PREVIEW_CHARS)),
         candidates.join(" | ")
     )
 }
 
-/// Compact planning context for stateless recommendation votes. It preserves
+/// Compact discussion context for stateless recommendation votes. It preserves
 /// recent human direction and the latest planner outputs, while dropping older
 /// debate mechanics that rarely help choose an executor.
 fn compose_vote_context(bb: &Blackboard, context_budget_chars: Option<usize>) -> String {
@@ -1501,6 +1516,10 @@ fn compose_execution_packet(
         section.push_str(&format!(
             "- recommended: {} (confident: {})\n",
             rec.executor, rec.confident
+        ));
+        section.push_str(&format!(
+            "- formal_plan_requested_by_both: {}\n",
+            rec.needs_plan
         ));
         if !rec.rationale.trim().is_empty() {
             section.push_str("- rationale:\n");
@@ -1662,6 +1681,10 @@ fn compose_session_report(
         report.push_str(&format!(
             "- recommended: {} (confident: {})\n",
             rec.executor, rec.confident
+        ));
+        report.push_str(&format!(
+            "- formal_plan_requested_by_both: {}\n",
+            rec.needs_plan
         ));
         if !rec.scores.is_empty() {
             let scores = rec
@@ -1980,6 +2003,7 @@ fn recommendation_summary_json(recommendation: Option<&Recommendation>) -> Value
             "available": true,
             "executor": rec.executor,
             "confident": rec.confident,
+            "needs_plan": rec.needs_plan,
             "rationale": rec.rationale,
             "scores": rec.scores.iter().map(|(executor, score)| json!({
                 "executor": executor,
@@ -1990,6 +2014,7 @@ fn recommendation_summary_json(recommendation: Option<&Recommendation>) -> Value
                 "voter_label": vote.voter_label,
                 "recommended_executor": vote.recommended_executor,
                 "confidence": vote.confidence,
+                "needs_plan": vote.needs_plan,
                 "rationale": vote.rationale,
                 "parse_source": vote.parse_source.as_str(),
             })).collect::<Vec<_>>(),
@@ -2103,6 +2128,10 @@ fn compose_resume_packet(
         packet.push_str(&format!(
             "- recommendation: {} (confident: {})\n",
             rec.executor, rec.confident
+        ));
+        packet.push_str(&format!(
+            "- formal_plan_requested_by_both: {}\n",
+            rec.needs_plan
         ));
         if !rec.rationale.trim().is_empty() {
             packet.push_str(&format!(
@@ -2373,7 +2402,7 @@ fn compose_optimization_hints(
 }
 
 /// Build the execution prompt. If the executor was a resumable planner, the
-/// native agent session already contains the debate and merged plan, so avoid
+/// native agent session already contains the debate and recommendation, so avoid
 /// re-pasting the full transcript. A separate executor or stateless planner gets
 /// the full discussion because it has no reliable session context.
 fn compose_execution_prompt(
@@ -2383,9 +2412,12 @@ fn compose_execution_prompt(
     context_budget_chars: Option<usize>,
     local_changes: Option<&LocalChangeSummary>,
 ) -> String {
-    let execution_rules = "Implement it now. Use your file-writing tool (Write/Edit) to create \
+    let execution_rules =
+        "Implement it now. If the discussion or execution packet says both planners requested \
+         a formal plan, write that concise plan first and ask the user before editing; otherwise \
+         proceed directly. Use your file-writing tool (Write/Edit) to create \
          every file — it creates parent directories automatically, so do NOT \
-         use shell commands like mkdir. Create all the files the plan calls \
+         use shell commands like mkdir. Create all the files the task needs \
          for in this turn. When finished, briefly summarize what you wrote.";
     let local_change_note = local_changes
         .map(|changes| {
@@ -2398,18 +2430,18 @@ fn compose_execution_prompt(
 
     if has_session_plan {
         format!(
-            "You are now EXECUTING the plan the team agreed on in this session.\n\
+            "You are now EXECUTING from the team discussion in this session.\n\
              Task: {task}\n\n\
-             Use the discussion and final plan already in your session memory; \
-             do not re-plan unless the implementation exposes a blocker.\n\
+             Use the discussion already in your session memory; do not make a \
+             formal plan unless both planners explicitly requested one.\n\
              {local_change_note}\
              {execution_rules}"
         )
     } else {
         format!(
-            "You are now EXECUTING the plan the team agreed on.\n\
+            "You are now EXECUTING from the team discussion.\n\
              Task: {task}\n\n\
-             Discussion and plan:\n{}\n\
+             Discussion:\n{}\n\
              {execution_rules}",
             bounded_execution_prompt_context(plan, context_budget_chars)
         )
@@ -2561,31 +2593,32 @@ fn compose_prompt(
     let delta = bounded_context(delta, context_budget_chars);
     match role {
         Role::Drafter if first_time => format!(
-            "You are the DRAFTER collaborating with a critic.\n\
+            "You are the DRAFTER in an implementation discussion with a critic.\n\
              Task: {task}\n\
              {}\n\
-             Write a first, concise draft of the plan/solution. \
-             Keep it tight — bullet points are fine.",
+             Propose the simplest viable implementation approach, key risks, \
+             and whether this task really needs a formal plan. Do not write a \
+             full plan unless the task clearly needs one.",
             project_context_block(first_turn_project_context, context_budget_chars)
         ),
         Role::Drafter => format!(
             "The critic responded:\n{delta}\n\n\
-             Revise your draft to address these points. \
-             Be concise; show only the updated draft."
+             Respond with the updated implementation argument. If a formal plan \
+             is still needed, say why; otherwise keep the handoff concise."
         ),
         Role::Critic if first_time => format!(
-            "You are the CRITIC reviewing a draft.\n\
+            "You are the CRITIC reviewing an implementation approach.\n\
              Task: {task}\n\n\
              {}\
              Latest draft:\n{delta}\n\n\
-             List the concrete problems and the clarifying questions you'd \
-             ask. Be specific and brief — no preamble.",
+             Challenge concrete problems, missing edge cases, and whether a \
+             formal plan is actually needed. Be specific and brief; no preamble.",
             project_context_block(first_turn_project_context, context_budget_chars)
         ),
         Role::Critic => format!(
             "The drafter revised:\n{delta}\n\n\
-             Critique the update — list the remaining problems and gaps. \
-             Be specific and brief."
+             Critique the update: remaining problems, gaps, and whether a \
+             formal plan is necessary. Be specific and brief."
         ),
         Role::Human | Role::Executor => task.to_string(),
     }
@@ -2607,11 +2640,12 @@ fn compose_prompt_full(
         Role::Drafter => {
             if bb.transcript.is_empty() {
                 format!(
-                    "You are the DRAFTER collaborating with a critic.\n\
+                    "You are the DRAFTER in an implementation discussion with a critic.\n\
                      Task: {task}\n\
                      {}\n\
-                     Write a first, concise draft of the plan/solution. \
-                     Keep it tight — bullet points are fine.",
+                     Propose the simplest viable implementation approach, key risks, \
+                     and whether this task really needs a formal plan. Do not write a \
+                     full plan unless the task clearly needs one.",
                     project_context_block(project_context, context_budget_chars)
                 )
             } else {
@@ -2619,8 +2653,9 @@ fn compose_prompt_full(
                     "You are the DRAFTER. Task: {task}\n\n\
                      {}\
                      Discussion so far:\n{}\n\
-                     Revise your draft to address the critic's points. \
-                     Be concise; show only the updated draft.",
+                     Update the implementation argument to address the critic's \
+                     points. If a formal plan is needed, say why; otherwise keep \
+                     the handoff concise.",
                     project_context_block(project_context, context_budget_chars),
                     bounded_context(&bb.transcript_text(), context_budget_chars)
                 )
@@ -2632,12 +2667,12 @@ fn compose_prompt_full(
                 .map(|text| bounded_context(text, context_budget_chars))
                 .unwrap_or_else(|| "(no draft yet)".to_string());
             format!(
-                "You are the CRITIC reviewing a draft.\n\
+                "You are the CRITIC reviewing an implementation approach.\n\
                  Task: {task}\n\n\
                  {}\
                  Latest draft:\n{latest}\n\n\
-                 List the concrete problems and the clarifying questions you'd \
-                 ask. Be specific and brief — no preamble.",
+                 Challenge concrete problems, missing edge cases, and whether a \
+                 formal plan is actually needed. Be specific and brief; no preamble.",
                 project_context_block(project_context, context_budget_chars)
             )
         }
@@ -2658,12 +2693,13 @@ fn compose_round1_prompt(
     context_budget_chars: Option<usize>,
 ) -> String {
     format!(
-        "You are one of two expert planners working the SAME task in parallel.\n\
+        "You are one of two expert implementers discussing the SAME task in parallel.\n\
          Task: {task}\n\
          {}\n\
-         Produce your own concise, COMPLETE plan/solution — specific enough to \
-         implement directly. You'll be shown the other planner's proposal next to \
-         compare against. Bullet points are fine; no preamble.",
+         Produce your own concise implementation argument: simplest viable \
+         approach, risks, and whether this task needs a formal plan. Do not write \
+         a full plan unless it clearly needs one. You'll compare with the other \
+         proposal next. Bullet points are fine; no preamble.",
         project_context_block(project_context, context_budget_chars)
     )
 }
@@ -2702,15 +2738,16 @@ fn compose_round_synth_prompt(
         format!(
             "Task: {task}\n\n{context}\n\n\
              Identify the concrete defects and missing edge cases in the competing \
-             proposal, then produce the SINGLE merged plan — resolve every conflict \
-             and keep the strongest ideas from both. Output only the final merged plan."
+             proposal, then produce the single merged implementation recommendation. \
+             If either side thinks no formal plan is needed, do not write one; keep \
+             only the execution guidance. Output only the merged recommendation."
         )
     } else {
         format!(
             "Task: {task}\n\n{context}\n\n\
              Adversarially review the competing proposal: list its concrete \
-             problems, risks, and missing edge cases an implementer must handle. \
-             Be specific and brief."
+             problems, risks, missing edge cases, and whether a formal plan is \
+             actually needed. Be specific and brief."
         )
     }
 }
@@ -3060,7 +3097,7 @@ mod prompt_tests {
         assert!(!lean.contains("COMPACT-CONTEXT"), "{lean}");
 
         let full = compose_vote_prompt("task", &candidates, false, "COMPACT-CONTEXT");
-        assert!(full.contains("Planning context"), "{full}");
+        assert!(full.contains("Discussion context"), "{full}");
         assert!(full.contains("COMPACT-CONTEXT"), "{full}");
     }
 
@@ -3110,7 +3147,7 @@ mod prompt_tests {
 
         let full =
             compose_vote_repair_prompt("task", &candidates, false, "COMPACT-CONTEXT", "not json");
-        assert!(full.contains("Planning context"), "{full}");
+        assert!(full.contains("Discussion context"), "{full}");
         assert!(full.contains("COMPACT-CONTEXT"), "{full}");
     }
 
@@ -3249,6 +3286,7 @@ FINAL-PLAN";
             scores: vec![("gemini".into(), 0.8), ("claude".into(), 0.4)],
             votes: Vec::new(),
             rationale: "cheap executor can apply the agreed small diff".into(),
+            needs_plan: false,
             confident: true,
         };
 
@@ -3298,6 +3336,7 @@ FINAL-PLAN";
             scores: vec![("codex".into(), 0.9)],
             votes: Vec::new(),
             rationale: format!("EARLY-RATIONALE {}\nimportant rationale", "x".repeat(120)),
+            needs_plan: false,
             confident: true,
         };
         let changes = LocalChangeSummary {
@@ -3454,10 +3493,12 @@ FINAL-PLAN";
                 voter_label: "codex".into(),
                 recommended_executor: "claude".into(),
                 confidence: 0.5,
+                needs_plan: false,
                 rationale: "salvaged from prose vote: Claude should execute".into(),
                 parse_source: VoteParseSource::CandidateMention,
             }],
             rationale: "codex nominated claude".into(),
+            needs_plan: false,
             confident: true,
         };
         let prompt_stats = vec![(
@@ -3691,6 +3732,7 @@ FINAL-PLAN";
             scores: vec![("codex".into(), 0.9), ("claude".into(), 0.4)],
             votes: Vec::new(),
             rationale: "codex has the current local context and can apply the small patch".into(),
+            needs_plan: false,
             confident: true,
         };
         let ctx = ProjectContextReport {

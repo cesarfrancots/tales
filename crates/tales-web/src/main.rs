@@ -1351,11 +1351,17 @@ mod tests {
         assert_eq!(session["context_budget_tokens_estimate"], 3_000);
         assert_eq!(
             session["report_path"],
-            "/tmp/tales-web-cwd/.tales/report.md"
+            resolve_report_path(&preview.cwd, cfg.report_path.clone())
+                .unwrap()
+                .display()
+                .to_string()
         );
         assert_eq!(
             session["report_json_path"],
-            "/tmp/tales-web-cwd/.tales/report.json"
+            resolve_report_path(&preview.cwd, cfg.report_json_path.clone())
+                .unwrap()
+                .display()
+                .to_string()
         );
         assert_eq!(session["project_context"]["refresh"], true);
         assert_eq!(session["project_context"]["cache_hit"], true);

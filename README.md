@@ -5,7 +5,7 @@
 ### two AIs, one terminal, you on the trigger
 
 **Tales** runs AI coding CLIs — **Claude Code**, **Codex**, **Open Code**, and generic CLI rows like Gemini — side by side in your terminal.
-They argue out a plan, recommend who should execute — and **nothing runs until you say so.**
+They argue through the implementation, recommend who should execute — and **nothing runs until you say so.**
 
 [![MIT](https://img.shields.io/badge/license-MIT-2dd4bf?style=flat-square)](LICENSE)
 [![Rust](https://img.shields.io/badge/built%20with-Rust-c08cff?style=flat-square)](https://www.rust-lang.org)
@@ -185,7 +185,7 @@ tales doctor --all
 tales context
 tales profile refresh
 
-# 3. open the terminal — connect your tools, then plan
+# 3. open the terminal — connect your tools, then discuss
 tales
 
 # 4. or go straight in, scriptable:
@@ -207,9 +207,9 @@ Try the whole flow with **no API calls**: `tales-tui --demo` or `tales-web --dem
 ## The flow
 
 1. **Connect** — pick which CLIs join: Claude Code, Codex, Open Code, Gemini, GLM, Kimi, or another registry row. Bring two; bring three.
-2. **Plan** *(default)* — they discuss in a live chat. Type to interject — you're a participant.
+2. **Discuss** *(default)* — they argue through the implementation. Type to interject — you're a participant. A formal plan is only requested when both AIs say one is needed.
 3. **Pick** — they recommend an executor; you confirm, override (`/confirm <n>`), or reject. **This gate can't be skipped.**
-4. **Execute** — the chosen tool builds the plan in an isolated git worktree. You get a clean, reviewable diff.
+4. **Execute** — the chosen tool builds from the discussion or agreed plan in an isolated git worktree. You get a clean, reviewable diff.
 
 `/tales` from inside Claude Code or Codex opens the same terminal with that tool pre-connected.
 
@@ -221,7 +221,7 @@ A Cargo workspace with a strictly UI-agnostic core — frontends talk to it only
   `AgentEvent`s; the wildly different CLIs (Claude's bidirectional `stream-json` vs Codex's
   turn-based `exec`/`resume`) differ only through `AgentCaps` flags — never an `if claude {…}`.
 - **`tales-cli`** — the `tales` binary: bare `tales` opens the interactive terminal; `run` / `discuss` / `solo` are the scriptable counterparts; `doctor`, `context`, `profile`, and `eval` preflight tools/cache/memory/evaluation state with no model calls.
-- **`tales-tui`** — the interactive terminal: connect → plan → pick → execute.
+- **`tales-tui`** — the interactive terminal: connect → discuss → pick → execute.
 - **`tales-web`** — a local browser view (axum + WebSocket) of the same session, with a pre-session workspace/task picker so you do not need to `cd` first.
 
 Tales caches a compact repo map/manifest context outside the project and injects it into first planning prompts. It also keeps an opt-in local workspace profile under the Tales cache tree with metadata only: commands, preferred tools, warnings, report paths, and run summaries. Reports include prompt telemetry, provider token/cost data when adapters expose it, local-change handoff summaries, deterministic optimization hints, and recommendation inputs.

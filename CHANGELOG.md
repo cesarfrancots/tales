@@ -6,6 +6,11 @@ Tales uses one lockstep SemVer version for the Rust workspace. The version lives
 
 ## Unreleased
 
+## 0.8.0
+
+- Added slash-command type-ahead: pressing `/` turns the footer into a live, filtered list of the matching commands with one-line descriptions, so the command set is discoverable without memorizing `/commands`.
+- The hint narrows as you type (e.g. `/ha` → `/handoff`) and disappears for normal messages or an unknown `/token`.
+
 ## 0.7.0
 
 - Sharpened the planner system prompts so the discussion produces better executor handoffs: the drafter is asked to name the concrete files/components it would change and to ground claims in the cached project context instead of guessing.

@@ -51,6 +51,20 @@ fn recommendation_scores_line(scores: &[(String, f32)]) -> Option<String> {
     Some(format!("scores: {}", parts.join(", ")))
 }
 
+/// The slash-commands Tales understands, with one-line descriptions, used for
+/// the type-ahead hint shown while composing a `/command`.
+pub const SLASH_COMMANDS: &[(&str, &str)] = &[
+    ("/help", "quick guidance"),
+    ("/commands", "list every command"),
+    ("/attach", "send an image or PDF next"),
+    ("/confirm", "approve execution"),
+    ("/reject", "stop before execution"),
+    ("/artifacts", "show saved run paths"),
+    ("/handoff", "resend handoff to an executor"),
+    ("/switch", "open a fresh executor pane"),
+    ("/quit", "leave Tales"),
+];
+
 pub fn help_message() -> &'static str {
     "Tales help\n\
      Type a normal message to add context while the agents are discussing.\n\
@@ -619,10 +633,50 @@ impl App {
         arg.to_string()
     }
 
+    /// A type-ahead hint of the slash-commands matching what the user is
+    /// composing. `None` unless the input is a `/command` being typed — so the
+    /// commands reveal themselves the moment you press `/`.
+    pub fn command_hint(&self) -> Option<Line<'static>> {
+        let text = self.input.as_string();
+        let trimmed = text.trim_start();
+        if !trimmed.starts_with('/') {
+            return None;
+        }
+        let token = trimmed.split_whitespace().next().unwrap_or("/");
+        let matches: Vec<&(&str, &str)> = SLASH_COMMANDS
+            .iter()
+            .filter(|(name, _)| name.starts_with(token))
+            .collect();
+        if matches.is_empty() {
+            return None;
+        }
+        // Show descriptions once the user has narrowed to a prefix; for a bare
+        // "/" just list the names so the whole set fits on one line.
+        let show_desc = token.len() > 1;
+        let mut spans = Vec::new();
+        for (i, (name, desc)) in matches.iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::styled("  ", Style::default().fg(FAINT)));
+            }
+            spans.push(Span::styled(
+                name.to_string(),
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ));
+            if show_desc {
+                spans.push(Span::styled(format!(" {desc}"), Style::default().fg(DIM)));
+            }
+        }
+        Some(Line::from(spans))
+    }
+
     /// The footer hint line. At the gate it becomes an executor picker listing
-    /// the connected tools as numbered choices; otherwise it's the chat help.
+    /// the connected tools as numbered choices; while composing a `/command` it
+    /// becomes a type-ahead list; otherwise it's the chat help.
     pub fn footer_line(&self) -> Line<'static> {
         if !self.awaiting {
+            if let Some(hint) = self.command_hint() {
+                return hint;
+            }
             return Line::from(Span::styled(
                 "Enter send · Alt+Enter newline · /help · /commands · /artifacts · /handoff · /switch <agent> · /quit",
                 Style::default().fg(FAINT),
@@ -925,6 +979,28 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn command_hint_filters_as_you_type_a_slash_command() {
+        let mut app = App::new("t".into());
+        // No hint for normal text.
+        app.input = "just talking".into();
+        assert!(app.command_hint().is_none());
+        // A bare slash lists every command name.
+        app.input = "/".into();
+        let all = text_of(&[app.command_hint().unwrap()]);
+        assert!(all.contains("/help"), "{all}");
+        assert!(all.contains("/switch"), "{all}");
+        // A prefix narrows to the matches and shows descriptions.
+        app.input = "/ha".into();
+        let narrowed = text_of(&[app.command_hint().unwrap()]);
+        assert!(narrowed.contains("/handoff"), "{narrowed}");
+        assert!(!narrowed.contains("/help"), "{narrowed}");
+        assert!(narrowed.contains("resend"), "{narrowed}");
+        // A non-command slash yields nothing.
+        app.input = "/nope".into();
+        assert!(app.command_hint().is_none());
     }
 
     #[test]

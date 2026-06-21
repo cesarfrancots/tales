@@ -1261,6 +1261,16 @@ impl Workspace {
     }
 
     fn draw_footer(&self, f: &mut Frame, area: Rect) {
+        // While composing a /command in an active Tales pane, the footer becomes
+        // a type-ahead list of the matching commands.
+        if let Some(Pane::Tales(tales)) = self.panes.get(self.active) {
+            if tales.started {
+                if let Some(hint) = tales.app.command_hint() {
+                    f.render_widget(Paragraph::new(hint), area);
+                    return;
+                }
+            }
+        }
         let help = if self.active_is_process() {
             "Tab switch · Ctrl-T Tales for /handoff or /switch · Ctrl-A approve · Ctrl-Q quit"
         } else {

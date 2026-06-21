@@ -9,7 +9,7 @@ They argue through the implementation, recommend who should execute — and **no
 
 [![MIT](https://img.shields.io/badge/license-MIT-2dd4bf?style=flat-square)](LICENSE)
 [![Rust](https://img.shields.io/badge/built%20with-Rust-c08cff?style=flat-square)](https://www.rust-lang.org)
-[![size](https://img.shields.io/badge/binary-1.4%20MB-5cb0ff?style=flat-square)](#weighs-almost-nothing)
+[![size](https://img.shields.io/badge/binary-1.5%20MB-5cb0ff?style=flat-square)](#weighs-almost-nothing)
 [![telemetry](https://img.shields.io/badge/telemetry-none-7ee0a3?style=flat-square)](#weighs-almost-nothing)
 
 [**Documentation**](https://cesarfrancots.github.io/tales/docs.html) · [**Website**](https://cesarfrancots.github.io/tales/) · [**Quickstart**](#quickstart)
@@ -206,10 +206,12 @@ Try the whole flow with **no API calls**: `tales-tui --demo` or `tales-web --dem
 
 ## The flow
 
-1. **Connect** — pick which CLIs join: Claude Code, Codex, Open Code, Gemini, GLM, Kimi, or another registry row. Bring two; bring three.
+1. **Connect** — Tales opens with a workspace folder browser and a permission prompt, then you pick which CLIs join: Claude Code, Codex, Open Code, Gemini, GLM, Kimi, or another registry row. Bring two; bring three.
 2. **Discuss** *(default)* — they argue through the implementation. Type to interject — you're a participant. A formal plan is only requested when both AIs say one is needed.
 3. **Pick** — they recommend an executor; you confirm, override (`/confirm <n>`), or reject. **This gate can't be skipped.**
 4. **Execute** — the chosen tool builds from the discussion or agreed plan in an isolated git worktree. You get a clean, reviewable diff.
+
+The terminal is built for real prompts: a **multi-line editor** (`Alt+Enter` for a newline, edit anywhere, paste multi-line blocks as one edit), **`PageUp`/`PageDown` scrollback** through the discussion, and **slash-command type-ahead** — press `/` to see the matching commands filter as you type.
 
 `/tales` from inside Claude Code or Codex opens the same terminal with that tool pre-connected.
 
@@ -243,8 +245,9 @@ against the source. Eat your own cooking.
 
 Live today: multi-agent discussion, parallel planning, cached project context, local workspace profiles, prompt forecasts, deterministic eval comparisons,
 recommendation + a hard confirmation gate, git-worktree execution & merge, the interactive
-terminal workspace, browser supervision UI with workspace picker and command palette, report writers, and bespoke/generic tool adapters.
-Hardened against deadlocks and zombie processes; the test suite and strict clippy pass before push.
+terminal workspace (folder-browser onboarding, a multi-line prompt editor, transcript scrollback, and slash-command type-ahead),
+browser supervision UI with workspace picker and command palette, report writers, and bespoke/generic tool adapters.
+Runs on macOS, Linux, and Windows (all three covered by CI). Hardened against deadlocks and zombie processes; the test suite and strict clippy pass before push.
 
 ---
 

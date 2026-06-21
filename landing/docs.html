@@ -164,7 +164,7 @@
       <h2>Install &amp; prerequisites</h2>
       <ul>
         <li><b>Rust toolchain</b> (stable) to build the workspace.</li>
-        <li>Developed and tested on <b>macOS and Linux</b>. <code>tales open</code> (the new-window launcher) is macOS-only; the other commands are Unix-oriented.</li>
+        <li>Runs on <b>macOS, Linux, and Windows</b> — all three are covered by CI. <code>tales open</code> opens a new terminal window on macOS, Windows, and common Linux desktop terminals; plain <code>tales</code> works inside any terminal you already have open.</li>
         <li>At least one AI coding CLI on your <code>PATH</code>, installed and authenticated. The default discussion pairs two, so for a single tool you pass explicit flags (see <a href="#troubleshooting">Troubleshooting</a>).</li>
       </ul>
       <p>Tales detects which tools are on <code>PATH</code> and shows the connectable ones — you only need the ones you intend to use. See <a href="#tools">Supported tools</a> for the adapters that ship today.</p>
@@ -175,6 +175,7 @@
       <p>Try the whole flow with <b>no API calls</b>:</p>
       <pre><button class="copy">copy</button><span class="p">tales-tui</span> --demo
 <span class="p">tales-web</span> --demo</pre>
+      <div class="note"><span class="ic">i</span><div><b>Windows.</b> Run <code>.\target\release\tales.exe</code>, or add <code>target\release</code> to <code>PATH</code>. Release checks live at <code>scripts/release-check.sh</code> (macOS/Linux) and <code>.\scripts\release-check.ps1</code> (Windows).</div></div>
     </section>
 
     <section id="quickstart">
@@ -193,8 +194,12 @@
       <h2>The interactive terminal</h2>
       <p>Type <code>tales</code> to open a multi-pane terminal workspace: a <b>Tales orchestrator pane</b> plus sibling shell and agent-CLI panes.</p>
       <ul>
-        <li><b>Plan.</b> In the Tales pane, type your task and press <code>Enter</code>; the drafter and critic discuss and draft a plan in place, streamed token-by-token.</li>
-        <li><b>Open panes as needed.</b> <code>Ctrl-N</code> shell · <code>Ctrl-X</code>/<code>Ctrl-L</code>/<code>Ctrl-O</code> open agent panes · <code>Tab</code> switches focus.</li>
+        <li><b>Onboard.</b> On launch, a folder browser picks the workspace (<code>Enter</code> open/select · <code>c</code> use current · <code>p</code> or <code>:</code> type a path · <code>Backspace</code> parent), then a permission prompt approves writing <code>.tales</code> artifacts and launching CLIs from that folder before any agent spawns.</li>
+        <li><b>Discuss.</b> In the Tales pane, type your task and press <code>Enter</code>; the drafter and critic discuss in place, streamed token-by-token. Discussion is the default — a formal plan is only requested when both agents say one is needed.</li>
+        <li><b>Write long prompts.</b> The prompt is a full multi-line editor: insert and edit anywhere with <code>Left/Right</code>, <code>Home/End</code>, word motion (<code>Alt+Left/Right</code>), and word/line kills (<code>Ctrl-W</code>, <code>Ctrl-U</code>, <code>Ctrl-K</code>). <code>Alt+Enter</code>, <code>Shift+Enter</code>, or <code>Ctrl-J</code> insert a newline; plain <code>Enter</code> sends. Pasting a multi-line block lands as one edit instead of firing several submits.</li>
+        <li><b>Scroll back.</b> <code>PageUp</code>/<code>PageDown</code> scroll the conversation once it grows past the viewport, with a right-aligned "↑ scrolled" indicator while scrolled up; sending a message or the gate opening snaps the view back to the live tail.</li>
+        <li><b>Discover commands.</b> Press <code>/</code> to turn the footer into a live, filtered list of the slash commands with one-line descriptions; it narrows as you type (<code>/ha</code> → <code>/handoff</code>) and disappears for normal messages or an unknown token.</li>
+        <li><b>Open panes as needed.</b> <code>Ctrl-N</code> shell · <code>Ctrl-X</code>/<code>Ctrl-L</code>/<code>Ctrl-O</code> open agent panes · <code>Ctrl-S</code> sends the handoff · <code>Tab</code> switches focus.</li>
         <li><b>Observe / intervene.</b> A focused agent pane receives your keystrokes directly. <code>Ctrl-A</code> sends an explicit approval, but only when that pane is waiting on one.</li>
         <li><b>Confirm &amp; hand off.</b> After the discussion, agents emit recommendations and Tales surfaces the aggregated pick. At the gate, <code>Enter</code> or <code>/confirm &lt;n&gt;</code> launches the executor in its own live pane and sends it the plan.</li>
       </ul>

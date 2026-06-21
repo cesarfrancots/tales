@@ -2563,6 +2563,39 @@ fn bounded_context_edges(text: &str, max_chars: Option<usize>) -> String {
     )
 }
 
+/// The DRAFTER role intro for a planner's first turn. Shared by the resumable
+/// and stateless paths so the wording can't drift between them. `context_block`
+/// is the already-rendered cached-project-context section (may be empty).
+fn drafter_intro(task: &str, context_block: &str) -> String {
+    format!(
+        "You are the DRAFTER in an implementation discussion with a critic.\n\
+         Task: {task}\n\
+         {context_block}\n\
+         Propose the simplest viable implementation approach, the concrete \
+         files or components you would change, and the key risks. State whether \
+         this task really needs a formal plan. Ground each claim in the code \
+         shown above when it is provided rather than guessing. Be specific and \
+         brief; no preamble. Do not write a full plan unless the task clearly \
+         needs one."
+    )
+}
+
+/// The CRITIC role intro reviewing a `draft`. Shared by both paths. Asks the
+/// critic to green-light a sound approach instead of manufacturing concerns, so
+/// the discussion can converge toward execution.
+fn critic_intro(task: &str, context_block: &str, draft: &str) -> String {
+    format!(
+        "You are the CRITIC reviewing an implementation approach.\n\
+         Task: {task}\n\n\
+         {context_block}\
+         Latest draft:\n{draft}\n\n\
+         Challenge concrete problems, missing edge cases, and whether a formal \
+         plan is actually needed. If the approach is sound with no blocking \
+         issues, say so plainly instead of inventing concerns. Be specific and \
+         brief; no preamble."
+    )
+}
+
 /// Build the prompt for a SEQUENTIAL planning turn. A *resumable* adapter keeps
 /// its own prior turns in its session, so it is sent only the role intro (the
 /// first time it speaks) plus the unseen `delta` — never the whole transcript
@@ -2592,33 +2625,27 @@ fn compose_prompt(
     }
     let delta = bounded_context(delta, context_budget_chars);
     match role {
-        Role::Drafter if first_time => format!(
-            "You are the DRAFTER in an implementation discussion with a critic.\n\
-             Task: {task}\n\
-             {}\n\
-             Propose the simplest viable implementation approach, key risks, \
-             and whether this task really needs a formal plan. Do not write a \
-             full plan unless the task clearly needs one.",
-            project_context_block(first_turn_project_context, context_budget_chars)
+        Role::Drafter if first_time => drafter_intro(
+            task,
+            &project_context_block(first_turn_project_context, context_budget_chars),
         ),
         Role::Drafter => format!(
             "The critic responded:\n{delta}\n\n\
-             Respond with the updated implementation argument. If a formal plan \
-             is still needed, say why; otherwise keep the handoff concise."
+             Respond with the updated implementation argument, converging on \
+             what is already settled rather than reopening it. If a formal plan \
+             is still needed, say why; otherwise end with the concrete, \
+             executable handoff (the files to change and the order of steps)."
         ),
-        Role::Critic if first_time => format!(
-            "You are the CRITIC reviewing an implementation approach.\n\
-             Task: {task}\n\n\
-             {}\
-             Latest draft:\n{delta}\n\n\
-             Challenge concrete problems, missing edge cases, and whether a \
-             formal plan is actually needed. Be specific and brief; no preamble.",
-            project_context_block(first_turn_project_context, context_budget_chars)
+        Role::Critic if first_time => critic_intro(
+            task,
+            &project_context_block(first_turn_project_context, context_budget_chars),
+            &delta,
         ),
         Role::Critic => format!(
             "The drafter revised:\n{delta}\n\n\
              Critique the update: remaining problems, gaps, and whether a \
-             formal plan is necessary. Be specific and brief."
+             formal plan is necessary. If nothing now blocks execution, say so \
+             plainly so the team can move on. Be specific and brief."
         ),
         Role::Human | Role::Executor => task.to_string(),
     }
@@ -2639,14 +2666,9 @@ fn compose_prompt_full(
     match role {
         Role::Drafter => {
             if bb.transcript.is_empty() {
-                format!(
-                    "You are the DRAFTER in an implementation discussion with a critic.\n\
-                     Task: {task}\n\
-                     {}\n\
-                     Propose the simplest viable implementation approach, key risks, \
-                     and whether this task really needs a formal plan. Do not write a \
-                     full plan unless the task clearly needs one.",
-                    project_context_block(project_context, context_budget_chars)
+                drafter_intro(
+                    task,
+                    &project_context_block(project_context, context_budget_chars),
                 )
             } else {
                 format!(
@@ -2654,8 +2676,10 @@ fn compose_prompt_full(
                      {}\
                      Discussion so far:\n{}\n\
                      Update the implementation argument to address the critic's \
-                     points. If a formal plan is needed, say why; otherwise keep \
-                     the handoff concise.",
+                     points, converging on what is settled rather than reopening \
+                     it. If a formal plan is needed, say why; otherwise end with \
+                     the concrete, executable handoff (the files to change and \
+                     the order of steps).",
                     project_context_block(project_context, context_budget_chars),
                     bounded_context(&bb.transcript_text(), context_budget_chars)
                 )
@@ -2666,14 +2690,10 @@ fn compose_prompt_full(
                 .last_text()
                 .map(|text| bounded_context(text, context_budget_chars))
                 .unwrap_or_else(|| "(no draft yet)".to_string());
-            format!(
-                "You are the CRITIC reviewing an implementation approach.\n\
-                 Task: {task}\n\n\
-                 {}\
-                 Latest draft:\n{latest}\n\n\
-                 Challenge concrete problems, missing edge cases, and whether a \
-                 formal plan is actually needed. Be specific and brief; no preamble.",
-                project_context_block(project_context, context_budget_chars)
+            critic_intro(
+                task,
+                &project_context_block(project_context, context_budget_chars),
+                &latest,
             )
         }
         // Humans are recorded out-of-band; executors are filtered out of
@@ -2697,8 +2717,10 @@ fn compose_round1_prompt(
          Task: {task}\n\
          {}\n\
          Produce your own concise implementation argument: simplest viable \
-         approach, risks, and whether this task needs a formal plan. Do not write \
-         a full plan unless it clearly needs one. You'll compare with the other \
+         approach, the concrete files or components you would change, the risks, \
+         and whether this task needs a formal plan. Ground each claim in the code \
+         shown above when it is provided rather than guessing. Do not write a \
+         full plan unless it clearly needs one. You'll compare with the other \
          proposal next. Bullet points are fine; no preamble.",
         project_context_block(project_context, context_budget_chars)
     )
@@ -2739,15 +2761,18 @@ fn compose_round_synth_prompt(
             "Task: {task}\n\n{context}\n\n\
              Identify the concrete defects and missing edge cases in the competing \
              proposal, then produce the single merged implementation recommendation. \
-             If either side thinks no formal plan is needed, do not write one; keep \
-             only the execution guidance. Output only the merged recommendation."
+             Make it concrete and executable — name the files to change and the \
+             order of steps. If either side thinks no formal plan is needed, do not \
+             write one; keep only the execution guidance. Output only the merged \
+             recommendation."
         )
     } else {
         format!(
             "Task: {task}\n\n{context}\n\n\
              Adversarially review the competing proposal: list its concrete \
              problems, risks, missing edge cases, and whether a formal plan is \
-             actually needed. Be specific and brief."
+             actually needed. If it is sound with no blocking issues, say so \
+             plainly. Be specific and brief."
         )
     }
 }
@@ -3033,6 +3058,22 @@ mod prompt_tests {
         assert!(p.contains("earlier context omitted"), "{p}");
         assert!(!p.contains("EARLY-CONTEXT"), "{p}");
         assert!(p.contains("LATE-CONTEXT"), "{p}");
+    }
+
+    #[test]
+    fn intros_ask_for_concrete_grounded_output_and_greenlight() {
+        let bb = Blackboard::default();
+        // Drafter asks for the concrete files to change.
+        let drafter = compose_prompt(Role::Drafter, "task", &bb, true, "", true, None, None);
+        assert!(drafter.contains("You are the DRAFTER"), "{drafter}");
+        assert!(drafter.to_lowercase().contains("files"), "{drafter}");
+        // Critic is told to green-light a sound approach instead of nitpicking.
+        let critic = compose_prompt(Role::Critic, "task", &bb, true, "THE-DRAFT", true, None, None);
+        assert!(critic.contains("THE-DRAFT"), "{critic}");
+        assert!(critic.to_lowercase().contains("sound"), "{critic}");
+        // The parallel merge asks for an executable, file-level conclusion.
+        let synth = compose_round_synth_prompt("task", "OTHER", true, true, "OWN", None);
+        assert!(synth.to_lowercase().contains("executable"), "{synth}");
     }
 
     #[test]

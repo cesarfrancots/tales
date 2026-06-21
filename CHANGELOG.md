@@ -6,6 +6,13 @@ Tales uses one lockstep SemVer version for the Rust workspace. The version lives
 
 ## Unreleased
 
+## 0.7.0
+
+- Sharpened the planner system prompts so the discussion produces better executor handoffs: the drafter is asked to name the concrete files/components it would change and to ground claims in the cached project context instead of guessing.
+- The critic is now told to green-light a sound approach plainly instead of manufacturing concerns, and both planners are nudged to converge on what is settled and end with an executable, file-level handoff (files to change, order of steps).
+- Applied the same "concrete and grounded" framing to the parallel round-1 and merge prompts.
+- Factored the drafter/critic role intros into shared helpers so the resumable and stateless prompt paths can't drift apart.
+
 ## 0.6.0
 
 - Added transcript scrollback: PageUp/PageDown scroll the conversation so earlier discussion is readable once it grows past the viewport, with a right-aligned "↑ scrolled" indicator while scrolled up.

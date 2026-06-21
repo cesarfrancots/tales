@@ -19,6 +19,7 @@ use ratatui::text::{Line, Span};
 use tales_core::event::{OrchestratorEvent, UserCommand};
 use uuid::Uuid;
 
+use crate::input::Input;
 use crate::theme::{color_for, pretty, ACCENT, DIM, ERRC, FAINT, TEXT, YOU};
 
 /// Braille spinner frames for the "thinking" indicator.
@@ -50,6 +51,7 @@ fn recommendation_scores_line(scores: &[(String, f32)]) -> Option<String> {
 pub fn help_message() -> &'static str {
     "Tales help\n\
      Type a normal message to add context while the agents are discussing.\n\
+     Long prompt? Alt+Enter or Ctrl-J adds a newline; Enter sends. Paste multi-line text directly. Left/Right, Home/End, Ctrl-W, and Ctrl-U edit the line.\n\
      At the executor gate, press Enter to accept the recommendation or press 1-9 to pick a tool.\n\
      The selected executor opens as a live CLI pane, so you can answer questions directly there.\n\
      Run artifacts are saved under .tales/runs/<run>/ and the executor handoff is copied to .tales/last-plan.md.\n\
@@ -71,75 +73,6 @@ pub fn commands_message() -> &'static str {
      /quit — leave Tales\n\
      Artifacts — .tales/runs/<run>/plan.md, events.jsonl, manifest.json; latest executor handoff at .tales/last-plan.md\n\
      Ctrl-N shell · Ctrl-X Codex · Ctrl-L Claude · Ctrl-O Open Code · Ctrl-S send handoff · Ctrl-A approve"
-}
-
-pub fn input_area_height(prefix: &str, input: &str, width: u16, max_height: u16) -> u16 {
-    let rows = wrapped_input_rows(prefix, input, width).len() as u16;
-    rows.clamp(1, max_height.max(1))
-}
-
-pub fn input_view_lines(
-    prefix: &str,
-    input: &str,
-    width: u16,
-    height: u16,
-    scroll: usize,
-) -> Vec<Line<'static>> {
-    let height = height.max(1) as usize;
-    let rows = wrapped_input_rows(prefix, input, width);
-    let max_scroll = rows.len().saturating_sub(height);
-    let end = rows.len() - scroll.min(max_scroll);
-    let start = end.saturating_sub(height);
-    let blank_prefix = " ".repeat(prefix.chars().count());
-
-    rows[start..end]
-        .iter()
-        .map(|(first, text)| {
-            let shown_prefix = if *first { prefix } else { &blank_prefix };
-            Line::from(vec![
-                Span::styled(
-                    shown_prefix.to_string(),
-                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(text.clone(), Style::default().fg(TEXT)),
-            ])
-        })
-        .collect()
-}
-
-fn wrapped_input_rows(prefix: &str, input: &str, width: u16) -> Vec<(bool, String)> {
-    let body_width = (width as usize)
-        .saturating_sub(prefix.chars().count())
-        .max(1);
-    let mut rows = Vec::new();
-    let mut first = true;
-
-    for logical in input.split('\n') {
-        if logical.is_empty() {
-            rows.push((first, String::new()));
-            first = false;
-            continue;
-        }
-
-        let mut row = String::new();
-        let mut row_width = 0;
-        for ch in logical.chars() {
-            if row_width >= body_width {
-                rows.push((first, std::mem::take(&mut row)));
-                first = false;
-                row_width = 0;
-            }
-            row.push(ch);
-            row_width += 1;
-        }
-        rows.push((first, row));
-        first = false;
-    }
-
-    if rows.is_empty() {
-        rows.push((true, String::new()));
-    }
-    rows
 }
 
 #[derive(Debug, Clone)]
@@ -196,7 +129,7 @@ pub struct App {
     partial_order: Vec<Uuid>,
     labels: HashMap<Uuid, String>,
     roles: HashMap<Uuid, String>,
-    pub input: String,
+    pub input: Input,
     pub recommended: Option<String>,
     pub awaiting: bool,
     pub should_quit: bool,
@@ -221,7 +154,7 @@ impl App {
             partial_order: Vec::new(),
             labels: HashMap::new(),
             roles: HashMap::new(),
-            input: String::new(),
+            input: Input::new(),
             recommended: None,
             awaiting: false,
             should_quit: false,
@@ -519,7 +452,7 @@ impl App {
     /// are returned separately because they are handled by the terminal
     /// workspace, not the core orchestrator.
     pub fn submit_action(&mut self) -> Option<SubmitAction> {
-        let text = self.input.trim().to_string();
+        let text = self.input.trimmed();
         self.input.clear();
 
         // Match commands exactly (or followed by a space) so `/attachfoo` and
@@ -640,7 +573,7 @@ impl App {
     pub fn footer_line(&self) -> Line<'static> {
         if !self.awaiting {
             return Line::from(Span::styled(
-                "type to talk · /help · /commands · /artifacts · /handoff · /switch <agent> · /quit",
+                "Enter send · Alt+Enter newline · /help · /commands · /artifacts · /handoff · /switch <agent> · /quit",
                 Style::default().fg(FAINT),
             ));
         }
@@ -944,20 +877,6 @@ mod tests {
     }
 
     #[test]
-    fn input_view_tails_and_scrolls_long_wrapped_text() {
-        assert_eq!(input_area_height("p> ", "abcdefgh", 5, 10), 4);
-
-        let bottom = text_of(&input_view_lines("p> ", "abcdefgh", 5, 2, 0));
-        assert!(bottom.contains("ef"), "{bottom}");
-        assert!(bottom.contains("gh"), "{bottom}");
-        assert!(!bottom.contains("ab"), "{bottom}");
-
-        let top = text_of(&input_view_lines("p> ", "abcdefgh", 5, 2, 2));
-        assert!(top.contains("ab"), "{top}");
-        assert!(top.contains("cd"), "{top}");
-    }
-
-    #[test]
     fn renders_streamed_then_finalized_messages() {
         let agent = Uuid::new_v4();
         let mut app = App::new("build a thing".into());
@@ -1182,7 +1101,7 @@ mod tests {
         }
         // At the gate, a bare Enter accepts the recommendation.
         app.awaiting = true;
-        app.input = String::new();
+        app.input.clear();
         match app.submit_input() {
             Some(UserCommand::ConfirmExecution { executor }) => assert_eq!(executor, "claude"),
             other => panic!("expected confirm claude, got {other:?}"),

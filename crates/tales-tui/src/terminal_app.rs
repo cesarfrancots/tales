@@ -34,10 +34,8 @@ use tokio::sync::broadcast::error::TryRecvError;
 use tokio::sync::mpsc;
 use tokio::time::{self, Duration};
 
-use crate::app::{
-    commands_message, help_message, input_area_height, input_view_lines, App, RecoveryCommand,
-    SubmitAction,
-};
+use crate::app::{commands_message, help_message, App, RecoveryCommand, SubmitAction};
+use crate::input::Input;
 use crate::theme::{color_for, pretty, ACCENT, DIM, ERRC, FAINT, TEXT};
 use crate::{run_session, Args, Connection};
 
@@ -101,8 +99,10 @@ pub(crate) async fn run_terminal_workspace(
                 if maybe_key.is_none() {
                     break;
                 }
-                if let Some(Ok(Event::Key(key))) = maybe_key {
-                    workspace.handle_key(key).await;
+                match maybe_key {
+                    Some(Ok(Event::Key(key))) => workspace.handle_key(key).await,
+                    Some(Ok(Event::Paste(text))) => workspace.handle_paste(text),
+                    _ => {}
                 }
             }
             maybe_ev = rx.recv() => {
@@ -762,7 +762,7 @@ impl Workspace {
     fn new(cfg: WorkspaceConfig, tx: mpsc::UnboundedSender<TerminalEvent>) -> Self {
         let mut tales = TalesPane::new(1, cfg.clone());
         if let Some(prefill) = &cfg.prefill {
-            tales.app.input = prefill.clone();
+            tales.app.input = Input::from_text(prefill);
         }
         Self {
             cfg,
@@ -842,6 +842,16 @@ impl Workspace {
 
         if let Some(action) = tales_action {
             self.apply_tales_action(action);
+        }
+    }
+
+    /// Bracketed paste — route a pasted block to the focused pane: into the
+    /// Tales prompt as one edit, or straight to a process pane's stdin.
+    fn handle_paste(&mut self, text: String) {
+        match self.panes.get_mut(self.active) {
+            Some(Pane::Tales(tales)) => tales.paste(&text),
+            Some(Pane::Process(proc)) => proc.write(text.as_bytes()),
+            None => {}
         }
     }
 
@@ -1107,10 +1117,11 @@ impl Workspace {
         let max_input_height = f.area().height.saturating_sub(3).min(8).max(1);
         let min_input_height = 3.min(max_input_height);
         let input_height = match self.panes.get(self.active) {
-            Some(Pane::Tales(tales)) => {
-                input_area_height("you ❯ ", &tales.app.input, f.area().width, max_input_height)
-                    .max(min_input_height)
-            }
+            Some(Pane::Tales(tales)) => tales
+                .app
+                .input
+                .height("you ❯ ", f.area().width, max_input_height)
+                .max(min_input_height),
             _ => min_input_height,
         };
         let chunks = Layout::vertical([
@@ -1220,9 +1231,8 @@ impl Workspace {
     fn draw_input(&self, f: &mut Frame, area: Rect) {
         if let Some(Pane::Tales(tales)) = self.panes.get(self.active) {
             f.render_widget(
-                Paragraph::new(input_view_lines(
+                Paragraph::new(tales.app.input.view_lines(
                     "you ❯ ",
-                    &tales.app.input,
                     area.width,
                     area.height,
                     tales.input_scroll,
@@ -1254,7 +1264,7 @@ impl Workspace {
         let help = if self.active_is_process() {
             "Tab switch · Ctrl-T Tales for /handoff or /switch · Ctrl-A approve · Ctrl-Q quit"
         } else {
-            "Tab switch · PageUp/PageDown prompt · Ctrl-N shell · Ctrl-X Codex · Ctrl-L Claude · Ctrl-S send handoff · Ctrl-A approve · Ctrl-Q quit"
+            "Enter send · Alt+Enter newline · Tab switch · Ctrl-N shell · Ctrl-X Codex · Ctrl-L Claude · Ctrl-S handoff · Ctrl-A approve · Ctrl-Q quit"
         };
         f.render_widget(
             Paragraph::new(Line::from(vec![
@@ -1464,16 +1474,23 @@ impl TalesPane {
     }
 
     async fn handle_key(&mut self, key: KeyEvent) -> Option<TalesAction> {
-        match (key.code, key.modifiers) {
-            (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
-                if let Some(commands) = &self.commands {
-                    let _ = commands.send(UserCommand::Shutdown).await;
-                }
-                self.notice = "Tales run stopped".to_string();
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            if let Some(commands) = &self.commands {
+                let _ = commands.send(UserCommand::Shutdown).await;
             }
-            (KeyCode::Enter, _) => {
+            self.notice = "Tales run stopped".to_string();
+            return None;
+        }
+        let plain = !key.modifiers.contains(KeyModifiers::CONTROL)
+            && !key.modifiers.contains(KeyModifiers::ALT);
+        // Alt/Shift+Enter (and Ctrl-J via the editor) insert a newline instead of
+        // submitting, so long multi-line prompts can be composed in place.
+        let newline = key.modifiers.contains(KeyModifiers::ALT)
+            || key.modifiers.contains(KeyModifiers::SHIFT);
+        match key.code {
+            KeyCode::Enter if !newline => {
                 if !self.started {
-                    let task = self.app.input.trim().to_string();
+                    let task = self.app.input.trimmed();
                     if task.is_empty() {
                         self.notice = "type help, commands, or a task to discuss".to_string();
                     } else if self.handle_startup_command(&task) {
@@ -1488,11 +1505,7 @@ impl TalesPane {
                 }
                 self.input_scroll = 0;
             }
-            (KeyCode::Backspace, _) => {
-                self.app.input.pop();
-                self.input_scroll = 0;
-            }
-            (KeyCode::Esc, _) => {
+            KeyCode::Esc => {
                 self.app.input.clear();
                 self.input_scroll = 0;
                 if !self.started {
@@ -1500,26 +1513,37 @@ impl TalesPane {
                     self.notice = "back to welcome".to_string();
                 }
             }
-            (KeyCode::PageUp, _) => {
+            KeyCode::PageUp => {
                 self.input_scroll = self.input_scroll.saturating_add(4);
             }
-            (KeyCode::PageDown, _) => {
+            KeyCode::PageDown => {
                 self.input_scroll = self.input_scroll.saturating_sub(4);
             }
             // At the gate, a bare digit picks that executor; otherwise type it.
-            (KeyCode::Char(c), _) => {
+            KeyCode::Char(c) if plain => {
                 if let Some(cmd) = self.app.gate_pick(c) {
                     if let Some(action) = self.handle_submit_action(SubmitAction::Core(cmd)).await {
                         return Some(action);
                     }
                 } else {
-                    self.app.input.push(c);
+                    self.app.input.insert_char(c);
                     self.input_scroll = 0;
                 }
             }
-            _ => {}
+            // Arrows, Home/End, Backspace/Delete, word/line kills, newline combos.
+            _ => {
+                if self.app.input.handle_edit_key(key) {
+                    self.input_scroll = 0;
+                }
+            }
         }
         None
+    }
+
+    /// Insert pasted text (bracketed paste) into the prompt as one edit.
+    fn paste(&mut self, text: &str) {
+        self.app.input.insert_str(text);
+        self.input_scroll = 0;
     }
 
     fn handle_startup_command(&mut self, text: &str) -> bool {
@@ -2032,6 +2056,10 @@ fn welcome_lines(cfg: &WorkspaceConfig) -> Vec<Line<'static>> {
         )),
         Line::from(Span::styled(
             "  - Describe the outcome, constraints, and files that matter.",
+            Style::default().fg(TEXT),
+        )),
+        Line::from(Span::styled(
+            "  - Writing a long prompt? Alt+Enter (or Ctrl-J) adds a newline; Enter sends. Paste multi-line text directly.",
             Style::default().fg(TEXT),
         )),
         Line::from(Span::styled(

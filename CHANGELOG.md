@@ -6,6 +6,14 @@ Tales uses one lockstep SemVer version for the Rust workspace. The version lives
 
 ## Unreleased
 
+## 0.5.0
+
+- Rewrote the Tales prompt as a full multi-line editor so long prompts are comfortable to write: insert and edit anywhere (not just append), Left/Right and Home/End motion, word motion (Alt+Left/Right), and word/line kills (Ctrl-W, Ctrl-U, Ctrl-K).
+- Added real newlines in the prompt — Alt+Enter, Shift+Enter (where the terminal reports it), or Ctrl-J insert a line break; plain Enter still sends.
+- Enabled bracketed paste so a pasted multi-line block lands as one edit instead of firing several premature submits; pasting into a focused agent pane forwards to its stdin.
+- Added a visible block cursor that the input view follows, with the prompt box growing up to its max height as you type.
+- Shared the new editor across the live chat, the classic prompt screen, and the terminal workspace pane, and surfaced the Alt+Enter newline hint in the footers, welcome tips, and help text.
+
 ## 0.4.0
 
 - Changed the default Tales terminal flow from planning-first to discussion-first, with executor handoff proceeding unless both planner votes request a formal plan.

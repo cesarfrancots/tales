@@ -11,6 +11,7 @@
 
 mod app;
 mod connect;
+mod input;
 mod prompt;
 mod terminal_app;
 mod theme;
@@ -20,7 +21,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::Parser;
-use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyCode, KeyEventKind,
+    KeyModifiers,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -46,7 +50,7 @@ use tales_core::conductor::Role;
 use tales_core::event::{OrchestratorEvent, UserCommand};
 use tales_core::orchestrator::Orchestrator;
 
-use crate::app::{input_area_height, input_view_lines, App};
+use crate::app::App;
 use crate::connect::{ConnectScreen, ToolChoice};
 use crate::prompt::{PromptOutcome, PromptScreen};
 use crate::theme::{ACCENT, DIM, TEXT};
@@ -136,6 +140,7 @@ fn fixed_roster(drafter: &str, critic: &str) -> Vec<Connection> {
 struct TerminalGuard;
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
+        let _ = execute!(std::io::stdout(), DisableBracketedPaste);
         let _ = disable_raw_mode();
         let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
     }
@@ -151,7 +156,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Terminal up — held across every screen by one guard.
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
     let _guard = TerminalGuard;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal: Terminal<CrosstermBackend<Stdout>> = Terminal::new(backend)?;
@@ -322,22 +327,28 @@ async fn run_prompt(
                 if k.kind == KeyEventKind::Release {
                     continue;
                 }
-                match (k.code, k.modifiers) {
-                    (KeyCode::Char('c'), KeyModifiers::CONTROL) => return Ok(PromptOutcome::Quit),
-                    (KeyCode::Esc, _) => return Ok(PromptOutcome::Back(screen.input.clone())),
-                    (KeyCode::Enter, _) => {
-                        let task = screen.input.trim().to_string();
+                let newline = k.modifiers.contains(KeyModifiers::ALT)
+                    || k.modifiers.contains(KeyModifiers::SHIFT);
+                match k.code {
+                    KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                        return Ok(PromptOutcome::Quit)
+                    }
+                    KeyCode::Esc => return Ok(PromptOutcome::Back(screen.input.as_string())),
+                    // Plain Enter starts planning; Alt/Shift+Enter inserts a newline.
+                    KeyCode::Enter if !newline => {
+                        let task = screen.input.trimmed();
                         if !task.is_empty() {
                             return Ok(PromptOutcome::Start(task));
                         }
                     }
-                    (KeyCode::Backspace, _) => screen.pop(),
-                    (KeyCode::PageUp, _) => screen.scroll_up(),
-                    (KeyCode::PageDown, _) => screen.scroll_down(),
-                    (KeyCode::Char(c), _) => screen.push(c),
-                    _ => {}
+                    KeyCode::PageUp => screen.scroll_up(),
+                    KeyCode::PageDown => screen.scroll_down(),
+                    _ => {
+                        screen.edit(k);
+                    }
                 }
             }
+            Some(Ok(Event::Paste(text))) => screen.paste(&text),
             _ => {}
         }
     }
@@ -380,34 +391,54 @@ async fn run_ui(
                     let _ = commands.send(UserCommand::Shutdown).await;
                     break;
                 }
-                if let Some(Ok(Event::Key(key))) = maybe_key {
-                    if key.kind == KeyEventKind::Release { continue; }
-                    match (key.code, key.modifiers) {
-                        (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                match maybe_key {
+                    Some(Ok(Event::Key(key))) => {
+                        if key.kind == KeyEventKind::Release { continue; }
+                        // Ctrl-C quits from anywhere.
+                        if key.code == KeyCode::Char('c')
+                            && key.modifiers.contains(KeyModifiers::CONTROL)
+                        {
                             let _ = commands.send(UserCommand::Shutdown).await;
                             break;
                         }
-                        (KeyCode::Enter, _) => {
-                            if let Some(cmd) = app.submit_input() {
-                                let _ = commands.send(cmd).await;
-                            }
-                            input_scroll = 0;
-                        }
-                        (KeyCode::Backspace, _) => { app.input.pop(); input_scroll = 0; }
-                        (KeyCode::Esc, _) => { app.input.clear(); input_scroll = 0; }
-                        (KeyCode::PageUp, _) => { input_scroll = input_scroll.saturating_add(4); }
-                        (KeyCode::PageDown, _) => { input_scroll = input_scroll.saturating_sub(4); }
-                        // At the gate, a bare digit picks that executor; otherwise type it.
-                        (KeyCode::Char(c), _) => {
-                            if let Some(cmd) = app.gate_pick(c) {
-                                let _ = commands.send(cmd).await;
-                            } else {
-                                app.input.push(c);
+                        let plain = !key.modifiers.contains(KeyModifiers::CONTROL)
+                            && !key.modifiers.contains(KeyModifiers::ALT);
+                        let newline = key.modifiers.contains(KeyModifiers::ALT)
+                            || key.modifiers.contains(KeyModifiers::SHIFT);
+                        match key.code {
+                            // Plain Enter submits; Alt/Shift+Enter insert a newline.
+                            KeyCode::Enter if !newline => {
+                                if let Some(cmd) = app.submit_input() {
+                                    let _ = commands.send(cmd).await;
+                                }
                                 input_scroll = 0;
                             }
+                            KeyCode::Esc => { app.input.clear(); input_scroll = 0; }
+                            KeyCode::PageUp => { input_scroll = input_scroll.saturating_add(4); }
+                            KeyCode::PageDown => { input_scroll = input_scroll.saturating_sub(4); }
+                            // A bare digit at the gate picks an executor; otherwise type it.
+                            KeyCode::Char(c) if plain => {
+                                if let Some(cmd) = app.gate_pick(c) {
+                                    let _ = commands.send(cmd).await;
+                                } else {
+                                    app.input.insert_char(c);
+                                    input_scroll = 0;
+                                }
+                            }
+                            // Arrows, Home/End, Backspace/Delete, word/line kills,
+                            // and the newline combos are all handled by the editor.
+                            _ => {
+                                if app.input.handle_edit_key(key) {
+                                    input_scroll = 0;
+                                }
+                            }
                         }
-                        _ => {}
                     }
+                    Some(Ok(Event::Paste(text))) => {
+                        app.input.insert_str(&text);
+                        input_scroll = 0;
+                    }
+                    _ => {}
                 }
             }
             ev = events.recv() => {
@@ -432,9 +463,10 @@ fn draw(f: &mut Frame, app: &App, input_scroll: usize) {
         "you ❯ ".to_string()
     };
     let min_input_height = 3.min(max_input_height);
-    let input_height =
-        input_area_height(&input_prefix, &app.input, f.area().width, max_input_height)
-            .max(min_input_height);
+    let input_height = app
+        .input
+        .height(&input_prefix, f.area().width, max_input_height)
+        .max(min_input_height);
 
     let chunks = Layout::vertical([
         Constraint::Length(1), // header
@@ -473,9 +505,8 @@ fn draw(f: &mut Frame, app: &App, input_scroll: usize) {
     f.render_widget(Paragraph::new(lines), body);
 
     f.render_widget(
-        Paragraph::new(input_view_lines(
+        Paragraph::new(app.input.view_lines(
             &input_prefix,
-            &app.input,
             chunks[2].width,
             chunks[2].height,
             input_scroll,

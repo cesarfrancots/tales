@@ -10,7 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use crate::app::{input_area_height, input_view_lines};
+use crate::input::Input;
 use crate::theme::{color_for, pretty, ACCENT, DIM, FAINT, TEXT};
 
 /// What the user did on the prompt screen.
@@ -27,7 +27,7 @@ pub enum PromptOutcome {
 /// The "what should they build?" entry screen.
 pub struct PromptScreen {
     connected: Vec<String>,
-    pub input: String,
+    pub input: Input,
     input_scroll: usize,
 }
 
@@ -35,18 +35,34 @@ impl PromptScreen {
     pub fn new(connected: &[String], prefill: Option<&str>) -> Self {
         Self {
             connected: connected.to_vec(),
-            input: prefill.unwrap_or("").to_string(),
+            input: Input::from_text(prefill.unwrap_or("")),
             input_scroll: 0,
         }
     }
 
-    pub fn push(&mut self, c: char) {
-        self.input.push(c);
-        self.input_scroll = 0;
+    /// Apply an editing key (typing, motion, newline, kill-word/line). Returns
+    /// `true` if it was consumed so the caller can reset the scroll offset.
+    pub fn edit(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        let consumed = match key.code {
+            crossterm::event::KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(crossterm::event::KeyModifiers::ALT) =>
+            {
+                self.input.insert_char(c);
+                true
+            }
+            _ => self.input.handle_edit_key(key),
+        };
+        if consumed {
+            self.input_scroll = 0;
+        }
+        consumed
     }
 
-    pub fn pop(&mut self) {
-        self.input.pop();
+    pub fn paste(&mut self, text: &str) {
+        self.input.insert_str(text);
         self.input_scroll = 0;
     }
 
@@ -59,7 +75,7 @@ impl PromptScreen {
     }
 
     pub fn draw(&self, f: &mut Frame) {
-        let input_height = input_area_height("❯ ", &self.input, f.area().width, 12);
+        let input_height = self.input.height("❯ ", f.area().width, 12);
         let chunks = Layout::vertical([
             Constraint::Length(1), // header
             Constraint::Length(1), // spacer
@@ -119,9 +135,8 @@ impl PromptScreen {
         );
 
         f.render_widget(
-            Paragraph::new(input_view_lines(
+            Paragraph::new(self.input.view_lines(
                 "❯ ",
-                &self.input,
                 chunks[5].width,
                 chunks[5].height,
                 self.input_scroll,
@@ -131,7 +146,7 @@ impl PromptScreen {
 
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                "Enter start planning · PageUp/PageDown scroll prompt · Esc back · Ctrl-C quit",
+                "Enter start · Alt+Enter newline · PageUp/PageDown scroll · Esc back · Ctrl-C quit",
                 Style::default().fg(FAINT),
             ))),
             chunks[7],

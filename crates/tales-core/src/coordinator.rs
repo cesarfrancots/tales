@@ -516,6 +516,11 @@ pub struct Coordinator {
     model: Mlp,
 }
 
+/// Below this top-vs-second probability gap, a routing is a close call: the task
+/// carries conflicting signals and the coordinator flags it uncertain rather than
+/// pretending confidence — the cue for a human (or a stronger conductor) to weigh in.
+pub const UNCERTAIN_MARGIN: f32 = 0.25;
+
 /// The coordinator's routing decision for a task.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Strategy {
@@ -527,6 +532,12 @@ pub struct Strategy {
     pub tier: Tier,
     /// Confidence in the top shape (its probability).
     pub confidence: f32,
+    /// Gap between the top and second-place shape probability. A small margin
+    /// means the signals conflict and the routing is a close call.
+    pub margin: f32,
+    /// `true` when `margin < UNCERTAIN_MARGIN`: the call is a toss-up the
+    /// orchestrator should treat as "defer / ask", not a confident decision.
+    pub uncertain: bool,
     /// Human-readable explanation naming the dominant signals.
     pub rationale: String,
 }
@@ -534,12 +545,18 @@ pub struct Strategy {
 impl Strategy {
     /// A compact one-liner for an advisory chip in the pipeline UI.
     pub fn summary_line(&self) -> String {
+        let flag = if self.uncertain {
+            " · UNCERTAIN (close call — consider deferring)"
+        } else {
+            ""
+        };
         format!(
-            "coordinator: {} ({:.0}% conf) · difficulty {:.2} · start {} — {}",
+            "coordinator: {} ({:.0}% conf) · difficulty {:.2} · start {}{} — {}",
             self.shape.as_str(),
             self.confidence * 100.0,
             self.difficulty,
             self.tier.as_str(),
+            flag,
             self.shape.blurb(),
         )
     }
@@ -587,6 +604,13 @@ impl Coordinator {
         let shape = Shape::from_index(best_idx).unwrap_or(Shape::Solo);
         let shape_probs = [probs[0], probs[1], probs[2]];
 
+        // Margin = gap between the top and second shape. Conflicting signals
+        // produce a small margin → flag the routing as a close call.
+        let mut ranked = shape_probs;
+        ranked.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+        let margin = ranked[0] - ranked[1];
+        let uncertain = margin < UNCERTAIN_MARGIN;
+
         // Difficulty: Solo work is hardest/least-safe-to-cheap, Tiered is safest.
         // Correctness keyword signal nudges it up regardless of shape.
         let correctness = features[6];
@@ -609,6 +633,8 @@ impl Coordinator {
             difficulty,
             tier,
             confidence,
+            margin,
+            uncertain,
             rationale: rationale(&features, shape),
         }
     }
@@ -1086,6 +1112,28 @@ mod tests {
             report.total,
             report.accuracy,
             report.confusion
+        );
+    }
+
+    #[test]
+    fn uncertainty_margin_is_informative() {
+        let coord = Coordinator::seed();
+        // A clean, single-signal task is a confident call: high margin, not flagged.
+        let clean = coord.predict("implement a balanced binary search tree with rebalancing");
+        assert!(
+            !clean.uncertain && clean.margin > 0.5,
+            "clean task should be confident: {}",
+            clean.summary_line()
+        );
+        // When signals genuinely conflict (mechanical volume vs correctness), the
+        // routing is a close call — the model surfaces lower margin rather than
+        // bluffing, giving the verify/escalate safety net a "defer" cue.
+        let mixed = coord.predict("migrate the auth system and verify it is secure");
+        assert!(
+            mixed.margin < clean.margin,
+            "mixed-signal margin {:.2} should be below clean margin {:.2}",
+            mixed.margin,
+            clean.margin
         );
     }
 }

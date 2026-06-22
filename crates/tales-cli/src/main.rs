@@ -1682,6 +1682,15 @@ fn print_strategy(task: &str, strategy: &Strategy) {
         "shape probabilities: solo={:.2} debate={:.2} tiered={:.2}",
         strategy.shape_probs[0], strategy.shape_probs[1], strategy.shape_probs[2]
     );
+    println!(
+        "margin: {:.2}{}",
+        strategy.margin,
+        if strategy.uncertain {
+            "  (uncertain — close call)"
+        } else {
+            ""
+        }
+    );
 }
 
 fn select_eval_scenario(

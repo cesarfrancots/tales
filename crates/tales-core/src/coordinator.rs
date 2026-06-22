@@ -830,6 +830,132 @@ fn seed_corpus() -> Vec<(&'static str, Shape)> {
     ]
 }
 
+/// The result of evaluating a coordinator against a labeled corpus.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EvalReport {
+    pub total: usize,
+    pub correct: usize,
+    /// Fraction in `[0,1]`.
+    pub accuracy: f32,
+    /// `confusion[expected][predicted]`, indexed by [`Shape::index`].
+    pub confusion: [[usize; 3]; 3],
+}
+
+impl EvalReport {
+    /// Per-shape recall: of the tasks that truly are `shape`, the fraction routed
+    /// there. `0.0` when the corpus had none of that shape.
+    pub fn recall(&self, shape: Shape) -> f32 {
+        let row = self.confusion[shape.index()];
+        let total: usize = row.iter().sum();
+        if total == 0 {
+            0.0
+        } else {
+            row[shape.index()] as f32 / total as f32
+        }
+    }
+}
+
+/// Evaluate a coordinator on a labeled corpus: overall routing accuracy plus a
+/// confusion matrix. This is the metric that says whether the model is good
+/// enough to orchestrate — measured on held-out tasks, not the training seed.
+pub fn evaluate(coord: &Coordinator, corpus: &[(String, Shape)]) -> EvalReport {
+    let mut confusion = [[0usize; 3]; 3];
+    let mut correct = 0;
+    for (task, expected) in corpus {
+        let predicted = coord.predict(task).shape;
+        confusion[expected.index()][predicted.index()] += 1;
+        if predicted == *expected {
+            correct += 1;
+        }
+    }
+    let total = corpus.len();
+    let accuracy = if total == 0 {
+        0.0
+    } else {
+        correct as f32 / total as f32
+    };
+    EvalReport {
+        total,
+        correct,
+        accuracy,
+        confusion,
+    }
+}
+
+/// Held-out evaluation corpus: labeled tasks deliberately *not* in the seed
+/// corpus (novel phrasings, same problem space), so [`evaluate`] measures how
+/// well routing generalizes rather than how well it memorized.
+pub fn eval_corpus() -> Vec<(&'static str, Shape)> {
+    vec![
+        // --- Solo: algorithmically hard, self-contained ---
+        (
+            "implement a trie supporting prefix search and deletion",
+            Shape::Solo,
+        ),
+        (
+            "implement quicksort with a median-of-three pivot",
+            Shape::Solo,
+        ),
+        (
+            "build a bloom filter backed by k hash functions",
+            Shape::Solo,
+        ),
+        (
+            "write a function to detect a cycle in a directed graph",
+            Shape::Solo,
+        ),
+        (
+            "implement a min-heap with a decrease-key operation",
+            Shape::Solo,
+        ),
+        (
+            "implement base64 encode and decode without a library",
+            Shape::Solo,
+        ),
+        // --- Tiered: mechanically voluminous ---
+        (
+            "migrate all the test files from mocha to jest",
+            Shape::Tiered,
+        ),
+        (
+            "rename the legacy api endpoints throughout the service",
+            Shape::Tiered,
+        ),
+        ("scaffold crud pages for each admin resource", Shape::Tiered),
+        (
+            "convert all callbacks to async await across the codebase",
+            Shape::Tiered,
+        ),
+        (
+            "add logging to every handler across the controllers",
+            Shape::Tiered,
+        ),
+        ("generate the client stubs for all endpoints", Shape::Tiered),
+        // --- Debate: ambiguous, architecture-defining ---
+        (
+            "figure out the best approach and tradeoffs for offline-first sync",
+            Shape::Debate,
+        ),
+        (
+            "decide whether to shard the database and how",
+            Shape::Debate,
+        ),
+        (
+            "propose an architecture for the notification system",
+            Shape::Debate,
+        ),
+        (
+            "evaluate the options for the plugin extension model",
+            Shape::Debate,
+        ),
+        ("choose the right approach for feature flags", Shape::Debate),
+        (
+            "design the access-control architecture and approach for new tenants",
+            Shape::Debate,
+        ),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -939,6 +1065,27 @@ mod tests {
                 .predict("implement a bespoke binary protocol decoder")
                 .shape,
             Shape::Solo
+        );
+    }
+
+    #[test]
+    fn held_out_accuracy_is_high() {
+        // The seed model must generalize to novel phrasings it was never trained
+        // on, not just memorize the seed corpus. This is the "good enough to
+        // orchestrate" gate.
+        let coord = Coordinator::seed();
+        let corpus: Vec<(String, Shape)> = eval_corpus()
+            .into_iter()
+            .map(|(task, shape)| (task.to_string(), shape))
+            .collect();
+        let report = evaluate(&coord, &corpus);
+        assert!(
+            report.accuracy >= 0.8,
+            "held-out routing accuracy too low: {}/{} = {:.2}\nconfusion {:?}",
+            report.correct,
+            report.total,
+            report.accuracy,
+            report.confusion
         );
     }
 }

@@ -500,6 +500,15 @@ enum CoordinatorCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Measure routing accuracy on the held-out evaluation corpus.
+    Eval {
+        /// Working directory (default: current).
+        #[arg(long)]
+        cwd: Option<String>,
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// Resolve the `tales-tui` binary: next to this exe first, then `PATH`.
@@ -1622,6 +1631,42 @@ fn run_coordinator_command(command: CoordinatorCommand) -> Result<(), Box<dyn st
                 for t in samples {
                     let s = coord.predict(t);
                     println!("  - \"{t}\"\n      {}", s.summary_line());
+                }
+            }
+            Ok(())
+        }
+        CoordinatorCommand::Eval { cwd, json } => {
+            let cwd = cwd_from_arg(cwd)?;
+            let path = coordinator::default_model_path(&cwd);
+            let coord = Coordinator::load_or_seed(&path);
+            let corpus: Vec<(String, Shape)> = coordinator::eval_corpus()
+                .into_iter()
+                .map(|(task, shape)| (task.to_string(), shape))
+                .collect();
+            let report = coordinator::evaluate(&coord, &corpus);
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "kind": "tales_coordinator_eval",
+                        "schema_version": 1,
+                        "report": report,
+                    }))?
+                );
+            } else {
+                println!("Tales coordinator eval (held-out corpus)");
+                println!(
+                    "accuracy: {}/{} = {:.1}%",
+                    report.correct,
+                    report.total,
+                    report.accuracy * 100.0
+                );
+                for shape in Shape::ALL {
+                    println!(
+                        "  {:<7} recall {:.0}%",
+                        shape.as_str(),
+                        report.recall(shape) * 100.0
+                    );
                 }
             }
             Ok(())

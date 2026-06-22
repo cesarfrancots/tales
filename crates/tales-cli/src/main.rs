@@ -4309,14 +4309,13 @@ async fn run_pipeline(
         // shares the executor's working tree so its fixes face the same check.
         if let Some(esc_tool) = escalate.clone() {
             if !demo {
-                let escalation_model = model_or_default(&esc_tool, escalate_model.clone());
                 orch.add_agent(
                     make_adapter(&esc_tool)?,
                     mk_ctx(
                         escalation_id,
                         &esc_tool,
                         &executor_cwd,
-                        escalation_model,
+                        escalate_model.clone(),
                         None,
                         &sandbox,
                         "acceptEdits",

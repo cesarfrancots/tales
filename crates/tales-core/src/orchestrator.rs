@@ -792,7 +792,15 @@ impl Orchestrator {
     /// **not** start execution.
     pub async fn run_recommendation(&mut self) -> Result<Recommendation> {
         self.set_phase(Phase::Recommending);
-        let candidates: Vec<String> = self.roster.iter().map(|r| r.label.clone()).collect();
+        // The escalation seat is a verification-only fixer, never a primary
+        // executor — keep it out of the recommendation candidates so planners
+        // don't vote for it and a human at the gate can't pick it as the executor.
+        let candidates: Vec<String> = self
+            .roster
+            .iter()
+            .filter(|r| Some(&r.label) != self.escalation_executor.as_ref())
+            .map(|r| r.label.clone())
+            .collect();
         let roster = self.roster.clone();
         let mut votes: Vec<ExecutionVote> = Vec::new();
 
@@ -1379,7 +1387,9 @@ impl Orchestrator {
             // once the primary has had its share and the check is still red —
             // cheap-first, strong-to-finish (Fugu's deeper pool on hard problems).
             if let Some(esc_label) = self.escalation_executor.clone() {
-                if attempt > policy.max_iterations / 2 {
+                // Need ≥2 attempts to have a genuine "cheap-first" half; with a cap
+                // of 1, escalating on attempt 1 would skip the cheap executor.
+                if policy.max_iterations >= 2 && attempt > policy.max_iterations / 2 {
                     if let Some(esc_agent) = self
                         .roster
                         .iter()

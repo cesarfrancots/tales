@@ -6,6 +6,23 @@ Tales uses one lockstep SemVer version for the Rust workspace. The version lives
 
 ## Unreleased
 
+- Added the **orchestration coordinator** (`tales-core::coordinator`): a tiny,
+  dependency-free MLP that routes a task to a collaboration *shape* — solo,
+  debate, or tiered — plus a difficulty/tier estimate for cheap-first escalation
+  (Fugu's "everyday vs Ultra" as a learned routing decision, not an `if/else`).
+  Trained by deterministic gradient descent on an embedded seed corpus (the
+  structural priors from the README benchmark) and serialized to a few-KB
+  `.tales/coordinator.json`. Pure `std` — no ML runtime, no new dependencies.
+- Added the `tales coordinator` CLI (`train`, `predict`, `show`): retrain from the
+  seed corpus plus this workspace's run traces, route a task, or inspect the
+  cached model. Zero-config — the model auto-seeds and caches on first use.
+- Added run traces (`tales-core::trace`): each non-demo `tales run` appends a
+  `RunTrace` to a local, append-only `.tales/traces.jsonl`, and the coordinator
+  retrains on the successful ones — a local, telemetry-free learning flywheel.
+- `tales run` now prints the coordinator's routing recommendation alongside the
+  chosen seats (advisory only — the hard human execution gate is unchanged).
+- Documented the path toward Fugu-class behavior in `docs/tales-fugu-roadmap.md`.
+
 ## 0.4.5
 
 - Fixed the two pre-existing `clamp`-like lint warnings in the TUI input-height sizing (`.min(8).max(1)` → `.clamp(1, 8)`) so the workspace is clean under `cargo clippy --all-targets -- -D warnings`.

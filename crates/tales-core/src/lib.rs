@@ -12,6 +12,7 @@ pub mod blackboard;
 pub mod build_info;
 pub mod bus;
 pub mod conductor;
+pub mod coordinator;
 pub mod error;
 pub mod eval_harness;
 pub mod event;
@@ -22,6 +23,7 @@ pub mod recommend;
 pub mod session;
 pub mod supervisor;
 pub mod tool_recommendation;
+pub mod trace;
 pub mod workspace_profile;
 pub mod worktree;
 

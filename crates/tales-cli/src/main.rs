@@ -31,6 +31,7 @@ use tales_core::agent::{
 use tales_core::build_info;
 use tales_core::bus::EventBus;
 use tales_core::conductor::Role;
+use tales_core::coordinator::{self, Coordinator, Shape, Strategy};
 use tales_core::eval_harness::{
     compare_results, default_scenarios, run_mock_eval, save_eval_report, EvalScenario,
 };
@@ -53,6 +54,7 @@ use tales_core::session::{
 use tales_core::tool_recommendation::{
     recommend_tools, recommendation_chips_json, RecommendationInput,
 };
+use tales_core::trace;
 use tales_core::workspace_profile::{
     clear_profile, load_profile, load_profile_if_exists, profile_status_json, refresh_profile,
     run_record_from_report, save_profile, ProfileUpdate,
@@ -357,6 +359,11 @@ enum Command {
         #[command(subcommand)]
         command: EvalCommand,
     },
+    /// Train, inspect, or query the orchestration coordinator model.
+    Coordinator {
+        #[command(subcommand)]
+        command: CoordinatorCommand,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -438,6 +445,40 @@ enum EvalCommand {
     Report {
         /// Saved eval JSON report path.
         input: PathBuf,
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum CoordinatorCommand {
+    /// Retrain the coordinator from the seed corpus plus this workspace's
+    /// successful run traces, then cache it to .tales/coordinator.json.
+    Train {
+        /// Working directory (default: current).
+        #[arg(long)]
+        cwd: Option<String>,
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Predict the orchestration strategy (shape, difficulty, tier) for a task.
+    Predict {
+        /// The task to route.
+        task: String,
+        /// Working directory (default: current).
+        #[arg(long)]
+        cwd: Option<String>,
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show the cached model's provenance and a few sample routings.
+    Show {
+        /// Working directory (default: current).
+        #[arg(long)]
+        cwd: Option<String>,
         /// Emit machine-readable JSON.
         #[arg(long)]
         json: bool,
@@ -1123,6 +1164,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Open { connect, task } => run_open(connect, task),
         Command::Profile { command } => run_profile_command(command),
         Command::Eval { command } => run_eval_command(command),
+        Command::Coordinator { command } => run_coordinator_command(command),
         Command::Solo {
             prompt,
             agent,
@@ -1459,6 +1501,111 @@ fn run_eval_command(command: EvalCommand) -> Result<(), Box<dyn std::error::Erro
             Ok(())
         }
     }
+}
+
+fn run_coordinator_command(command: CoordinatorCommand) -> Result<(), Box<dyn std::error::Error>> {
+    match command {
+        CoordinatorCommand::Train { cwd, json } => {
+            let cwd = cwd_from_arg(cwd)?;
+            let traces = trace::load(&cwd);
+            let examples = trace::training_examples(&traces);
+            let coord = Coordinator::trained_from(&examples);
+            let path = coordinator::default_model_path(&cwd);
+            coord.save(&path)?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "kind": "tales_coordinator_train",
+                        "schema_version": 1,
+                        "model_path": path.display().to_string(),
+                        "sample_count": coord.sample_count,
+                        "trace_count": coord.trace_count,
+                        "traces_seen": traces.len(),
+                    }))?
+                );
+            } else {
+                println!("coordinator trained");
+                println!("  model: {}", path.display());
+                println!(
+                    "  samples: {} (seed + {} from traces)",
+                    coord.sample_count, coord.trace_count
+                );
+                println!("  traces seen: {}", traces.len());
+            }
+            Ok(())
+        }
+        CoordinatorCommand::Predict { task, cwd, json } => {
+            let cwd = cwd_from_arg(cwd)?;
+            let strategy = coordinator::advise(&task, &cwd);
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "kind": "tales_coordinator_predict",
+                        "schema_version": 1,
+                        "task": task,
+                        "strategy": strategy,
+                    }))?
+                );
+            } else {
+                print_strategy(&task, &strategy);
+            }
+            Ok(())
+        }
+        CoordinatorCommand::Show { cwd, json } => {
+            let cwd = cwd_from_arg(cwd)?;
+            let path = coordinator::default_model_path(&cwd);
+            let coord = Coordinator::load_or_seed(&path);
+            let samples = [
+                "implement a regex engine with backreferences",
+                "add CRUD endpoints for every resource",
+                "design the auth architecture for multi-tenant SSO",
+            ];
+            if json {
+                let routings: Vec<Value> = samples
+                    .iter()
+                    .map(|t| json!({ "task": t, "strategy": coord.predict(t) }))
+                    .collect();
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "kind": "tales_coordinator_show",
+                        "schema_version": 1,
+                        "model_path": path.display().to_string(),
+                        "model_schema_version": coord.schema_version,
+                        "sample_count": coord.sample_count,
+                        "trace_count": coord.trace_count,
+                        "sample_routings": routings,
+                    }))?
+                );
+            } else {
+                println!("Tales coordinator");
+                println!("model: {}", path.display());
+                println!("schema: {}", coord.schema_version);
+                println!(
+                    "samples: {} (seed + {} from traces)",
+                    coord.sample_count, coord.trace_count
+                );
+                println!("\nsample routings:");
+                for t in samples {
+                    let s = coord.predict(t);
+                    println!("  - \"{t}\"\n      {}", s.summary_line());
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+fn print_strategy(task: &str, strategy: &Strategy) {
+    println!("task: {task}");
+    println!("{}", strategy.summary_line());
+    println!("rationale: {}", strategy.rationale);
+    println!(
+        "shape probabilities: solo={:.2} debate={:.2} tiered={:.2}",
+        strategy.shape_probs[0], strategy.shape_probs[1], strategy.shape_probs[2]
+    );
 }
 
 fn select_eval_scenario(
@@ -4099,6 +4246,9 @@ async fn run_pipeline(
             "\n=== run{}: {prompt}{tier} ===",
             if demo { " demo" } else { "" }
         );
+        // Advisory only — the coordinator's learned routing call, surfaced next to
+        // the chosen seats. It never overrides the human gate; it informs it.
+        println!("  {}", coordinator::advise(&prompt, &cwd).summary_line());
         let outcome = orch
             .run_interactive(&prompt, turns, &mut commands_rx)
             .await?;
@@ -4158,6 +4308,27 @@ async fn run_pipeline(
         matches!(&outcome, RunOutcome::Executed { .. }),
         report_path_for_profile.as_deref(),
     );
+    // Feed the coordinator's flywheel: record which shape ran and whether it was
+    // accepted. `tales run` always plans with two seats, so the realized shape is
+    // Tiered when a separate cheap executor implements, else Debate. Demo runs
+    // (mock agents) carry no real signal, so they're skipped.
+    if !demo {
+        let shape_used = if separate_executor {
+            Shape::Tiered
+        } else {
+            Shape::Debate
+        };
+        let approved = matches!(&outcome, RunOutcome::Executed { .. });
+        let _ = trace::append(
+            &cwd,
+            &trace::RunTrace::now(
+                prompt.as_str(),
+                Some(shape_used),
+                execute.as_str(),
+                approved,
+            ),
+        );
+    }
     println!("\n=== outcome: {outcome:?} ===");
     Ok(())
 }

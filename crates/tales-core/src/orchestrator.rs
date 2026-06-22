@@ -171,6 +171,10 @@ pub struct Orchestrator {
     verification: Option<VerificationPolicy>,
     /// Verdict of the last verification run (`None` if it didn't run).
     last_verification: Option<bool>,
+    /// Optional stronger executor (a roster label) to hand the back half of
+    /// verification fix attempts to when the primary executor stalls — Fugu's
+    /// deeper-pool escalation. `None` keeps a single executor throughout.
+    escalation_executor: Option<String>,
 }
 
 impl Orchestrator {
@@ -205,6 +209,7 @@ impl Orchestrator {
             salvaged_votes: 0,
             verification: None,
             last_verification: None,
+            escalation_executor: None,
         }
     }
 
@@ -346,6 +351,14 @@ impl Orchestrator {
     /// its retries still failing, `None` if verification was not configured.
     pub fn last_verification(&self) -> Option<bool> {
         self.last_verification
+    }
+
+    /// Name a stronger executor (a roster label) to escalate to for the back half
+    /// of verification fix attempts when the primary executor can't get the check
+    /// green. The cheap executor tries first; the strong one finishes the job —
+    /// Fugu's "everyday vs Ultra" applied to fixing, not just routing.
+    pub fn set_escalation_executor(&mut self, label: String) {
+        self.escalation_executor = Some(label);
     }
 
     fn set_phase(&mut self, phase: Phase) {
@@ -1328,6 +1341,9 @@ impl Orchestrator {
     ) -> Result<String> {
         self.set_phase(Phase::Verifying);
         let mut attempt: u8 = 0;
+        // The executor currently on the hook — may switch to a stronger one once
+        // the cheap executor has had its share of attempts (escalation).
+        let mut current = agent;
         loop {
             self.bus.emit(OrchestratorEvent::Log {
                 level: "info".to_string(),
@@ -1359,6 +1375,27 @@ impl Orchestrator {
                 return Ok(output);
             }
             attempt += 1;
+            // Escalate to the stronger executor for the back half of the attempts
+            // once the primary has had its share and the check is still red —
+            // cheap-first, strong-to-finish (Fugu's deeper pool on hard problems).
+            if let Some(esc_label) = self.escalation_executor.clone() {
+                if attempt > policy.max_iterations / 2 {
+                    if let Some(esc_agent) = self
+                        .roster
+                        .iter()
+                        .find(|r| r.label == esc_label)
+                        .map(|r| r.agent)
+                    {
+                        if esc_agent != current {
+                            current = esc_agent;
+                            self.bus.emit(OrchestratorEvent::Log {
+                                level: "info".to_string(),
+                                msg: format!("escalating verification fixes to {esc_label}"),
+                            });
+                        }
+                    }
+                }
+            }
             self.bus.emit(OrchestratorEvent::Log {
                 level: "info".to_string(),
                 msg: format!(
@@ -1374,16 +1411,16 @@ impl Orchestrator {
                 policy.max_iterations,
             );
             self.bus.emit(OrchestratorEvent::TurnStarted {
-                agent,
+                agent: current,
                 role: "Executor".to_string(),
             });
-            let attachments = self.media_for(agent);
+            let attachments = self.media_for(current);
             // If the executor's channel is gone (it timed out / was terminated on
             // an earlier attempt), don't turn that into a hard run failure that
             // discards the work already produced — stop with a failing verdict and
             // keep the latest output, mirroring how collect_turn swallows a dead
             // agent rather than aborting the run.
-            let Some(tx) = self.cmd_txs.get(&agent).cloned() else {
+            let Some(tx) = self.cmd_txs.get(&current).cloned() else {
                 self.bus.emit(OrchestratorEvent::Log {
                     level: "warn".to_string(),
                     msg: "verification: executor channel is gone — stopping with the work so far"
@@ -1392,7 +1429,7 @@ impl Orchestrator {
                 self.last_verification = Some(false);
                 return Ok(output);
             };
-            self.record_prompt_sent(agent, PromptPhase::Verification, &prompt);
+            self.record_prompt_sent(current, PromptPhase::Verification, &prompt);
             if tx
                 .send(AgentCommand::StartTurn {
                     prompt,
@@ -1409,7 +1446,7 @@ impl Orchestrator {
                 self.last_verification = Some(false);
                 return Ok(output);
             }
-            output = self.collect_turn(agent).await?;
+            output = self.collect_turn(current).await?;
         }
     }
 
@@ -3492,6 +3529,61 @@ mod prompt_tests {
                 .iter()
                 .any(|(phase, _)| phase == "verification"),
             "failing verification must re-prompt the executor"
+        );
+
+        orch.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn verification_escalates_to_stronger_executor() {
+        use crate::agent::mock::MockAdapter;
+
+        let (bus, _rx) = EventBus::new(64, 16);
+        let mut orch = Orchestrator::new(bus);
+        orch.add_agent(
+            Box::new(MockAdapter::new(vec![
+                "cheap1".into(),
+                "cheap2".into(),
+                "cheap3".into(),
+            ])),
+            executor_ctx("cheap"),
+            Role::Executor,
+        )
+        .await
+        .unwrap();
+        let strong_id = orch
+            .add_agent(
+                Box::new(MockAdapter::new(vec![
+                    "strong1".into(),
+                    "strong2".into(),
+                    "strong3".into(),
+                ])),
+                executor_ctx("strong"),
+                Role::Executor,
+            )
+            .await
+            .unwrap();
+
+        let fail = if cfg!(windows) { "exit 1" } else { "false" };
+        orch.set_verification(crate::verify::VerificationPolicy::new(
+            fail,
+            std::env::temp_dir(),
+            2,
+        ));
+        orch.set_escalation_executor("strong".to_string());
+
+        orch.run_execution("cheap", "task").await.unwrap();
+        assert_eq!(orch.last_verification(), Some(false));
+        // max=2: attempt 1 stays on cheap (1 > 2/2 is false), attempt 2 escalates
+        // (2 > 1) → the strong executor must have been re-prompted at least once.
+        let strong_prompts = orch
+            .prompt_stats
+            .get(&strong_id)
+            .map(|s| s.prompts)
+            .unwrap_or(0);
+        assert!(
+            strong_prompts >= 1,
+            "escalation executor should have been re-prompted"
         );
 
         orch.shutdown().await;

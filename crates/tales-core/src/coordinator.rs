@@ -632,6 +632,17 @@ impl Coordinator {
                 coord.schema_version, SCHEMA_VERSION
             )));
         }
+        // A same-schema but wrong-shaped artifact (hand-edited or corrupt) would
+        // otherwise panic on index in `predict`/`forward`; reject it up front.
+        if coord.model.input_dim != FEATURE_DIM || coord.model.output_dim != Shape::ALL.len() {
+            return Err(TalesError::Other(format!(
+                "coordinator model is {}x{}, expected {}x{} — retrain with `tales coordinator train`",
+                coord.model.input_dim,
+                coord.model.output_dim,
+                FEATURE_DIM,
+                Shape::ALL.len()
+            )));
+        }
         Ok(coord)
     }
 
@@ -891,6 +902,22 @@ mod tests {
         let b = back.predict("design the auth approach");
         assert_eq!(a.shape, b.shape);
         assert!((a.confidence - b.confidence).abs() < 1e-6);
+    }
+
+    #[test]
+    fn load_rejects_mismatched_dims() {
+        // A same-schema artifact with a wrong-sized model must be rejected, not
+        // loaded into a state that panics on index in predict().
+        let coord = Coordinator::seed();
+        let mut value = serde_json::to_value(&coord).unwrap();
+        value["model"]["input_dim"] = serde_json::json!(FEATURE_DIM - 1);
+        let dir = std::env::temp_dir().join(format!("tales-coord-bad-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("coordinator.json");
+        std::fs::write(&path, serde_json::to_string(&value).unwrap()).unwrap();
+
+        assert!(Coordinator::load(&path).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

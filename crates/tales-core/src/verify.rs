@@ -12,6 +12,13 @@
 //! project's own tests are a better oracle than a second opinion, and a command
 //! is trivially testable. An LLM-critic verifier can be added later as another
 //! policy without touching the loop.
+//!
+//! Safety: the command runs *verbatim through the platform shell*, unsandboxed,
+//! in the executor's working directory — it is the caller's responsibility to
+//! scope it (it is not constrained by the agent's `--sandbox` policy, and without
+//! a git worktree it runs against the live tree). Its combined stdout+stderr is
+//! fed back into the executor's prompt, so a check that prints secrets would
+//! surface them to the model; don't point it at one that does.
 
 use std::path::{Path, PathBuf};
 

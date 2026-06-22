@@ -1378,18 +1378,37 @@ impl Orchestrator {
                 role: "Executor".to_string(),
             });
             let attachments = self.media_for(agent);
-            let tx = self
-                .cmd_txs
-                .get(&agent)
-                .ok_or_else(|| TalesError::Other(format!("no channel for {agent}")))?
-                .clone();
+            // If the executor's channel is gone (it timed out / was terminated on
+            // an earlier attempt), don't turn that into a hard run failure that
+            // discards the work already produced — stop with a failing verdict and
+            // keep the latest output, mirroring how collect_turn swallows a dead
+            // agent rather than aborting the run.
+            let Some(tx) = self.cmd_txs.get(&agent).cloned() else {
+                self.bus.emit(OrchestratorEvent::Log {
+                    level: "warn".to_string(),
+                    msg: "verification: executor channel is gone — stopping with the work so far"
+                        .to_string(),
+                });
+                self.last_verification = Some(false);
+                return Ok(output);
+            };
             self.record_prompt_sent(agent, PromptPhase::Verification, &prompt);
-            tx.send(AgentCommand::StartTurn {
-                prompt,
-                attachments,
-            })
-            .await
-            .map_err(|e| TalesError::Other(format!("send failed: {e}")))?;
+            if tx
+                .send(AgentCommand::StartTurn {
+                    prompt,
+                    attachments,
+                })
+                .await
+                .is_err()
+            {
+                self.bus.emit(OrchestratorEvent::Log {
+                    level: "warn".to_string(),
+                    msg: "verification: executor stopped accepting turns — keeping the work so far"
+                        .to_string(),
+                });
+                self.last_verification = Some(false);
+                return Ok(output);
+            }
             output = self.collect_turn(agent).await?;
         }
     }

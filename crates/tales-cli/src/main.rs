@@ -1341,6 +1341,12 @@ fn print_commands_reference() {
     println!("  tales solo <prompt>   Run one tool for one turn");
     println!("  tales discuss <task>  Run planner discussion only");
     println!("  tales run <task>      Plan, recommend, and execute non-interactively");
+    println!(
+        "  tales run --verify \"<cmd>\"  After execution run <cmd>; on failure the executor iterates (runs unsandboxed; use --worktree to isolate)"
+    );
+    println!(
+        "  tales coordinator predict <task>  Show the learned routing (shape, difficulty, tier)"
+    );
     println!("  tales open [task]     Open Tales in a new terminal window when supported");
     println!();
     println!("Known tools");
@@ -4150,6 +4156,13 @@ async fn run_pipeline(
         // to verify).
         if let Some(check_cmd) = verify.clone() {
             if !demo {
+                if !worktree {
+                    eprintln!(
+                        "note: --verify runs `{check_cmd}` unsandboxed in {} — \
+                         add --worktree to isolate the executor's changes and the check.",
+                        executor_cwd.display()
+                    );
+                }
                 orch.set_verification(VerificationPolicy::new(
                     check_cmd,
                     executor_cwd.clone(),
@@ -4344,6 +4357,13 @@ async fn run_pipeline(
     // Tiered when a separate cheap executor implements, else Debate. Verification,
     // when it ran, is the ground-truth success signal; otherwise a confirmed
     // execution is the best proxy. Demo runs carry no real signal, so skip them.
+    //
+    // ponytail: `tales run` can only ever realize Tiered/Debate, never Solo, so
+    // the flywheel reinforces those two; the embedded seed corpus is what keeps
+    // the Solo prior alive for algorithmic tasks. Ceiling: with many accumulated
+    // traces, full-batch retraining could let Tiered/Debate mass crowd out Solo.
+    // Upgrade path: weight the seed during retraining, or add a Solo-capable
+    // execution path so real Solo successes can be recorded.
     let verified = verified.get();
     if !demo {
         let shape_used = if separate_executor {

@@ -247,6 +247,7 @@ Live today: multi-agent discussion, parallel planning, cached project context, l
 recommendation + a hard confirmation gate, git-worktree execution & merge, the interactive
 terminal workspace (folder-browser onboarding, a multi-line prompt editor, transcript scrollback, and slash-command type-ahead),
 browser supervision UI with workspace picker and command palette, report writers, and bespoke/generic tool adapters.
+A learned **orchestration coordinator** (`tales coordinator`) routes each task to a collaboration shape (solo / debate / tiered) with a difficulty/tier estimate, and an optional **verify-and-iterate loop** (`tales run --verify "<cmd>"`) runs your check after execution and feeds failures back to the executor until it passes or hits the cap — the check runs unsandboxed in the executor's tree, so scope it (use `--worktree` to isolate). Both are local, dependency-free, and keep the human gate.
 Runs on macOS, Linux, and Windows (all three covered by CI). Hardened against deadlocks and zombie processes; the test suite and strict clippy pass before push.
 
 ---

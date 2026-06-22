@@ -24,6 +24,7 @@ pub mod session;
 pub mod supervisor;
 pub mod tool_recommendation;
 pub mod trace;
+pub mod verify;
 pub mod workspace_profile;
 pub mod worktree;
 

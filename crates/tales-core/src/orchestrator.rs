@@ -26,6 +26,7 @@ use crate::project_context::{local_change_summary_status_json, LocalChangeSummar
 use crate::recommend::{
     aggregate, parse_vote_lenient, ExecutionVote, Recommendation, VoteParseSource,
 };
+use crate::verify::{self, VerificationPolicy};
 use crate::{AgentId, Result, TalesError, TokenUsage};
 
 /// Default prompt context budget for stateless adapters. Resumable adapters keep
@@ -71,6 +72,7 @@ enum PromptPhase {
     Recommendation,
     VoteRepair,
     Execution,
+    Verification,
 }
 
 impl PromptPhase {
@@ -81,6 +83,7 @@ impl PromptPhase {
             Self::Recommendation => "recommendation_vote",
             Self::VoteRepair => "vote_repair",
             Self::Execution => "execution",
+            Self::Verification => "verification",
         }
     }
 }
@@ -95,6 +98,7 @@ pub enum Phase {
     Recommending,
     AwaitingConfirmation,
     Executing,
+    Verifying,
     Done,
 }
 
@@ -162,6 +166,11 @@ pub struct Orchestrator {
     /// Count of non-JSON votes salvaged from an unambiguous candidate mention,
     /// avoiding a repair prompt while still recording the structured-output gap.
     salvaged_votes: usize,
+    /// Optional post-execution verification: run a check, and on failure feed it
+    /// back to the executor to iterate. `None` keeps the one-shot behavior.
+    verification: Option<VerificationPolicy>,
+    /// Verdict of the last verification run (`None` if it didn't run).
+    last_verification: Option<bool>,
 }
 
 impl Orchestrator {
@@ -194,6 +203,8 @@ impl Orchestrator {
             project_context_report: None,
             local_changes: None,
             salvaged_votes: 0,
+            verification: None,
+            last_verification: None,
         }
     }
 
@@ -322,6 +333,19 @@ impl Orchestrator {
     /// The current phase.
     pub fn phase(&self) -> Phase {
         self.phase
+    }
+
+    /// Configure post-execution verification. With a policy set, after the
+    /// executor's turn Tales runs the check and, on failure, feeds the failing
+    /// output back to the executor to iterate up to the policy's cap.
+    pub fn set_verification(&mut self, policy: VerificationPolicy) {
+        self.verification = Some(policy);
+    }
+
+    /// The last verification verdict: `Some(true)` passed, `Some(false)` exhausted
+    /// its retries still failing, `None` if verification was not configured.
+    pub fn last_verification(&self) -> Option<bool> {
+        self.last_verification
     }
 
     fn set_phase(&mut self, phase: Phase) {
@@ -1163,12 +1187,13 @@ impl Orchestrator {
     }
 
     fn reported_prompt_phase_stats(&self) -> Vec<(String, PromptStats)> {
-        const ORDER: [PromptPhase; 5] = [
+        const ORDER: [PromptPhase; 6] = [
             PromptPhase::Planning,
             PromptPhase::PlanningSynthesis,
             PromptPhase::Recommendation,
             PromptPhase::VoteRepair,
             PromptPhase::Execution,
+            PromptPhase::Verification,
         ];
         ORDER
             .iter()
@@ -1281,8 +1306,92 @@ impl Orchestrator {
         .await
         .map_err(|e| TalesError::Other(format!("send failed: {e}")))?;
         let output = self.collect_turn(entry.agent).await?;
+        let output = if let Some(policy) = self.verification.clone() {
+            self.run_verification(entry.agent, task, &policy, output)
+                .await?
+        } else {
+            output
+        };
         self.set_phase(Phase::Done);
         Ok(output)
+    }
+
+    /// Run the configured check; on failure, feed the failing output back to the
+    /// executor and let it iterate up to the policy cap. Records the verdict in
+    /// `last_verification` and returns the executor's latest output.
+    async fn run_verification(
+        &mut self,
+        agent: AgentId,
+        task: &str,
+        policy: &VerificationPolicy,
+        mut output: String,
+    ) -> Result<String> {
+        self.set_phase(Phase::Verifying);
+        let mut attempt: u8 = 0;
+        loop {
+            self.bus.emit(OrchestratorEvent::Log {
+                level: "info".to_string(),
+                msg: format!("verifying: `{}`", policy.command),
+            });
+            let check = verify::run_check(&policy.command, &policy.cwd).await;
+            if check.passed {
+                let suffix = if attempt > 0 {
+                    format!(" after {attempt} fix attempt{}", plural_s(attempt))
+                } else {
+                    String::new()
+                };
+                self.bus.emit(OrchestratorEvent::Log {
+                    level: "info".to_string(),
+                    msg: format!("verification passed{suffix}"),
+                });
+                self.last_verification = Some(true);
+                return Ok(output);
+            }
+            if attempt >= policy.max_iterations {
+                self.bus.emit(OrchestratorEvent::Log {
+                    level: "warn".to_string(),
+                    msg: format!(
+                        "verification still failing after {attempt} fix attempt{} — stopping",
+                        plural_s(attempt)
+                    ),
+                });
+                self.last_verification = Some(false);
+                return Ok(output);
+            }
+            attempt += 1;
+            self.bus.emit(OrchestratorEvent::Log {
+                level: "info".to_string(),
+                msg: format!(
+                    "verification failed — asking the executor to fix (attempt {attempt}/{})",
+                    policy.max_iterations
+                ),
+            });
+            let prompt = verify::feedback_prompt(
+                task,
+                &policy.command,
+                &check.output,
+                attempt,
+                policy.max_iterations,
+            );
+            self.bus.emit(OrchestratorEvent::TurnStarted {
+                agent,
+                role: "Executor".to_string(),
+            });
+            let attachments = self.media_for(agent);
+            let tx = self
+                .cmd_txs
+                .get(&agent)
+                .ok_or_else(|| TalesError::Other(format!("no channel for {agent}")))?
+                .clone();
+            self.record_prompt_sent(agent, PromptPhase::Verification, &prompt);
+            tx.send(AgentCommand::StartTurn {
+                prompt,
+                attachments,
+            })
+            .await
+            .map_err(|e| TalesError::Other(format!("send failed: {e}")))?;
+            output = self.collect_turn(agent).await?;
+        }
     }
 
     /// Gracefully stop every agent.
@@ -1290,6 +1399,15 @@ impl Orchestrator {
         for tx in self.cmd_txs.values() {
             let _ = tx.send(AgentCommand::Shutdown).await;
         }
+    }
+}
+
+/// `""` for 1, `"s"` otherwise — for "N fix attempt(s)" phrasing.
+fn plural_s(n: u8) -> &'static str {
+    if n == 1 {
+        ""
+    } else {
+        "s"
     }
 }
 
@@ -3266,6 +3384,98 @@ mod prompt_tests {
             "{}",
             recommendation.rationale
         );
+    }
+
+    fn executor_ctx(label: &str) -> SpawnCtx {
+        SpawnCtx {
+            agent: uuid::Uuid::new_v4(),
+            label: label.into(),
+            cwd: std::env::temp_dir(),
+            model: None,
+            effort: None,
+            permission_mode: "acceptEdits".into(),
+            sandbox: "read-only".into(),
+            allowed_tools: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn verification_passes_without_retry() {
+        use crate::agent::mock::MockAdapter;
+
+        let (bus, _rx) = EventBus::new(64, 16);
+        let mut orch = Orchestrator::new(bus);
+        orch.add_agent(
+            Box::new(MockAdapter::new(vec!["done".into()])),
+            executor_ctx("claude"),
+            Role::Executor,
+        )
+        .await
+        .unwrap();
+
+        let pass = if cfg!(windows) { "exit 0" } else { "true" };
+        orch.set_verification(crate::verify::VerificationPolicy::new(
+            pass,
+            std::env::temp_dir(),
+            2,
+        ));
+
+        let out = orch.run_execution("claude", "task").await.unwrap();
+        assert_eq!(out, "done");
+        assert_eq!(orch.last_verification(), Some(true));
+        assert_eq!(orch.phase(), Phase::Done);
+        // A passing check never re-prompts under the verification phase.
+        assert!(
+            !orch
+                .reported_prompt_phase_stats()
+                .iter()
+                .any(|(phase, _)| phase == "verification"),
+            "passing verification must not re-prompt"
+        );
+
+        orch.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn verification_failure_iterates_then_gives_up() {
+        use crate::agent::mock::MockAdapter;
+
+        let (bus, _rx) = EventBus::new(64, 16);
+        let mut orch = Orchestrator::new(bus);
+        // One initial turn + up to two fix attempts = three; a spare keeps the
+        // mock from running dry if the loop shape ever changes.
+        orch.add_agent(
+            Box::new(MockAdapter::new(vec![
+                "try1".into(),
+                "try2".into(),
+                "try3".into(),
+                "spare".into(),
+            ])),
+            executor_ctx("claude"),
+            Role::Executor,
+        )
+        .await
+        .unwrap();
+
+        let fail = if cfg!(windows) { "exit 1" } else { "false" };
+        orch.set_verification(crate::verify::VerificationPolicy::new(
+            fail,
+            std::env::temp_dir(),
+            2,
+        ));
+
+        orch.run_execution("claude", "task").await.unwrap();
+        assert_eq!(orch.last_verification(), Some(false));
+        assert_eq!(orch.phase(), Phase::Done);
+        // The executor was re-prompted to fix under the verification phase.
+        assert!(
+            orch.reported_prompt_phase_stats()
+                .iter()
+                .any(|(phase, _)| phase == "verification"),
+            "failing verification must re-prompt the executor"
+        );
+
+        orch.shutdown().await;
     }
 
     #[test]

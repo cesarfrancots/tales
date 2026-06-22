@@ -55,6 +55,7 @@ use tales_core::tool_recommendation::{
     recommend_tools, recommendation_chips_json, RecommendationInput,
 };
 use tales_core::trace;
+use tales_core::verify::VerificationPolicy;
 use tales_core::workspace_profile::{
     clear_profile, load_profile, load_profile_if_exists, profile_status_json, refresh_profile,
     run_record_from_report, save_profile, ProfileUpdate,
@@ -271,6 +272,14 @@ enum Command {
         /// Write the final structured session summary JSON to this path.
         #[arg(long)]
         report_json_path: Option<PathBuf>,
+        /// Verify the executor's work by running this command in the executor's
+        /// working tree; on failure, feed the output back and let the executor
+        /// iterate (up to --verify-max). Exit 0 = pass.
+        #[arg(long)]
+        verify: Option<String>,
+        /// Max executor fix attempts after a failing --verify check.
+        #[arg(long, default_value_t = 3)]
+        verify_max: u8,
     },
     /// Run a live drafter/critic discussion between two agents.
     Discuss {
@@ -1201,6 +1210,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             json,
             report_path,
             report_json_path,
+            verify,
+            verify_max,
         } => {
             run_pipeline(
                 prompt,
@@ -1229,6 +1240,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 json,
                 report_path,
                 report_json_path,
+                verify,
+                verify_max,
             )
             .await
         }
@@ -3914,6 +3927,8 @@ async fn run_pipeline(
     json_output: bool,
     report_path: Option<PathBuf>,
     report_json_path: Option<PathBuf>,
+    verify: Option<String>,
+    verify_max: u8,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if json_output && !dry_run {
         return Err("--json requires --dry-run".into());
@@ -4112,6 +4127,9 @@ async fn run_pipeline(
 
     // Run inside a block so that — no matter where it fails — we still abort the
     // printer task and prune the executor's worktree (its on-disk dir + branch).
+    // The verification verdict is decided inside the run block (where the
+    // orchestrator lives); a Cell carries it back out for the trace + summary.
+    let verified: std::cell::Cell<Option<bool>> = std::cell::Cell::new(None);
     let run_result: Result<RunOutcome, Box<dyn std::error::Error>> = async {
         let mut orch = Orchestrator::new(bus.clone());
         // Parallel planning rounds by default (faster, less re-sent context); the
@@ -4127,6 +4145,18 @@ async fn run_pipeline(
             project_context_max_manifest_chars,
         )?;
         configure_local_changes(&mut orch, &cwd);
+        // Verify-and-iterate: run the check in the executor's working tree and, on
+        // failure, let the executor fix and retry. Skipped in demo (no real work
+        // to verify).
+        if let Some(check_cmd) = verify.clone() {
+            if !demo {
+                orch.set_verification(VerificationPolicy::new(
+                    check_cmd,
+                    executor_cwd.clone(),
+                    verify_max,
+                ));
+            }
+        }
         let planning_turns = demo_planning_turns(turns, sequential, 2);
         if demo {
             orch.add_agent(
@@ -4252,6 +4282,7 @@ async fn run_pipeline(
         let outcome = orch
             .run_interactive(&prompt, turns, &mut commands_rx)
             .await?;
+        verified.set(orch.last_verification());
         orch.shutdown().await;
         Ok(outcome)
     }
@@ -4308,25 +4339,35 @@ async fn run_pipeline(
         matches!(&outcome, RunOutcome::Executed { .. }),
         report_path_for_profile.as_deref(),
     );
-    // Feed the coordinator's flywheel: record which shape ran and whether it was
-    // accepted. `tales run` always plans with two seats, so the realized shape is
-    // Tiered when a separate cheap executor implements, else Debate. Demo runs
-    // (mock agents) carry no real signal, so they're skipped.
+    // Feed the coordinator's flywheel: record which shape ran and whether it
+    // succeeded. `tales run` always plans with two seats, so the realized shape is
+    // Tiered when a separate cheap executor implements, else Debate. Verification,
+    // when it ran, is the ground-truth success signal; otherwise a confirmed
+    // execution is the best proxy. Demo runs carry no real signal, so skip them.
+    let verified = verified.get();
     if !demo {
         let shape_used = if separate_executor {
             Shape::Tiered
         } else {
             Shape::Debate
         };
-        let approved = matches!(&outcome, RunOutcome::Executed { .. });
+        let success = match verified {
+            Some(passed) => passed,
+            None => matches!(&outcome, RunOutcome::Executed { .. }),
+        };
         let _ = trace::append(
             &cwd,
-            &trace::RunTrace::now(
-                prompt.as_str(),
-                Some(shape_used),
-                execute.as_str(),
-                approved,
-            ),
+            &trace::RunTrace::now(prompt.as_str(), Some(shape_used), execute.as_str(), success),
+        );
+    }
+    if let Some(passed) = verified {
+        println!(
+            "=== verification: {} ===",
+            if passed {
+                "passed"
+            } else {
+                "failed (fix attempts exhausted)"
+            }
         );
     }
     println!("\n=== outcome: {outcome:?} ===");

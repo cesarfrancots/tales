@@ -21,6 +21,14 @@ Tales uses one lockstep SemVer version for the Rust workspace. The version lives
   retrains on the successful ones — a local, telemetry-free learning flywheel.
 - `tales run` now prints the coordinator's routing recommendation alongside the
   chosen seats (advisory only — the hard human execution gate is unchanged).
+- Added the **verify-and-iterate loop** (`tales-core::verify`, Phase B of the
+  roadmap): `tales run --verify "<cmd>"` runs a check in the executor's working
+  tree after execution and, on failure, feeds the failing output back to the
+  executor to iterate up to `--verify-max` attempts (default 3). The check is a
+  command — deterministic ground truth — so `cargo test`, `pytest`, a build, or a
+  lint all work. Adds `Phase::Verifying`; the run records `verified` (not merely
+  `executed`) into the coordinator's trace flywheel. Runs in the executor's
+  worktree when `--worktree` is set.
 - Documented the path toward Fugu-class behavior in `docs/tales-fugu-roadmap.md`.
 
 ## 0.4.5

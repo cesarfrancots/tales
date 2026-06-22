@@ -2,6 +2,25 @@
 
 Generated: 2026-06-22
 
+## Status — shipped on `feat/coordinator-model` (PR #2)
+
+- ✅ **Coordinator model** (Lever 4 / Tier-2 router; Phase D/E essence) —
+  `tales-core::coordinator`: a pure-Rust MLP routing each task to solo / debate /
+  tiered plus a difficulty/tier estimate. Wired into `tales run` as advisory
+  routing; `tales coordinator {train,predict,show}`.
+- ✅ **Run-trace flywheel** (Phase A substrate) — `tales-core::trace`: local,
+  telemetry-free; the coordinator retrains on successful runs.
+- ✅ **Verify-and-iterate loop** (Phase B / Lever 1) — `tales-core::verify` +
+  orchestrator `Phase::Verifying`: `tales run --verify "<cmd>"` iterates the
+  executor to green, up to `--verify-max`.
+- Reviewed across three adversarial passes; `fmt` + `clippy -D warnings` + 224
+  workspace tests green.
+
+Remaining (scoped follow-ups): **Phase C** full model-escalation on verify failure
+(the coordinator's tier is advisory today), **Phase F** best-of-N parallel
+execution with verifier selection, **Phase D** LLM-as-conductor variant, **Phase G**
+distilled/RL conductor.
+
 ## 0. The strategic insight (read this first)
 
 Fugu looks like "a smart model that routes." It isn't, really. Its moat is **four

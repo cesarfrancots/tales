@@ -29,6 +29,13 @@ Tales uses one lockstep SemVer version for the Rust workspace. The version lives
   lint all work. Adds `Phase::Verifying`; the run records `verified` (not merely
   `executed`) into the coordinator's trace flywheel. Runs in the executor's
   worktree when `--worktree` is set.
+- Added **verify-failure escalation** (Phase C): `tales run --verify "<cmd>"
+  --escalate <tool> [--escalate-model <m>]` hands the back half of the fix
+  attempts to a stronger, distinct executor when the primary stalls — Fugu's
+  deeper-pool escalation applied to fixing, not just routing. The escalation tool
+  shares the executor's working tree so its fixes face the same check;
+  `--escalate` requires `--verify` and must differ from
+  `--drafter`/`--critic`/`--execute`.
 - Documented the path toward Fugu-class behavior in `docs/tales-fugu-roadmap.md`.
 
 ## 0.4.5

@@ -280,6 +280,14 @@ enum Command {
         /// Max executor fix attempts after a failing --verify check.
         #[arg(long, default_value_t = 3)]
         verify_max: u8,
+        /// Escalate to this (stronger) tool for the back half of --verify fix
+        /// attempts when the primary executor stalls. Must differ from
+        /// --drafter/--critic/--execute. Requires --verify.
+        #[arg(long)]
+        escalate: Option<String>,
+        /// Model for the escalation tool.
+        #[arg(long)]
+        escalate_model: Option<String>,
     },
     /// Run a live drafter/critic discussion between two agents.
     Discuss {
@@ -1212,6 +1220,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             report_json_path,
             verify,
             verify_max,
+            escalate,
+            escalate_model,
         } => {
             run_pipeline(
                 prompt,
@@ -1242,6 +1252,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 report_json_path,
                 verify,
                 verify_max,
+                escalate,
+                escalate_model,
             )
             .await
         }
@@ -3935,9 +3947,28 @@ async fn run_pipeline(
     report_json_path: Option<PathBuf>,
     verify: Option<String>,
     verify_max: u8,
+    escalate: Option<String>,
+    escalate_model: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if json_output && !dry_run {
         return Err("--json requires --dry-run".into());
+    }
+    if let Some(esc) = &escalate {
+        if verify.is_none() {
+            return Err(
+                "--escalate requires --verify (escalation only happens during verification)".into(),
+            );
+        }
+        let clash = [&drafter, &critic, &execute]
+            .iter()
+            .any(|t| t.eq_ignore_ascii_case(esc));
+        if clash {
+            return Err(format!(
+                "--escalate '{esc}' must be a different tool from --drafter/--critic/--execute \
+                 (escalate to a distinct stronger tool)"
+            )
+            .into());
+        }
     }
     let exec_lc = execute.to_lowercase();
     let exec_is_drafter = drafter.to_lowercase() == exec_lc;
@@ -3967,6 +3998,9 @@ async fn run_pipeline(
         let mut roster_keys = vec![drafter.clone(), critic.clone()];
         if separate_executor {
             roster_keys.push(execute.clone());
+        }
+        if let Some(esc) = &escalate {
+            roster_keys.push(esc.clone());
         }
         validate_tool_readiness(&roster_keys)?;
         validate_pipeline_efforts(
@@ -4089,6 +4123,7 @@ async fn run_pipeline(
     let drafter_id = Uuid::new_v4();
     let critic_id = Uuid::new_v4();
     let executor_id = Uuid::new_v4(); // only enrolled when the executor is separate
+    let escalation_id = Uuid::new_v4(); // only enrolled when --escalate is set
     let exec_id = if exec_is_drafter {
         drafter_id
     } else if exec_is_critic {
@@ -4267,6 +4302,31 @@ async fn run_pipeline(
                 Role::Executor,
             )
             .await?;
+        }
+
+        // Enroll the escalation executor (a distinct, stronger tool) so the verify
+        // loop can hand it the back-half fix attempts when the primary stalls. It
+        // shares the executor's working tree so its fixes face the same check.
+        if let Some(esc_tool) = escalate.clone() {
+            if !demo {
+                let escalation_model = model_or_default(&esc_tool, escalate_model.clone());
+                orch.add_agent(
+                    make_adapter(&esc_tool)?,
+                    mk_ctx(
+                        escalation_id,
+                        &esc_tool,
+                        &executor_cwd,
+                        escalation_model,
+                        None,
+                        &sandbox,
+                        "acceptEdits",
+                        tools_for(&esc_tool),
+                    ),
+                    Role::Executor,
+                )
+                .await?;
+                orch.set_escalation_executor(esc_tool);
+            }
         }
 
         // Auto-confirm the executor: queued before the run, it is remembered and

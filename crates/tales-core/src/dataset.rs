@@ -228,6 +228,40 @@ const CODEX_COMPLEMENT: &[(&str, Shape)] = &[
     ("implement deterministic dice rolls from a provided game seed", Shape::Solo),
 ];
 
+// Mechanical bulk edits over architectural/infra-sounding nouns, with varied
+// determiners ("the", "all the", "the legacy", "every one of") — these *read*
+// architectural but the work is uniform volume, so they're TIERED. Targets the
+// tiered/debate boundary the model slipped on. Phrasings differ from the held-out
+// eval tasks on purpose: teach the boundary, don't memorize the test.
+const ADV_INFRA_NOUNS: &[&str] = &[
+    "api endpoints",
+    "route handlers",
+    "controllers",
+    "serializers",
+    "data models",
+    "config files",
+    "service modules",
+    "database queries",
+    "view templates",
+    "graphql resolvers",
+];
+const ADV_INFRA_TIERED_TEMPLATES: &[&str] = &[
+    "rename the legacy {n} to the new naming convention across the project",
+    "update all the deprecated {n} to the new signature repo-wide",
+    "scaffold the standard CRUD pages for each of the {n}",
+    "regenerate all the {n} after the schema migration",
+    "convert every one of the {n} to the new format across all packages",
+];
+// Function-call swaps across the codebase — mechanical despite the crypto/algo
+// flavor -> TIERED (the "md5(->sha256(" class). Different fn pairs than the eval.
+const ADV_FNSWAP: &[&str] = &[
+    "replace every sha1( call with sha512( across the whole service layer",
+    "swap each base64encode( call for base64urlencode( throughout the api code",
+    "change every gettime( call to getmonotonic( across all the workers",
+    "replace each parseInt( call with safeParseInt( repo-wide",
+    "convert every logf( call to structuredLog( across all the handlers",
+];
+
 /// Generate the full labeled corpus: every template × vocabulary combination per
 /// shape. Deterministic and deduplicated; returns `(task, shape)` pairs.
 pub fn generate() -> Vec<(String, Shape)> {
@@ -282,6 +316,16 @@ pub fn generate() -> Vec<(String, Shape)> {
     for task in ADV_SOLO {
         out.push((task.to_string(), Shape::Solo));
     }
+    // Architectural-sounding nouns under bulk verbs, and crypto/algo fn-call swaps
+    // -> still TIERED (the boundary the model misread).
+    for tmpl in ADV_INFRA_TIERED_TEMPLATES {
+        for n in ADV_INFRA_NOUNS {
+            out.push((tmpl.replace("{n}", n), Shape::Tiered));
+        }
+    }
+    for task in ADV_FNSWAP {
+        out.push((task.to_string(), Shape::Tiered));
+    }
     for (task, shape) in CODEX_COMPLEMENT {
         out.push((task.to_string(), *shape));
     }
@@ -335,7 +379,7 @@ pub fn to_chat_jsonl(corpus: &[(String, Shape)]) -> String {
 
 /// System prompt for the orchestration-plan model. Teaches the schema + the agent
 /// pool. Kept identical between training and inference.
-pub const CONDUCTOR_PLAN_SYSTEM: &str = "You are TalesSML, the orchestration brain for Tales. Given a coding task, decide HOW to coordinate AI agents to deliver it. Reply with ONLY a JSON object: {\"schema_version\":1,\"shape\":\"solo|debate|tiered\",\"difficulty\":0.0-1.0,\"rationale\":\"short reason\",\"risks\":[...],\"roster\":[{\"role\":\"drafter|critic|executor|reviewer|verifier\",\"agent\":\"claude|codex\",\"model\":\"opus|sonnet|haiku|gpt-5.x\",\"why\":\"capability match\"}],\"coordination\":{\"order\":[...],\"parallelizable\":true|false,\"handoff\":\"...\"},\"verify\":{\"required\":true|false,\"method\":\"tests|review|build|none\",\"agent\":\"codex\"},\"escalate\":{\"if\":[...],\"to\":{\"agent\":\"claude\",\"model\":\"opus\"}}}. Agents: claude (opus=strongest reasoning, sonnet=balanced, haiku=cheap/fast) and codex (gpt-5.x, best reviewer). shape: solo=one strong model plans+executes (hard, self-contained); debate=two planners argue then execute (ambiguous, architecture-defining); tiered=strong models plan, a cheap model executes (voluminous, mechanical). Choose the roster, order, verification, and escalation that fit the task's difficulty and risk; escalate to opus when difficulty is high or the task is correctness/security-sensitive.";
+pub const CONDUCTOR_PLAN_SYSTEM: &str = "You are TalesSML, the orchestration brain for Tales. Given one coding task, decide HOW to coordinate AI agents to deliver it, and reply with ONE valid JSON object and NOTHING else: no prose, no markdown, no code fences, no comments. Output every field exactly once and stop after the closing brace.\n\nUse ONLY these tokens; never invent others:\n- shape: solo | debate | tiered\n- roster[].role: drafter | critic | executor | reviewer | verifier\n- roster[].agent: claude | codex\n- roster[].model: opus | sonnet | haiku | gpt-5.x\n- verify.method: tests | review | build | none\n\ndifficulty is a single decimal between 0 and 1 with at most two decimals (e.g. 0.2, 0.6, 0.85). Write it once, as one clean number — no extra digits, no second number, no trailing tokens.\n\nEmit exactly this schema, with the top-level keys in this exact order:\n{\"coordination\":{\"order\":[\"...\"],\"parallelizable\":true,\"handoff\":\"...\"},\"difficulty\":0.6,\"escalate\":{\"if\":[\"...\"],\"to\":{\"agent\":\"claude\",\"model\":\"opus\"}},\"rationale\":\"short reason\",\"risks\":[\"...\"],\"roster\":[{\"role\":\"drafter|critic|executor|reviewer|verifier\",\"agent\":\"claude|codex\",\"model\":\"opus|sonnet|haiku|gpt-5.x\",\"why\":\"capability match\"}],\"schema_version\":1,\"shape\":\"solo|debate|tiered\",\"verify\":{\"required\":true,\"method\":\"tests|review|build|none\",\"agent\":\"codex\"}}\n\nAgents: claude (opus=strongest reasoning, sonnet=balanced, haiku=cheap/fast) and codex (gpt-5.x, best reviewer). shape: solo=one strong model plans+executes (hard, self-contained); debate=two planners argue then execute (ambiguous, architecture-defining); tiered=strong models plan, a cheap model executes (voluminous, mechanical). Choose the roster, order, verification, and escalation that fit the task's difficulty and risk; coordination.order must list the roster roles in order; escalate to opus when difficulty is high or the task is correctness/security-sensitive.";
 
 fn role(role: &str, agent: &str, model: &str, why: &str) -> serde_json::Value {
     json!({ "role": role, "agent": agent, "model": model, "why": why })
@@ -454,7 +498,11 @@ pub fn orchestration_plan(task: &str, shape: Shape) -> serde_json::Value {
     json!({
         "schema_version": 1,
         "shape": shape.as_str(),
-        "difficulty": difficulty,
+        // Round to 2 decimals: a raw f32 serializes as 0.20000000298023224, and
+        // that long high-entropy digit string is what the SLM hallucinates extra
+        // numeric tokens around (corrupting the JSON). A clean 0.2 is trivial to
+        // emit. Matches the v1 routing target's `{:.2}` formatting.
+        "difficulty": (f64::from(difficulty) * 100.0).round() / 100.0,
         "rationale": plan_rationale(shape, &f),
         "risks": risks,
         "roster": roster,

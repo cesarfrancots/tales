@@ -132,10 +132,16 @@ tales run "decide whether to migrate the cron jobs to the queue" \
 ```
 
 The pure-Rust keyword/MLP `tales coordinator` stays the zero-cost default and the hard fallback
-when the model server is unreachable. **Honest status:** the engine acts on TalesSML's
-`shape`+`difficulty` today (the `LlmConductor` parses them; extra plan fields are forward-compatible);
-the **v2 plan target** (full roster/coordination/verify/escalate, trained on a 1.5–3B base) is freshly
-trained and rolling into adaptive turn-taking next. Train your own in [`training/`](training/).
+when the model server is unreachable. The `LlmConductor` **memoizes each deterministic decision**
+to `.tales/conductor-cache.json` (keyed by model+prompt+task), so a repeated task is instant and
+free — the local analogue of provider prompt caching.
+
+**Honest status:** the engine acts on TalesSML's `shape`+`difficulty` today (the `LlmConductor`
+parses them; extra plan fields are forward-compatible). The **v2 plan target** — full
+roster/coordination/verify/escalate on a 1.5B base — now scores **100% / 100% / 92%** plan-validity
+on the easy / mixed-signal / game-dev corpora with **zero malformed output** (see
+[`training/`](training/) for the eval and the train→eval→refine flywheel that got there);
+wiring the full plan into adaptive turn-taking is next. Train your own in [`training/`](training/).
 
 ## Weighs almost nothing
 

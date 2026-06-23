@@ -37,6 +37,9 @@ pub struct LlmConductor {
     base_url: String,
     model: String,
     client: reqwest::Client,
+    /// Memoize deterministic (model+prompt+task) → decision to `.tales/`. On by
+    /// default; the routing call is temperature 0, so a repeat is free + instant.
+    cache: bool,
 }
 
 impl LlmConductor {
@@ -54,12 +57,20 @@ impl LlmConductor {
             // fails → keyword fallback. Upgrade path: a `--conductor-model` flag.
             model: "tales-conductor".to_string(),
             client,
+            cache: true,
         }
     }
 
     /// Override the model name sent to the server (required for ollama).
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = model.into();
+        self
+    }
+
+    /// Enable/disable the local decision cache (default: enabled). Disable for
+    /// benchmarking the raw model or when you want every call to hit the server.
+    pub fn with_cache(mut self, enabled: bool) -> Self {
+        self.cache = enabled;
         self
     }
 
@@ -74,8 +85,24 @@ impl LlmConductor {
     /// answered, `false` if the keyword coordinator fallback did. Lets a UI label
     /// the routing honestly instead of claiming the LLM spoke when it didn't.
     pub async fn advise_traced(&self, task: &str, workspace: &Path) -> (Strategy, bool) {
+        // Cache hit: the model already routed this exact (model, prompt, task) —
+        // return its memoized call without touching the server. Counts as the
+        // model answering (`true`), because it did, once.
+        if self.cache {
+            if let Some((shape, difficulty)) = cache::lookup(workspace, &self.model, task) {
+                if let Some(shape) = shape_from_str(&shape) {
+                    return (strategy_from(shape, difficulty, &self.base_url), true);
+                }
+            }
+        }
         match self.try_route(task).await {
-            Ok(strategy) => (strategy, true),
+            Ok(strategy) => {
+                if self.cache {
+                    // Best-effort: a cache write must never break routing.
+                    cache::store(workspace, &self.model, task, &strategy);
+                }
+                (strategy, true)
+            }
             Err(err) => {
                 tracing::warn!(
                     "llm conductor unavailable ({err}); falling back to keyword coordinator"
@@ -188,10 +215,137 @@ fn strategy_from(shape: Shape, difficulty: f32, url: &str) -> Strategy {
     }
 }
 
+/// A tiny, local, best-effort decision cache. The conductor routes at
+/// temperature 0, so `(model, system prompt, task)` maps to one decision
+/// forever — memoizing it makes a repeat instant and free (no server call, no
+/// tokens), which is the local analogue of provider prompt caching. The system
+/// prompt is folded into the key, so editing [`CONDUCTOR_SYSTEM`] or swapping
+/// the model silently invalidates stale entries. Persisted to
+/// `<workspace>/.tales/conductor-cache.json`.
+mod cache {
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+
+    use serde::{Deserialize, Serialize};
+
+    use super::CONDUCTOR_SYSTEM;
+    use crate::coordinator::Strategy;
+
+    const SCHEMA_VERSION: u32 = 1;
+
+    #[derive(Serialize, Deserialize)]
+    struct CacheFile {
+        schema_version: u32,
+        entries: HashMap<String, Entry>,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct Entry {
+        model: String,
+        task: String,
+        shape: String,
+        difficulty: f32,
+    }
+
+    fn path(workspace: &Path) -> PathBuf {
+        workspace.join(".tales").join("conductor-cache.json")
+    }
+
+    /// FNV-1a 64-bit over `model ⏿ prompt ⏿ task`. A *stable* hash on purpose —
+    /// `DefaultHasher` isn't guaranteed stable across builds, so it can't key a
+    /// persisted cache.
+    fn key(model: &str, task: &str) -> String {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in model
+            .bytes()
+            .chain([0x1f_u8])
+            .chain(CONDUCTOR_SYSTEM.bytes())
+            .chain([0x1f_u8])
+            .chain(task.bytes())
+        {
+            h ^= u64::from(b);
+            h = h.wrapping_mul(0x100_0000_01b3);
+        }
+        format!("{h:016x}")
+    }
+
+    fn load(workspace: &Path) -> CacheFile {
+        std::fs::read_to_string(path(workspace))
+            .ok()
+            .and_then(|s| serde_json::from_str::<CacheFile>(&s).ok())
+            .filter(|c: &CacheFile| c.schema_version == SCHEMA_VERSION)
+            .unwrap_or(CacheFile {
+                schema_version: SCHEMA_VERSION,
+                entries: HashMap::new(),
+            })
+    }
+
+    /// The cached `(shape, difficulty)` for this exact request, if any. The
+    /// stored `model`/`task` are re-checked so a hash collision can never serve a
+    /// wrong decision.
+    pub(super) fn lookup(workspace: &Path, model: &str, task: &str) -> Option<(String, f32)> {
+        let file = load(workspace);
+        let e = file.entries.get(&key(model, task))?;
+        (e.model == model && e.task == task).then(|| (e.shape.clone(), e.difficulty))
+    }
+
+    /// Persist a decision. Best-effort: any IO/serialize error is swallowed so a
+    /// cache problem never breaks routing.
+    pub(super) fn store(workspace: &Path, model: &str, task: &str, strategy: &Strategy) {
+        let mut file = load(workspace);
+        file.entries.insert(
+            key(model, task),
+            Entry {
+                model: model.to_string(),
+                task: task.to_string(),
+                shape: strategy.shape.as_str().to_string(),
+                difficulty: strategy.difficulty,
+            },
+        );
+        let p = path(workspace);
+        if let Some(parent) = p.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(json) = serde_json::to_string(&file) {
+            let _ = std::fs::write(p, json);
+        }
+    }
+    // ponytail: unbounded growth, no eviction, last-writer-wins across concurrent
+    // processes. Plans are tiny, so size is a non-issue for a local single-user
+    // tool; the upgrade path is an LRU/size cap + a file lock if that changes.
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::{Read, Write};
+
+    #[test]
+    fn decision_cache_round_trips_and_is_keyed() {
+        let ws = std::env::temp_dir().join("tales_cond_cache_test");
+        let _ = std::fs::remove_dir_all(&ws);
+        std::fs::create_dir_all(&ws).unwrap();
+        let task = "migrate all the tests from mocha to jest";
+        let strat = strategy_from(Shape::Tiered, 0.2, "test");
+
+        // Miss before anything is stored.
+        assert!(cache::lookup(&ws, "talesml-v4", task).is_none());
+
+        cache::store(&ws, "talesml-v4", task, &strat);
+
+        // Hit on the exact (model, task).
+        let (shape, diff) = cache::lookup(&ws, "talesml-v4", task).expect("cache hit");
+        assert_eq!(shape, "tiered");
+        assert!((diff - 0.2).abs() < 1e-6);
+
+        // Miss on a different task, and on a different model (key includes both).
+        assert!(cache::lookup(&ws, "talesml-v4", "implement a trie").is_none());
+        assert!(cache::lookup(&ws, "other-model", task).is_none());
+
+        // Persisted locally under .tales/.
+        assert!(ws.join(".tales").join("conductor-cache.json").exists());
+        let _ = std::fs::remove_dir_all(&ws);
+    }
 
     /// One-shot mock OpenAI-compatible server: answers a single connection with
     /// `decision` wrapped as the assistant message content, then closes. Runs on

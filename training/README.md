@@ -134,3 +134,58 @@ python train_conductor.py --data ../.tales/conductor-dataset.jsonl --merge   # ~
 ollama create talesml -q q4_K_M -f Modelfile.conductor-ft                     # import + quantize
 python eval_llm_conductor.py --model talesml --corpus-file game_dev_corpus.json
 ```
+
+## Measured: TalesSML **v2** — the orchestration-plan model
+
+v1 above routes (`{shape, difficulty}`). **v2** emits the full **orchestration
+plan** — roster of `{role, agent, model, why}`, coordination order, verify, and
+escalate (`dataset::orchestration_plan`, taught by `CONDUCTOR_PLAN_SYSTEM`). It's a
+LoRA fine-tune of **Qwen2.5-1.5B**, Q4_K_M (~986 MB), served via ollama. Scored by
+[`eval_plan.py`](eval_plan.py), which grades the *whole* plan against the
+deterministic ground-truth policy (shape + structural well-formedness + roster /
+coordination / verify / escalate), not just the routing decision:
+
+| TalesSML v2 | easy (18) plan-valid | hard/mixed (11) | game-dev (13) | unparseable |
+|---|---|---|---|---|
+| first plan target (raw f32 difficulty) | 61% | 55% | 54% | 12 / 42 |
+| + clean difficulty + **plan-discipline prompt** | 94% | 82% | 92% | **0** |
+| + **tiered/debate boundary data**, 4 epochs | **100%** | **100%** | **92%** | **0** |
+
+The flywheel that got there, each step measured on held-out corpora:
+
+1. **Clean the numeric target.** A raw f32 `difficulty` serialized as
+   `0.20000000298023224`; that long digit string made the SLM hallucinate stray
+   numeric tokens (`…,-0.79,…`) that corrupted the JSON — the dominant failure
+   (12/42 unparseable). Rounding to `0.2` (matching the v1 `{:.2}` target) was the
+   first fix.
+2. **Teach output discipline.** A rewritten `CONDUCTOR_PLAN_SYSTEM` — closed-set
+   enums up front ("never invent tokens"), "emit each field once, stop after the
+   closing brace" — took unparseable to **0** and plan-valid to 94/82/92.
+3. **Close the boundary.** The last misroutes were mechanical bulk edits with
+   architectural-sounding nouns ("rename the legacy api endpoints…", "replace every
+   `md5(`…") misread as debate/solo. +55 targeted `ADV_INFRA_*` / `ADV_FNSWAP`
+   examples (phrasings distinct from the eval, to teach the boundary not the test)
+   plus a 4th epoch → **100% / 100%** on the general + mixed-signal corpora. The two
+   remaining game-dev misses are genuinely ambiguous solo-vs-tiered judgment calls.
+
+Reproduce (v2):
+
+```sh
+tales coordinator export-dataset --out plan-dataset.jsonl --plans
+python train_conductor.py --data plan-dataset.jsonl --base Qwen/Qwen2.5-1.5B-Instruct \
+  --merge --max-seq 1024 --batch 2 --epochs 4            # ~32 min on a 4070 Ti (12 GB)
+ollama create talesml-v2 -q q4_K_M -f Modelfile.orchv5   # FROM ./conductor-orchv5-merged
+python eval_plan.py --model talesml-v2 --corpus-file game_dev_corpus.json
+```
+
+> **Hardware note.** A 1.5B at `--max-seq 1024` sits right at the 4070 Ti's 12 GB
+> edge; SFTTrainer pads each batch to its longest sequence, so `--batch 4` tipped it
+> into WDDM PCIe-paging (3× slowdown, GPU "100%" but ~2% memory traffic). `--batch 2`
+> keeps it on-device. Watch `nvidia-smi dmon` — real training bursts the `mem`
+> column to 40–60%.
+
+The served model is also guarded at the output: [`plan_guard.py`](plan_guard.py)
+validates/repairs the plan JSON (strips corrupt floats, flags hallucinated enums) —
+see [`GUARD-FINDINGS.md`](GUARD-FINDINGS.md). And Tales' `LlmConductor` memoizes each
+deterministic decision to `.tales/conductor-cache.json`, so a repeated task is
+instant and free (the local analogue of provider prompt caching).

@@ -1,0 +1,2 @@
+FROM ./conductor-orchv5-merged
+PARAMETER temperature 0

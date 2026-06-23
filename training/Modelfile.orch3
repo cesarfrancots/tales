@@ -1,0 +1,2 @@
+FROM ./conductor-orch3-merged
+PARAMETER temperature 0

@@ -95,6 +95,8 @@ def route_one(url, model, task, timeout):
             ],
             "temperature": 0.0,
             "stream": False,
+            "max_tokens": 1024,
+            "response_format": {"type": "json_object"},
         }
     ).encode()
     req = urllib.request.Request(

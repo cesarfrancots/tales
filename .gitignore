@@ -11,6 +11,8 @@ Cargo.lock.bak
 # Conductor training artifacts (regenerable; weights are large)
 conductor-dataset.jsonl
 training/.venv/
+training/.venv-train/
 training/conductor-lora*/
+training/conductor-orch*/
 **/__pycache__/
 *.gguf

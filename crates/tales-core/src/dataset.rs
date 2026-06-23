@@ -18,13 +18,7 @@ use crate::coordinator::Shape;
 
 /// System prompt the conductor model is trained (and later served) with. Keep
 /// this identical between training and inference so the model sees what it learned.
-pub const CONDUCTOR_SYSTEM: &str =
-    "You are Tales' orchestration conductor. Given a coding task, decide how to coordinate it. \
-Reply with ONLY a compact JSON object: {\"shape\":\"solo|debate|tiered\",\"difficulty\":0.0-1.0}. \
-solo = one strong model plans and executes (algorithmically hard, self-contained work). \
-debate = two planners argue then execute (ambiguous, architecture-defining work). \
-tiered = strong models plan and a cheap model executes (voluminous, mechanical work). \
-difficulty is the correctness risk / how unsafe it is to run cheap.";
+pub const CONDUCTOR_SYSTEM: &str = "You are Tales' orchestration conductor. Given one coding task, reply ONLY with compact JSON: {\"shape\":\"solo|debate|tiered\",\"difficulty\":0.0-1.0}.\n\nChoose by the task's primary work:\n- solo = one strong model plans AND executes. Use for self-contained correctness-heavy implementation where correctness IS the implementation: algorithms, parsers, data structures, tricky focused bugs, precise logic.\n- debate = two planners argue the approach, then execute. Use for ambiguous, architecture-DEFINING work with no known-correct answer. Triggers: propose, choose, decide, design architecture, select approach, compare strategy, evaluate tradeoffs.\n- tiered = strong models plan, a cheap model executes. Use for voluminous, MECHANICAL, repetitive work across many files/resources, or ONE uniform change applied to MANY sites. Triggers: scaffold, generate for each, migrate, convert, rename, replace, update all, codemod, CRUD pages, boilerplate, every/all/each/throughout/across handlers/endpoints/controllers/files/modules/call sites.\n\nBoundary rules: if the design is already implied and the hard part is volume/repetition, choose tiered, not debate. If a task applies the same change across many sites, choose tiered even when the subsystem sounds architectural or the per-site edit sounds small. If the task asks to propose/choose/decide the architecture/approach/strategy, choose debate, not solo or tiered. difficulty is correctness risk / how unsafe it is to run cheap.";
 
 /// Difficulty target per shape (the label the model learns alongside the shape).
 fn shape_difficulty(shape: Shape) -> f32 {

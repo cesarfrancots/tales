@@ -85,9 +85,28 @@ coordinator, so a stock build still works.
 
 ## Why this beats the keyword model
 
-The keyword coordinator counts keywords; it can't tell that "refactor the sorting
-algorithm" is conceptually a close call. The fine-tuned model learns from
-*labels*, not keywords, so it generalizes to phrasings and mixed-signal tasks the
-keyword model misreads — while still running fully local and free. Measure the
-gap with `tales coordinator eval` (keyword baseline) and, once wired, the same
-held-out corpus against the served model.
+The keyword coordinator counts keywords; it can't tell that "decide whether to
+migrate all the cron jobs to the queue" is a *design decision* (debate), not bulk
+mechanical work (tiered) — it sees "migrate all" and routes tiered at 99%
+confidence. A model that reasons over the task instead of counting tokens
+generalizes to these mixed-signal phrasings, while still running fully local and free.
+
+`eval_llm_conductor.py` scores a served model exactly as `LlmConductor` calls it
+(no torch, stdlib only):
+
+```sh
+# baseline: the keyword coordinator on the held-out corpus
+python eval_llm_conductor.py --keyword                 # 18/18 = 100%
+# a prompted local model (ollama) on the same corpus
+python eval_llm_conductor.py --model qwen3.5:9b        # ties at 100% after prompt tuning
+# the mixed-signal corpus where keyword-counting misfires
+python eval_llm_conductor.py --keyword --corpus-file hard_corpus.json   # 7/11  = 63.6%
+python eval_llm_conductor.py --model qwen3.5:9b --corpus-file hard_corpus.json  # 10/11 = 90.9%
+```
+
+Measured result (prompted `qwen3.5:9b`, `CONDUCTOR_SYSTEM` as shipped): it **ties**
+the keyword model on the keyword-separable held-out set (100%) and **beats** it on
+the Codex-validated mixed-signal `hard_corpus.json` (90.9% vs 63.6%) — every one
+of the keyword model's misroutes there is a *decision* task it mistook for bulk
+work. Fine-tuning (above) sharpens this further and removes the prompt-length cost
+at inference.

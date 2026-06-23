@@ -1,0 +1,13 @@
+[
+  ["rename the quicksort and heapsort utilities to camelCase across all files", "tiered"],
+  ["replace every md5( call with sha256( across the entire backend", "tiered"],
+  ["add the new traceId field to every API response across all services", "tiered"],
+  ["implement the rate limiter exactly as the approved architecture spec defines, matching every edge case", "solo"],
+  ["write the exact CRC32 checksum routine the wire protocol mandates, bit for bit", "solo"],
+  ["two browser tabs both submit checkout and the cart double-charges; make it deterministic and correct", "solo"],
+  ["fix the rebalancing bug in our red-black tree deletion so the black-height invariant always holds", "solo"],
+  ["decide whether to migrate all the cron jobs to the message queue, and lay out the rollout plan", "debate"],
+  ["weigh whether to rename the entire public API for consistency, given the downstream breakage", "debate"],
+  ["figure out how offline edits should reconcile when two devices conflict on the same record", "debate"],
+  ["should the billing system be event-sourced or CRUD - make the call for our scale and justify it", "debate"]
+]

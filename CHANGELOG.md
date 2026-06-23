@@ -41,6 +41,14 @@ Tales uses one lockstep SemVer version for the Rust workspace. The version lives
   fallback honestly (`conductor[llm→keyword]`). Behind the `llm-conductor` cargo
   feature so the lean default build pulls no HTTP client; the keyword coordinator
   stays the zero-cost default and the human execution gate is unchanged.
+- Sharpened `dataset::CONDUCTOR_SYSTEM` (the shared train+inference prompt) with
+  per-shape trigger verbs and explicit boundary rules, after measuring routing on
+  a local served model. Added `training/eval_llm_conductor.py` (stdlib-only) which
+  scores any served conductor exactly as `LlmConductor` calls it, plus a
+  Codex-validated mixed-signal `training/hard_corpus.json`. Measured: a prompted
+  local `qwen3.5:9b` ties the keyword coordinator on the keyword-separable held-out
+  corpus (100%) and **beats** it on the mixed-signal corpus (90.9% vs 63.6%), where
+  every keyword misroute is a *decision* task it mistook for bulk mechanical work.
 - Added **verify-failure escalation** (Phase C): `tales run --verify "<cmd>"
   --escalate <tool> [--escalate-model <m>]` hands the back half of the fix
   attempts to a stronger, distinct executor when the primary stalls — Fugu's

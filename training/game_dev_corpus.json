@@ -1,0 +1,15 @@
+[
+  ["implement the troop targeting and combat resolution loop", "solo"],
+  ["implement bridge-based pathfinding so ground troops cross the river correctly", "solo"],
+  ["fix the bug where the start overlay stays hidden so the game is unstartable", "solo"],
+  ["optimize rendering by pre-rendering the static arena to an offscreen canvas", "solo"],
+  ["wire the generated sprite images into the canvas draw functions", "solo"],
+  ["design the overall architecture for a real-time Clash Royale clone", "debate"],
+  ["decide how to handle real-time multiplayer netcode and state synchronization", "debate"],
+  ["choose between an authoritative server and lockstep simulation for multiplayer", "debate"],
+  ["balance all eight troop cards' hp and damage for fair matchups", "debate"],
+  ["generate SVG sprite art for all ten troop and tower types", "tiered"],
+  ["rename every troop card key to match its filename across cards.js and game.js", "tiered"],
+  ["add ten new troop cards with their stats to the card table", "tiered"],
+  ["port all the canvas draw calls to the new WebGL renderer across the codebase", "tiered"]
+]

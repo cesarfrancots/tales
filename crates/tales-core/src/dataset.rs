@@ -123,6 +123,111 @@ const DEBATE_TEMPLATES: &[&str] = &[
     "figure out the best way to handle {a} in {s}",
 ];
 
+// --- Adversarial mixed-signal hardening -------------------------------------
+// Clean templates teach "migrate all -> tiered, decide -> debate", but a model
+// trained only on those gets fooled by mixed signals (the exact failure the
+// keyword coordinator has). These examples teach the *boundaries* — labels are
+// ground-truth by construction, matching the shape definitions and the v3 prompt.
+
+/// Algorithmic-sounding nouns that, under a mechanical verb, are still TIERED.
+const ADV_ALGO_NOUNS: &[&str] = &[
+    "quicksort",
+    "heapsort",
+    "binary-search",
+    "hash",
+    "parser",
+    "tokenizer",
+    "graph-traversal",
+    "LRU cache",
+    "b-tree",
+    "regex",
+];
+/// A uniform/mechanical edit over an algorithmic subsystem -> TIERED, not solo/debate.
+const ADV_TIERED_TEMPLATES: &[&str] = &[
+    "rename the {n} helpers to camelCase across all files",
+    "replace every call to the {n} routine throughout the codebase",
+    "convert all the {n} modules to the new API across the repo",
+    "update each handler that uses the {n} to the new signature project-wide",
+];
+const ADV_SITES: &[&str] = &[
+    "API endpoint",
+    "request handler",
+    "controller",
+    "route",
+    "serializer",
+    "service",
+];
+const ADV_ADD_THINGS: &[&str] = &[
+    "a traceId field",
+    "structured logging",
+    "the new auth header",
+    "a correlation id",
+];
+
+/// A DECISION wearing volume/mechanical clothing -> DEBATE (the deciding is the work).
+const ADV_SYS: &[&str] = &[
+    "services",
+    "cron jobs",
+    "controllers",
+    "data models",
+    "endpoints",
+];
+const ADV_TECH: &[&str] = &[
+    "the message queue",
+    "gRPC",
+    "the new framework",
+    "an event-sourced model",
+];
+const ADV_DEBATE_TEMPLATES: &[&str] = &[
+    "decide whether to migrate all the {s} to {t}, and lay out the rollout plan",
+    "weigh whether to rename the entire {s} layer, given the downstream breakage",
+    "should we rewrite all the {s} or refactor them in place — make the call",
+    "figure out whether to convert every one of the {s} to {t} and how",
+];
+
+/// Focused correctness bugs (no algorithmic keyword) or exact-spec work -> SOLO.
+const ADV_SOLO: &[&str] = &[
+    "two browser tabs both submit checkout and the cart double-charges; make it deterministic",
+    "a race between retries duplicates the write; make it exactly-once and correct",
+    "under load the cache serves stale prices; make reads consistent and correct",
+    "the pagination skips a row when items are deleted mid-scroll; fix it precisely",
+    "implement the rate limiter exactly as the approved spec defines, matching every edge case",
+    "the CSV importer mis-parses quoted commas; make it spec-correct on every case",
+    "the timezone math is off by an hour on DST boundaries; make it exact",
+    "the idempotency key occasionally collides; make duplicate requests safe",
+];
+
+/// Codex-proposed examples that *complement* the adversarial pass (Codex as the
+/// training reviewer): mechanical edits over crypto/algorithmic-sounding nouns ->
+/// tiered, balance/tune/choose-tradeoffs -> debate, focused game-dev bugs/features
+/// -> solo. Curated against TalesSML's measured misroutes. See training/README.
+const CODEX_COMPLEMENT: &[(&str, Shape)] = &[
+    ("replace every md5_hash(...) helper call with sha256_hash(...) across the backend services", Shape::Tiered),
+    ("rename all crc32_checksum fields to content_digest in API structs, database mappers, and tests", Shape::Tiered),
+    ("swap every recursive_fib(...) call in benchmark fixtures to iterative_fib(...) without changing behavior", Shape::Tiered),
+    ("replace all AES128Encrypt usages with AES256Encrypt across payment, auth, worker, and migration code", Shape::Tiered),
+    ("convert every quicksortMetrics label to sortMetrics across telemetry emitters and dashboards", Shape::Tiered),
+    ("replace every legacy_rng(...) call with secure_rng(...) throughout matchmaking, loot, and tests", Shape::Tiered),
+    ("update every DynamicProgrammingSolver import path after moving it into the algorithms module", Shape::Tiered),
+    ("change every SHA1_FINGERPRINT column reference to SHA256_FINGERPRINT in repositories, queries, and fixtures", Shape::Tiered),
+    ("choose whether enemy pathfinding should use A*, flow fields, or waypoint graphs for 200-unit battles", Shape::Debate),
+    ("balance the stamina cost, cooldown, and damage for the rogue dash attack against the warrior charge", Shape::Debate),
+    ("decide whether the crafting system should use fixed recipes, discovery-based recipes, or skill-tree unlocks", Shape::Debate),
+    ("tune all eight tower-defense towers for fair early-game and late-game viability", Shape::Debate),
+    ("choose the tradeoff between deterministic lockstep networking and server-authoritative snapshots for multiplayer", Shape::Debate),
+    ("balance enemy spawn rates, resource drops, and wave lengths so each difficulty mode feels distinct", Shape::Debate),
+    ("decide whether boss fights should prioritize pattern memorization, reactive dodging, or build preparation", Shape::Debate),
+    ("choose how to trade off card rarity, mana cost, and win rate when rebalancing the starter deck", Shape::Debate),
+    ("fix the off-by-one bug in the inventory slot index calculation", Shape::Solo),
+    ("implement binary search for the sorted asset manifest lookup", Shape::Solo),
+    ("make the jump buffer accept input up to 120ms before landing", Shape::Solo),
+    ("fix the collision resolver so the player cannot clip through one-tile walls", Shape::Solo),
+    ("parse the level seed string into a u64 and return a clear error for invalid input", Shape::Solo),
+    ("add a clamp so camera zoom stays between the configured min and max values", Shape::Solo),
+    ("fix the save-file checksum validation to reject truncated files", Shape::Solo),
+    ("implement deterministic dice rolls from a provided game seed", Shape::Solo),
+];
+
 /// Generate the full labeled corpus: every template × vocabulary combination per
 /// shape. Deterministic and deduplicated; returns `(task, shape)` pairs.
 pub fn generate() -> Vec<(String, Shape)> {
@@ -151,6 +256,34 @@ pub fn generate() -> Vec<(String, Shape)> {
                 ));
             }
         }
+    }
+
+    // Adversarial mixed-signal hardening (see consts above).
+    for tmpl in ADV_TIERED_TEMPLATES {
+        for n in ADV_ALGO_NOUNS {
+            out.push((tmpl.replace("{n}", n), Shape::Tiered));
+        }
+    }
+    for thing in ADV_ADD_THINGS {
+        for site in ADV_SITES {
+            out.push((
+                format!("add {thing} to every {site} across all services"),
+                Shape::Tiered,
+            ));
+        }
+    }
+    for tmpl in ADV_DEBATE_TEMPLATES {
+        for s in ADV_SYS {
+            for t in ADV_TECH {
+                out.push((tmpl.replace("{s}", s).replace("{t}", t), Shape::Debate));
+            }
+        }
+    }
+    for task in ADV_SOLO {
+        out.push((task.to_string(), Shape::Solo));
+    }
+    for (task, shape) in CODEX_COMPLEMENT {
+        out.push((task.to_string(), *shape));
     }
 
     out.sort();

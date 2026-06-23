@@ -1,0 +1,8 @@
+# Import the LoRA-fine-tuned, merged Qwen2.5-0.5B conductor into ollama.
+# `ollama create tales-conductor-ft -q q4_K_M -f Modelfile.conductor-ft`
+# converts the safetensors to GGUF and quantizes to Q4_K_M (~350 MB) for prod.
+FROM ./conductor-lora-merged
+
+# Deterministic routing — same as Tales' LlmConductor request.
+PARAMETER temperature 0
+PARAMETER top_p 1

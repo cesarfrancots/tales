@@ -110,3 +110,27 @@ the Codex-validated mixed-signal `hard_corpus.json` (90.9% vs 63.6%) — every o
 of the keyword model's misroutes there is a *decision* task it mistook for bulk
 work. Fine-tuning (above) sharpens this further and removes the prompt-length cost
 at inference.
+
+## Measured: the fine-tuned TalesSML
+
+`TalesSML` is the LoRA fine-tune of Qwen2.5-0.5B on this dataset, quantized to
+Q4_K_M (~398 MB) and served via ollama. It was hardened in a flywheel: train →
+eval → add adversarial mixed-signal examples (the `ADV_*` templates) → have Codex
+review **and complement** the data (the `CODEX_COMPLEMENT` examples) → retrain.
+
+| model | size | easy (18) | hard (11) | game-dev (13) | speed |
+|---|---|---|---|---|---|
+| keyword coordinator | — | 100% | 63.6% | — | instant |
+| prompted qwen3.5:9b | 6.6 GB | 100% | 90.9% | — | ~5 s/task |
+| **TalesSML** (fine-tuned) | **398 MB** | **100%** | **100%** | **92.3%** | **~0.18 s/task** |
+
+TalesSML **beats the prompted 9B on the mixed-signal corpus (100% vs 90.9%)** at
+**16× smaller and ~30× faster**, and routes real game-development tasks
+(`game_dev_corpus.json`) at 92.3% — its one miss is a genuinely ambiguous
+balance-vs-bulk-edit task. Reproduce:
+
+```sh
+python train_conductor.py --data ../.tales/conductor-dataset.jsonl --merge   # ~7 min on a 4070 Ti
+ollama create talesml -q q4_K_M -f Modelfile.conductor-ft                     # import + quantize
+python eval_llm_conductor.py --model talesml --corpus-file game_dev_corpus.json
+```

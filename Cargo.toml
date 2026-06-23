@@ -25,3 +25,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
 base64 = "0.22"
+# Only pulled in by the optional `llm-conductor` feature (local LLM conductor).
+# No TLS backend: the conductor is a local OpenAI-compatible HTTP server.
+reqwest = { version = "0.12", default-features = false, features = ["json"] }

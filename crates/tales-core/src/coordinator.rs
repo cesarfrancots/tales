@@ -132,6 +132,19 @@ impl Tier {
             Tier::Strong => "strong",
         }
     }
+
+    /// Map a `[0,1]` difficulty estimate to a starting tier. The single source of
+    /// truth for this threshold so the keyword coordinator and the LLM conductor
+    /// (which only learns shape + difficulty) can never drift on tier policy.
+    pub fn from_difficulty(difficulty: f32) -> Tier {
+        if difficulty >= 0.6 {
+            Tier::Strong
+        } else if difficulty >= 0.35 {
+            Tier::Balanced
+        } else {
+            Tier::Cheap
+        }
+    }
 }
 
 /// A fixed-width feature vector extracted from a task description.
@@ -619,13 +632,7 @@ impl Coordinator {
             + shape_probs[2] * 0.15
             + correctness * 0.2)
             .clamp(0.0, 1.0);
-        let tier = if difficulty >= 0.6 {
-            Tier::Strong
-        } else if difficulty >= 0.35 {
-            Tier::Balanced
-        } else {
-            Tier::Cheap
-        };
+        let tier = Tier::from_difficulty(difficulty);
 
         Strategy {
             shape,

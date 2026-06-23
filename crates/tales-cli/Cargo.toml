@@ -9,6 +9,12 @@ description = "Tales command-line frontend — drives the orchestration core hea
 name = "tales"
 path = "src/main.rs"
 
+[features]
+# Build `tales` with the opt-in local LLM conductor (`tales run --conductor llm`).
+# Forwards to tales-core; without it, `--conductor llm` notes the missing build
+# feature and falls back to the keyword coordinator.
+llm-conductor = ["tales-core/llm-conductor"]
+
 [dependencies]
 tales-core = { path = "../tales-core" }
 tokio = { workspace = true }

@@ -16,12 +16,19 @@ Generated: 2026-06-22
 - ✅ **Verify-failure escalation** (Phase C) — `tales run --escalate <tool>` hands
   the back half of the fix attempts to a stronger, distinct executor when the
   cheap one stalls (cheap-first, strong-to-finish).
+- ✅ **Local LLM conductor** (Phase D, routing variant) — `tales-core::llm_conductor`:
+  an opt-in `LlmConductor` (behind the `llm-conductor` cargo feature) that routes a
+  task by asking a fine-tuned model on a local OpenAI-compatible server, using the
+  trained `CONDUCTOR_SYSTEM` prompt, with a hard fallback to the keyword coordinator
+  on any failure. Wired as `tales run --conductor llm [--conductor-url …]`; the
+  `training/` sidecar produces the model.
 - Reviewed across three adversarial passes; `fmt` + `clippy -D warnings` + the
   full workspace test suite green.
 
 Remaining (scoped follow-ups): **Phase F** best-of-N parallel execution with
-verifier selection, **Phase D** LLM-as-conductor variant, **Phase G** distilled/RL
-conductor.
+verifier selection, **Phase D** adaptive turn-taking conductor (`Conductor::next_turn`
+over the blackboard — the routing `--conductor llm` half shipped above), **Phase G**
+distilled/RL conductor.
 
 ## 0. The strategic insight (read this first)
 
@@ -142,7 +149,10 @@ assist. "Ships as" maps to the existing lockstep SemVer cadence in `CHANGELOG.md
   connected model (or local Qwen) with the blackboard + a structured decision schema; the
   orchestrator already accepts any `Box<dyn Conductor>` — parameterize the `RuleConductor::new`
   site to inject it.
-- **Deliverable:** `--conductor llm` mode.
+- **Deliverable:** `--conductor llm` mode. ✅ *Shipped as the routing variant*
+  (`llm_conductor::LlmConductor` decides shape/difficulty over a local
+  OpenAI-compatible server, keyword fallback); the adaptive turn-taking
+  `Conductor::next_turn` variant remains a follow-up.
 - **Definition of done:** on an A/B suite (Phase A), the LLM conductor matches-or-beats
   round-robin on quality at equal-or-lower turn count.
 - **Effort:** 1–2 weeks. **Ships as:** 0.8.0.

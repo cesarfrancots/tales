@@ -17,6 +17,8 @@ pub mod dataset;
 pub mod error;
 pub mod eval_harness;
 pub mod event;
+#[cfg(feature = "llm-conductor")]
+pub mod llm_conductor;
 pub mod orchestrator;
 pub mod project_context;
 pub mod prompt_forecast;

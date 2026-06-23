@@ -14,6 +14,13 @@ uuid.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 base64.workspace = true
+reqwest = { workspace = true, optional = true }
+
+[features]
+# Opt-in local LLM conductor: an HTTP client that asks a local, OpenAI-compatible
+# model server how to route a task. Off by default so the lean build pulls no
+# HTTP stack; the keyword `coordinator` stays the zero-cost default and fallback.
+llm-conductor = ["dep:reqwest"]
 
 [dev-dependencies]
 tokio = { workspace = true }

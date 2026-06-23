@@ -66,7 +66,12 @@ never leaves your machine.
 
 ## 5. Point Tales at it
 
+Build Tales with the conductor client enabled (it's an opt-in feature so the lean
+default build pulls no HTTP stack), then route with `--conductor llm`:
+
 ```sh
+cargo build --release --features llm-conductor
+
 tales run "design the caching strategy for the API" \
   --conductor llm --conductor-url http://localhost:8080/v1
 ```
@@ -74,8 +79,9 @@ tales run "design the caching strategy for the API" \
 Tales' `LlmConductor` sends the task with the **same system prompt the model was
 trained on** (`dataset::CONDUCTOR_SYSTEM`), parses the `{"shape","difficulty"}`
 reply, and routes accordingly — falling back to the keyword coordinator if the
-server is unreachable. (The `--conductor llm` wiring is the next build step; the
-data + training half is what lives here.)
+server is unreachable or the reply won't parse. Without the `llm-conductor`
+feature, `--conductor llm` notes the missing build option and uses the keyword
+coordinator, so a stock build still works.
 
 ## Why this beats the keyword model
 

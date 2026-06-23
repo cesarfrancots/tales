@@ -29,6 +29,18 @@ Tales uses one lockstep SemVer version for the Rust workspace. The version lives
   lint all work. Adds `Phase::Verifying`; the run records `verified` (not merely
   `executed`) into the coordinator's trace flywheel. Runs in the executor's
   worktree when `--worktree` is set.
+- Added the **local LLM conductor** (`tales-core::llm_conductor`, Phase D): an
+  opt-in `LlmConductor` that asks a fine-tuned model served over a local
+  OpenAI-compatible endpoint how to route a task — the same `CONDUCTOR_SYSTEM`
+  prompt and `{"shape","difficulty"}` reply it was trained on — and turns the
+  answer into a `coordinator::Strategy`. Wired into `tales run` as
+  `--conductor llm [--conductor-url http://localhost:8080/v1]`, replacing the
+  advisory keyword routing chip when enabled. It **never hard-fails**: an
+  unreachable server, an unparseable reply, or a binary built without the
+  feature all fall back to the keyword `coordinator`, and the chip labels the
+  fallback honestly (`conductor[llm→keyword]`). Behind the `llm-conductor` cargo
+  feature so the lean default build pulls no HTTP client; the keyword coordinator
+  stays the zero-cost default and the human execution gate is unchanged.
 - Added **verify-failure escalation** (Phase C): `tales run --verify "<cmd>"
   --escalate <tool> [--escalate-model <m>]` hands the back half of the fix
   attempts to a stronger, distinct executor when the primary stalls — Fugu's

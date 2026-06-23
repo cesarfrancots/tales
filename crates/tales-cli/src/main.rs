@@ -288,6 +288,17 @@ enum Command {
         /// Model for the escalation tool.
         #[arg(long)]
         escalate_model: Option<String>,
+        /// Which conductor produces the advisory routing call: `keyword` (the
+        /// zero-cost embedded coordinator, default) or `llm` (a local
+        /// fine-tuned model over an OpenAI-compatible endpoint). `llm` requires
+        /// a build with `--features llm-conductor` and always falls back to
+        /// `keyword` if the server is unreachable or the reply won't parse.
+        #[arg(long, default_value = "keyword")]
+        conductor: String,
+        /// Base URL of the local OpenAI-compatible conductor server, used with
+        /// `--conductor llm`.
+        #[arg(long, default_value = "http://localhost:8080/v1")]
+        conductor_url: String,
     },
     /// Run a live drafter/critic discussion between two agents.
     Discuss {
@@ -1241,6 +1252,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             verify_max,
             escalate,
             escalate_model,
+            conductor,
+            conductor_url,
         } => {
             run_pipeline(
                 prompt,
@@ -1273,6 +1286,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 verify_max,
                 escalate,
                 escalate_model,
+                conductor,
+                conductor_url,
             )
             .await
         }
@@ -4010,6 +4025,37 @@ async fn is_git_repo(cwd: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Produce the advisory routing chip for a run. `keyword` uses the embedded
+/// coordinator; `llm` asks a local OpenAI-compatible conductor server (falling
+/// back to the keyword coordinator if it's unreachable, unparseable, or the
+/// binary wasn't built with `--features llm-conductor`). Advisory only — it
+/// never overrides the human execution gate. `mode` is pre-lowercased/validated.
+async fn conductor_advice(mode: &str, url: &str, prompt: &str, cwd: &Path) -> String {
+    if mode == "llm" {
+        #[cfg(feature = "llm-conductor")]
+        {
+            let (strategy, used_llm) = tales_core::llm_conductor::LlmConductor::new(url)
+                .advise_traced(prompt, cwd)
+                .await;
+            // Honest label: name the keyword fallback when the model didn't answer.
+            let source = if used_llm { "llm" } else { "llm→keyword" };
+            return format!("conductor[{source}]: {}", strategy.summary_line());
+        }
+        #[cfg(not(feature = "llm-conductor"))]
+        {
+            let _ = url; // unused without the feature; flag the missing build option
+            eprintln!(
+                "note: --conductor llm needs a build with `--features llm-conductor`; \
+                 using the keyword coordinator instead"
+            );
+        }
+    }
+    format!(
+        "conductor[keyword]: {}",
+        coordinator::advise(prompt, cwd).summary_line()
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_pipeline(
     prompt: String,
@@ -4042,9 +4088,15 @@ async fn run_pipeline(
     verify_max: u8,
     escalate: Option<String>,
     escalate_model: Option<String>,
+    conductor: String,
+    conductor_url: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if json_output && !dry_run {
         return Err("--json requires --dry-run".into());
+    }
+    let conductor = conductor.to_lowercase();
+    if conductor != "keyword" && conductor != "llm" {
+        return Err(format!("--conductor must be 'keyword' or 'llm', got '{conductor}'").into());
     }
     if let Some(esc) = &escalate {
         if verify.is_none() {
@@ -4441,9 +4493,13 @@ async fn run_pipeline(
             "\n=== run{}: {prompt}{tier} ===",
             if demo { " demo" } else { "" }
         );
-        // Advisory only — the coordinator's learned routing call, surfaced next to
-        // the chosen seats. It never overrides the human gate; it informs it.
-        println!("  {}", coordinator::advise(&prompt, &cwd).summary_line());
+        // Advisory only — the conductor's learned routing call, surfaced next to
+        // the chosen seats. It never overrides the human gate; it informs it. The
+        // `llm` conductor falls back to the keyword coordinator when unreachable.
+        println!(
+            "  {}",
+            conductor_advice(&conductor, &conductor_url, &prompt, &cwd).await
+        );
         let outcome = orch
             .run_interactive(&prompt, turns, &mut commands_rx)
             .await?;

@@ -90,6 +90,53 @@ shared *generic* adapter, configured from a registry row (`run_args` / `model_fl
 `prompt_flag`). Gemini, GLM, and Kimi ship as rows today; the connect screen auto-detects which
 CLIs are actually installed on every run. Adding Kiro, Aider, or your own is a one-line change.
 
+## Tales has a model of its own — **TalesSML**
+
+The flags above let *you* assemble the room. **TalesSML** is the small model that does it *for*
+you. **Tales is not just a harness that shuttles tasks between other models — it ships its own
+model whose entire job is to coordinate and orchestrate those models.**
+
+TalesSML isn't a coding model and it isn't an API wrapper: it's a tiny open base (Qwen2.5,
+**0.5–3B**), LoRA-fine-tuned on Tales-generated coordination data and served **locally** — no
+cloud, no account, no per-token cost, **~0.18 s/decision**. It's the same idea Sakana built Fugu's
+Conductor on — *a coordination policy on top of existing models*, not a foundation model from
+scratch. Given one task it reasons over the work and emits a full **orchestration plan**:
+
+| field | what TalesSML decides |
+|---|---|
+| **shape** | `solo` (one strong model plans + executes) · `debate` (two planners argue) · `tiered` (strong plan, cheap execute) |
+| **difficulty** | correctness risk, `0.0–1.0` — how unsafe it is to run cheap |
+| **roster** | which agent in which role at which model: `{role: drafter\|critic\|executor\|reviewer\|verifier, agent: claude\|codex, model: opus\|sonnet\|haiku\|gpt-5.x, why}` |
+| **coordination** | the `order`, whether it's `parallelizable`, the `handoff` |
+| **verify** | whether to check, and how (`tests` / `review` / `build`) |
+| **escalate** | when to promote to Opus (high difficulty, failed verification, security-sensitive) |
+
+A keyword counter sees "migrate **all** the cron jobs" and routes mechanical-tiered at 99%
+confidence — it can't tell that's a *design decision*. A model that reasons over the task can.
+Measured on held-out corpora (`training/`):
+
+| model | size | easy (18) | hard / mixed-signal (11) | game-dev (13) | speed |
+|---|---|---|---|---|---|
+| keyword coordinator | — | 100% | 63.6% | — | instant |
+| prompted qwen3.5:9b | 6.6 GB | 100% | 90.9% | — | ~5 s/task |
+| **TalesSML** (fine-tuned) | **398 MB** | **100%** | **100%** | **92.3%** | **~0.18 s/task** |
+
+TalesSML **beats a prompted 9B on the mixed-signal corpus at 16× smaller and ~30× faster**, fully
+offline. Use it as Tales' conductor:
+
+```sh
+# Tales' own model decides the orchestration plan — local, no cloud
+cargo build --release --features llm-conductor
+tales run "decide whether to migrate the cron jobs to the queue" \
+  --conductor llm --conductor-url http://localhost:8080/v1
+```
+
+The pure-Rust keyword/MLP `tales coordinator` stays the zero-cost default and the hard fallback
+when the model server is unreachable. **Honest status:** the engine acts on TalesSML's
+`shape`+`difficulty` today (the `LlmConductor` parses them; extra plan fields are forward-compatible);
+the **v2 plan target** (full roster/coordination/verify/escalate, trained on a 1.5–3B base) is freshly
+trained and rolling into adaptive turn-taking next. Train your own in [`training/`](training/).
+
 ## Weighs almost nothing
 
 No Electron, no cloud, no account. The whole thing is small, native Rust.
@@ -247,7 +294,7 @@ Live today: multi-agent discussion, parallel planning, cached project context, l
 recommendation + a hard confirmation gate, git-worktree execution & merge, the interactive
 terminal workspace (folder-browser onboarding, a multi-line prompt editor, transcript scrollback, and slash-command type-ahead),
 browser supervision UI with workspace picker and command palette, report writers, and bespoke/generic tool adapters.
-A learned **orchestration coordinator** (`tales coordinator`) routes each task to a collaboration shape (solo / debate / tiered) with a difficulty/tier estimate, and an optional **verify-and-iterate loop** (`tales run --verify "<cmd>"`) runs your check after execution and feeds failures back to the executor until it passes or hits the cap — the check runs unsandboxed in the executor's tree, so scope it (use `--worktree` to isolate). Both are local, dependency-free, and keep the human gate.
+A learned **orchestration coordinator** (`tales coordinator`) routes each task to a collaboration shape (solo / debate / tiered) with a difficulty/tier estimate — and Tales' own small model, **TalesSML**, upgrades that decision from keyword-counting to *reasoning over the task*, emitting a full orchestration plan and served locally via `--conductor llm` (see [Tales has a model of its own](#tales-has-a-model-of-its-own--talessml)). An optional **verify-and-iterate loop** (`tales run --verify "<cmd>"`) runs your check after execution and feeds failures back to the executor until it passes or hits the cap — the check runs unsandboxed in the executor's tree, so scope it (use `--worktree` to isolate). All local, dependency-free, and keep the human gate.
 Runs on macOS, Linux, and Windows (all three covered by CI). Hardened against deadlocks and zombie processes; the test suite and strict clippy pass before push.
 
 ---

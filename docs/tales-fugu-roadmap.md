@@ -33,6 +33,18 @@ Generated: 2026-06-22 · Updated: 2026-06-23 (post-launch, verified against the 
   `CONDUCTOR_PLAN_SYSTEM`. The engine acts on `shape`+`difficulty` today (serde
   ignores the extra fields — backward compatible); adaptive turn-taking on the full
   plan is the next wiring step.
+- ✅ **TalesSML v2 hardened to 100/100/92% plan-validity** — a measured
+  train→eval→refine flywheel (graded by `training/eval_plan.py` on the *whole* plan):
+  round the numeric target (raw f32 → `0.2`), teach JSON discipline via a rewritten
+  `CONDUCTOR_PLAN_SYSTEM`, then close the tiered/debate boundary with adversarial data.
+  Took the 1.5B plan model from 61/55/54% plan-valid (12/42 malformed) to **100% / 100%
+  / 92%** (easy / mixed-signal / game-dev) with **zero malformed output**, in a 986 MB Q4
+  model. Output also guarded by `training/plan_guard.py` (validate/repair).
+- ✅ **Conductor decision cache** — temperature-0 routing is deterministic, so the
+  `LlmConductor` memoizes `(model, prompt, task) → decision` to
+  `.tales/conductor-cache.json` (FNV-keyed, collision-checked, prompt folded into the
+  key so it self-invalidates). A repeat is instant and free — the local analogue of
+  provider prompt caching, with zero token cost on a hit.
 - Reviewed across three adversarial passes; `fmt` + `clippy -D warnings` + the
   full workspace test suite green.
 

@@ -143,8 +143,11 @@
       </div>
       <p class="receipts">
         Same idea Sakana built Fugu's Conductor on — a coordination policy <i>on top of</i> existing
-        models, not a frontier model from scratch — kept tiny, local, and free. A pure-Rust keyword
-        coordinator stays the zero-cost default and the fallback when the model isn't loaded.
+        models, not a frontier model from scratch — kept tiny, local, and free. A 986&nbsp;MB fine-tune
+        emits <b>well-formed plans 100% / 100% / 92%</b> of the time on general / mixed-signal /
+        game-dev tasks, with zero malformed output. A pure-Rust keyword coordinator stays the
+        zero-cost default and fallback, and each deterministic decision is cached locally so a repeat
+        is instant and free.
       </p>
     </div>
   </section>

@@ -321,11 +321,19 @@
           <tr><td><b>TalesSML</b> (fine-tuned)</td><td><b>398 MB</b></td><td><b>100%</b></td><td><b>100%</b></td><td><b>92.3%</b></td><td><b>~0.18 s/task</b></td></tr>
         </tbody>
       </table>
+      <p>That table scores the <i>routing</i> decision. The <b>v2 plan model</b> (a 1.5B fine-tune, ~986&nbsp;MB Q4) emits the <i>whole</i> orchestration plan, graded by <code>eval_plan.py</code> against the deterministic policy (shape + roster + coordination + verify + escalate). A train→eval→refine flywheel — clean the numeric target, teach JSON discipline via the system prompt, then close the tiered/debate boundary with adversarial data — took it from 61/55/54% plan-valid (with 12/42 malformed) to:</p>
+      <table>
+        <thead><tr><th>TalesSML v2 — full plan</th><th>Easy (18)</th><th>Mixed-signal (11)</th><th>Game-dev (13)</th><th>Malformed</th></tr></thead>
+        <tbody>
+          <tr><td><b>plan well-formed</b></td><td><b>100%</b></td><td><b>100%</b></td><td><b>92%</b></td><td><b>0</b></td></tr>
+        </tbody>
+      </table>
       <p>Point Tales at a locally served TalesSML with <code>--conductor llm</code> (opt-in <code>llm-conductor</code> build feature; HTTP stays out of the lean default):</p>
       <pre><button class="copy">copy</button><span class="p">cargo</span> build --release --features llm-conductor
 <span class="p">tales</span> run <span class="s">"decide whether to migrate the cron jobs to the queue"</span> \
   --conductor <span class="s">llm</span> --conductor-url <span class="s">http://localhost:8080/v1</span></pre>
-      <div class="note"><span class="ic">i</span><div><b>Honest status.</b> The engine acts on TalesSML's <code>shape</code>+<code>difficulty</code> today (the <code>LlmConductor</code> parses them; extra plan fields are forward-compatible), with a hard fallback to the pure-Rust <code>tales coordinator</code> when the server is unreachable. The <b>v2 plan target</b> — full roster/coordination/verify/escalate on a 1.5–3B base — is freshly trained and rolling into adaptive turn-taking next. Train your own from <code>tales coordinator export-dataset</code>; see <a href="https://github.com/cesarfrancots/tales/tree/main/training" target="_blank" rel="noopener"><code>training/</code></a>.</div></div>
+      <div class="note"><span class="ic">i</span><div><b>Caching.</b> Routing runs at temperature 0, so a decision is deterministic — the <code>LlmConductor</code> memoizes each <code>(model, prompt, task)</code> to <code>.tales/conductor-cache.json</code> (the key folds in the prompt, so it self-invalidates when either changes). A repeated task is then instant and free: the local analogue of provider prompt caching, but with zero token cost on a hit.</div></div>
+      <div class="note"><span class="ic">i</span><div><b>Honest status.</b> The engine acts on TalesSML's <code>shape</code>+<code>difficulty</code> today (the <code>LlmConductor</code> parses them; extra plan fields are forward-compatible), with a hard fallback to the pure-Rust <code>tales coordinator</code> when the server is unreachable. The full plan (roster/coordination/verify/escalate) is what v2 emits and is graded above; wiring it into adaptive turn-taking is next. Train your own from <code>tales coordinator export-dataset --plans</code>; see <a href="https://github.com/cesarfrancots/tales/tree/main/training" target="_blank" rel="noopener"><code>training/</code></a>.</div></div>
     </section>
 
     <section id="thesis">

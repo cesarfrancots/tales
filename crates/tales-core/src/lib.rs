@@ -13,6 +13,7 @@ pub mod build_info;
 pub mod bus;
 pub mod conductor;
 pub mod coordinator;
+pub mod dataset;
 pub mod error;
 pub mod eval_harness;
 pub mod event;

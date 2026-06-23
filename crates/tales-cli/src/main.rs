@@ -509,6 +509,16 @@ enum CoordinatorCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Export the synthetic conductor training dataset as chat-format JSONL
+    /// (for fine-tuning your own local LLM conductor).
+    ExportDataset {
+        /// Output path for the JSONL dataset.
+        #[arg(long, default_value = "conductor-dataset.jsonl")]
+        out: PathBuf,
+        /// Emit a machine-readable summary.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// Resolve the `tales-tui` binary: next to this exe first, then `PATH`.
@@ -1668,6 +1678,35 @@ fn run_coordinator_command(command: CoordinatorCommand) -> Result<(), Box<dyn st
                         report.recall(shape) * 100.0
                     );
                 }
+            }
+            Ok(())
+        }
+        CoordinatorCommand::ExportDataset { out, json } => {
+            let corpus = tales_core::dataset::generate();
+            let counts = tales_core::dataset::shape_counts(&corpus);
+            std::fs::write(&out, tales_core::dataset::to_chat_jsonl(&corpus))?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "kind": "tales_conductor_dataset",
+                        "schema_version": 1,
+                        "path": out.display().to_string(),
+                        "examples": corpus.len(),
+                        "by_shape": {
+                            "solo": counts[0],
+                            "debate": counts[1],
+                            "tiered": counts[2],
+                        },
+                    }))?
+                );
+            } else {
+                println!("conductor dataset written: {}", out.display());
+                println!("  examples: {}", corpus.len());
+                println!(
+                    "  solo={} debate={} tiered={}",
+                    counts[0], counts[1], counts[2]
+                );
             }
             Ok(())
         }

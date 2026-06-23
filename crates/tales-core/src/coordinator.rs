@@ -57,7 +57,7 @@ pub const FEATURE_NAMES: [&str; FEATURE_DIM] = [
 /// The collaboration shape the coordinator routes a task to. Mirrors the eval
 /// harness's `EvalMode`, but carries routing semantics (a decision) rather than
 /// a cost-forecast mode.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Shape {
     /// One strong model plans and executes. Best for algorithmically hard,

@@ -7,3 +7,10 @@ Cargo.lock.bak
 .claude/scheduled_tasks.lock
 .claude/settings.local.json
 .DS_Store
+
+# Conductor training artifacts (regenerable; weights are large)
+conductor-dataset.jsonl
+training/.venv/
+training/conductor-lora*/
+**/__pycache__/
+*.gguf

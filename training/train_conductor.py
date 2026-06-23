@@ -33,6 +33,8 @@ def main() -> None:
     ap.add_argument("--lr", type=float, default=2e-4)
     ap.add_argument("--merge", action="store_true",
                     help="also write merged fp16 weights (<out>-merged) for GGUF export")
+    ap.add_argument("--max-seq", type=int, default=512,
+                    help="max sequence length (bump for the longer orchestration-plan target)")
     args = ap.parse_args()
 
     tok = AutoTokenizer.from_pretrained(args.base)
@@ -71,7 +73,7 @@ def main() -> None:
         warmup_ratio=0.03,
         logging_steps=10,
         save_strategy="no",
-        max_seq_length=512,
+        max_seq_length=args.max_seq,
         packing=False,
         dataset_text_field="text",
         bf16=True,

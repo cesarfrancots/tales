@@ -526,6 +526,10 @@ enum CoordinatorCommand {
         /// Output path for the JSONL dataset.
         #[arg(long, default_value = "conductor-dataset.jsonl")]
         out: PathBuf,
+        /// Emit the richer orchestration-PLAN target (shape + roster + coordination
+        /// + verify + escalate) for the reasoning model, instead of shape+difficulty.
+        #[arg(long)]
+        plans: bool,
         /// Emit a machine-readable summary.
         #[arg(long)]
         json: bool,
@@ -1696,10 +1700,15 @@ fn run_coordinator_command(command: CoordinatorCommand) -> Result<(), Box<dyn st
             }
             Ok(())
         }
-        CoordinatorCommand::ExportDataset { out, json } => {
+        CoordinatorCommand::ExportDataset { out, plans, json } => {
             let corpus = tales_core::dataset::generate();
             let counts = tales_core::dataset::shape_counts(&corpus);
-            std::fs::write(&out, tales_core::dataset::to_chat_jsonl(&corpus))?;
+            let jsonl = if plans {
+                tales_core::dataset::to_plan_jsonl(&corpus)
+            } else {
+                tales_core::dataset::to_chat_jsonl(&corpus)
+            };
+            std::fs::write(&out, jsonl)?;
             if json {
                 println!(
                     "{}",

@@ -327,9 +327,223 @@ pub fn to_chat_jsonl(corpus: &[(String, Shape)]) -> String {
     s
 }
 
+// --- TalesSML v2: orchestration-plan target --------------------------------
+// Beyond shape+difficulty, TalesSML reasons about WHICH agents/models to call,
+// WHY, and HOW to coordinate them. We synthesize the full plan by deterministic
+// policy (ground-truth by construction), so a bigger base (Qwen2.5-3B) can learn
+// to emit a real orchestration plan, not just a 3-way label. Designed with Codex.
+
+/// System prompt for the orchestration-plan model. Teaches the schema + the agent
+/// pool. Kept identical between training and inference.
+pub const CONDUCTOR_PLAN_SYSTEM: &str = "You are TalesSML, the orchestration brain for Tales. Given a coding task, decide HOW to coordinate AI agents to deliver it. Reply with ONLY a JSON object: {\"schema_version\":1,\"shape\":\"solo|debate|tiered\",\"difficulty\":0.0-1.0,\"rationale\":\"short reason\",\"risks\":[...],\"roster\":[{\"role\":\"drafter|critic|executor|reviewer|verifier\",\"agent\":\"claude|codex\",\"model\":\"opus|sonnet|haiku|gpt-5.x\",\"why\":\"capability match\"}],\"coordination\":{\"order\":[...],\"parallelizable\":true|false,\"handoff\":\"...\"},\"verify\":{\"required\":true|false,\"method\":\"tests|review|build|none\",\"agent\":\"codex\"},\"escalate\":{\"if\":[...],\"to\":{\"agent\":\"claude\",\"model\":\"opus\"}}}. Agents: claude (opus=strongest reasoning, sonnet=balanced, haiku=cheap/fast) and codex (gpt-5.x, best reviewer). shape: solo=one strong model plans+executes (hard, self-contained); debate=two planners argue then execute (ambiguous, architecture-defining); tiered=strong models plan, a cheap model executes (voluminous, mechanical). Choose the roster, order, verification, and escalation that fit the task's difficulty and risk; escalate to opus when difficulty is high or the task is correctness/security-sensitive.";
+
+fn role(role: &str, agent: &str, model: &str, why: &str) -> serde_json::Value {
+    json!({ "role": role, "agent": agent, "model": model, "why": why })
+}
+
+/// Build the ground-truth orchestration plan for a task by deterministic policy.
+/// This is exactly what TalesSML learns to emit.
+pub fn orchestration_plan(task: &str, shape: Shape) -> serde_json::Value {
+    let f = crate::coordinator::extract_features(task);
+    let difficulty = shape_difficulty(shape);
+    let ambiguity = f[5] > 0.3;
+    let correctness = f[6] > 0.3;
+    let breadth = f[7] > 0.3;
+    let hard = difficulty >= 0.75 || correctness;
+    let exec_model = if hard { "opus" } else { "sonnet" };
+
+    let (roster, order, parallel, method): (Vec<serde_json::Value>, Vec<&str>, bool, &str) =
+        match shape {
+            Shape::Solo => (
+                vec![
+                    role(
+                        "executor",
+                        "claude",
+                        exec_model,
+                        "self-contained correctness-heavy work needs one strong model",
+                    ),
+                    role(
+                        "verifier",
+                        "codex",
+                        "gpt-5.x",
+                        "tests/review confirm the implementation is correct",
+                    ),
+                ],
+                vec!["executor", "verifier"],
+                false,
+                "tests",
+            ),
+            Shape::Debate => (
+                vec![
+                    role(
+                        "drafter",
+                        "claude",
+                        "sonnet",
+                        "proposes the architecture/approach",
+                    ),
+                    role(
+                        "critic",
+                        "codex",
+                        "gpt-5.x",
+                        "independent review surfaces design flaws",
+                    ),
+                    role(
+                        "executor",
+                        "claude",
+                        exec_model,
+                        "implements the agreed design",
+                    ),
+                    role(
+                        "reviewer",
+                        "codex",
+                        "gpt-5.x",
+                        "checks the result against the agreed design",
+                    ),
+                ],
+                vec!["drafter", "critic", "executor", "reviewer"],
+                true, // planners draft in parallel, then synthesize
+                "review",
+            ),
+            Shape::Tiered => (
+                vec![
+                    role(
+                        "drafter",
+                        "claude",
+                        "sonnet",
+                        "plans the repetitive change once",
+                    ),
+                    role(
+                        "executor",
+                        "claude",
+                        "haiku",
+                        "a cheap, fast model applies the mechanical change",
+                    ),
+                    role("reviewer", "codex", "gpt-5.x", "spot-checks the bulk edit"),
+                    role(
+                        "verifier",
+                        "codex",
+                        "gpt-5.x",
+                        "tests confirm nothing broke",
+                    ),
+                ],
+                vec!["drafter", "executor", "reviewer", "verifier"],
+                false,
+                "tests",
+            ),
+        };
+
+    let mut risks: Vec<&str> = Vec::new();
+    if ambiguity {
+        risks.push("unclear requirements");
+    }
+    if breadth {
+        risks.push("large blast radius");
+    }
+    if correctness {
+        risks.push("correctness-critical");
+    }
+
+    let mut escalate_if: Vec<&str> = vec!["failed_verification"];
+    if !hard {
+        escalate_if.push("low_confidence");
+    }
+    if correctness {
+        escalate_if.push("security_sensitive");
+    }
+
+    json!({
+        "schema_version": 1,
+        "shape": shape.as_str(),
+        "difficulty": difficulty,
+        "rationale": plan_rationale(shape, &f),
+        "risks": risks,
+        "roster": roster,
+        "coordination": {
+            "order": order,
+            "parallelizable": parallel,
+            "handoff": "brief context + explicit acceptance criteria",
+        },
+        "verify": { "required": true, "method": method, "agent": "codex" },
+        "escalate": { "if": escalate_if, "to": { "agent": "claude", "model": "opus" } },
+    })
+}
+
+fn plan_rationale(shape: Shape, f: &crate::coordinator::Features) -> String {
+    let driver = if f[3] > 0.3 {
+        "algorithmic difficulty"
+    } else if f[4] > 0.3 {
+        "mechanical volume"
+    } else if f[5] > 0.3 {
+        "architectural ambiguity"
+    } else if f[6] > 0.3 {
+        "correctness risk"
+    } else {
+        "the task shape"
+    };
+    match shape {
+        Shape::Solo => format!("{driver}: one strong model implements, a reviewer verifies"),
+        Shape::Debate => {
+            format!("{driver}: two planners debate the approach before a strong model executes")
+        }
+        Shape::Tiered => format!(
+            "{driver}: strong models plan once, a cheap model executes the bulk, a reviewer checks"
+        ),
+    }
+}
+
+/// Render a corpus as chat-JSONL where the assistant emits the full orchestration
+/// plan (TalesSML v2 training target).
+pub fn to_plan_jsonl(corpus: &[(String, Shape)]) -> String {
+    let mut s = String::new();
+    for (task, shape) in corpus {
+        let plan = orchestration_plan(task, *shape);
+        let line = json!({
+            "messages": [
+                {"role": "system", "content": CONDUCTOR_PLAN_SYSTEM},
+                {"role": "user", "content": task},
+                {"role": "assistant", "content": plan.to_string()},
+            ]
+        });
+        s.push_str(&line.to_string());
+        s.push('\n');
+    }
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn orchestration_plans_are_valid_and_well_formed() {
+        let corpus = generate();
+        // Sample one task of each shape so all roster branches are exercised.
+        for shape in Shape::ALL {
+            let (task, _) = corpus.iter().find(|(_, s)| *s == shape).unwrap();
+            let plan = orchestration_plan(task, shape);
+            assert_eq!(plan["shape"], shape.as_str());
+            let roster = plan["roster"].as_array().unwrap();
+            assert!(!roster.is_empty(), "roster must not be empty");
+            for r in roster {
+                assert!(matches!(
+                    r["agent"].as_str(),
+                    Some("claude") | Some("codex")
+                ));
+                assert!(r["role"].is_string() && r["why"].is_string());
+            }
+            assert!(plan["coordination"]["order"].as_array().unwrap().len() == roster.len());
+            assert_eq!(plan["escalate"]["to"]["model"], "opus");
+            // the plan stays backward-compatible: shape + difficulty are top-level.
+            assert!(plan["difficulty"].as_f64().unwrap() >= 0.0);
+        }
+        // The whole JSONL round-trips as valid chat lines with parseable plans.
+        let jsonl = to_plan_jsonl(&corpus[..3]);
+        for line in jsonl.lines() {
+            let v: serde_json::Value = serde_json::from_str(line).unwrap();
+            let content = v["messages"][2]["content"].as_str().unwrap();
+            let _plan: serde_json::Value = serde_json::from_str(content).unwrap();
+        }
+    }
 
     #[test]
     fn generation_is_deterministic_and_balanced() {

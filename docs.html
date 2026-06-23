@@ -134,6 +134,7 @@
       <a href="#commands">Scriptable commands</a>
       <a href="#preflight">Preflight &amp; context</a>
       <a href="#tiered">Tiered execution</a>
+      <a href="#conductor">The conductor</a>
       <a href="#thesis">The bet &amp; benchmark</a>
     </div>
     <div class="grp">
@@ -153,7 +154,7 @@
     <section id="overview">
       <h2>Overview</h2>
       <p>Tales is a lightweight Rust orchestrator that drives AI coding CLIs as subprocesses so they collaborate on the <i>same</i> project. They discuss a plan, each emits a recommendation for who should implement it, and <b>no editing or execution hand-off starts until you confirm.</b></p>
-      <p>It isn't a model or an API wrapper. It drives the tools you already have installed and authenticated, normalizes their very different I/O into one event stream, and keeps a human at the decision gate.</p>
+      <p>It isn't a <i>coding</i> model or an API wrapper — it drives the tools you already have installed and authenticated, normalizes their very different I/O into one event stream, and keeps a human at the decision gate. What it <b>does</b> ship is a model of its own: <b>TalesSML</b>, a small local conductor that reads a task and decides how to coordinate the other models (see <a href="#conductor">The conductor</a>). Tales is not just a coordination harness around other models — it ships a model whose job is to coordinate and orchestrate them.</p>
       <h3>Two strong models beat one</h3>
       <p>A single model commits to its first framing and rarely escapes it. Tales puts two (or more) models with different priors in the same room: one drafts, the other critiques, and the disagreement surfaces assumptions a solo run buries. The analogy to <a href="https://openrouter.ai" target="_blank" rel="noopener">OpenRouter's model fusion</a> and <a href="https://kiro.dev" target="_blank" rel="noopener">AWS Kiro</a> is deliberate: combine the strengths of more than one model instead of betting on one.</p>
       <p>It's <b>model- and tool-agnostic</b> by design — any AI coding CLI joins behind one small adapter — and the room doesn't have to be uniform. You can <a href="#tiered">tier</a> it: strong, expensive models plan; a cheaper, faster model implements. Spend on judgment, not on typing.</p>
@@ -259,6 +260,11 @@
       <p>The recommendation is computed and printed, but <b><code>--execute</code> decides who runs</b>. It can be one of the planners, or a different tool entirely (see <a href="#tiered">Tiered execution</a>). Add <code>--worktree</code> to run that executor in its own git worktree and merge back:</p>
       <pre><button class="copy">copy</button><span class="p">tales</span> run <span class="s">"Add a /health endpoint"</span> --execute <span class="s">&lt;tool&gt;</span> --worktree</pre>
       <div class="note"><span class="ic">i</span><div>This project's <code>landing/</code> page and these docs were drafted and reviewed <b>with Tales</b> via <code>tales discuss</code>, then finalized against the source.</div></div>
+      <h3><code>tales coordinator</code> — the orchestration model</h3>
+      <pre><button class="copy">copy</button><span class="p">tales</span> coordinator predict <span class="s">"migrate all cron jobs to the queue"</span>
+<span class="p">tales</span> coordinator export-dataset --out conductor-dataset.jsonl <span class="c"># add --plans for v2</span>
+<span class="p">tales</span> coordinator train <span class="c"># retrain the embedded MLP from traces</span></pre>
+      <p>The pure-Rust keyword/MLP coordinator that ships in the binary, plus the dataset exporter that feeds <b>TalesSML</b> (see <a href="#conductor">The conductor</a>). <code>predict</code> shows the shape/difficulty for a task; <code>export-dataset --plans</code> emits the richer orchestration-plan training target; the fine-tune itself runs in the Python <code>training/</code> sidecar.</p>
     </section>
 
     <section id="preflight">
@@ -287,6 +293,47 @@
         <li>The executor sits out the discussion and the vote, but it's still a valid recommendation candidate.</li>
       </ul>
       <div class="note"><span class="ic">i</span><div>Live today in <code>tales run</code>. Bigger rooms (N planners) and same-tool tiering are on the roadmap; the core is already model- and tool-agnostic.</div></div>
+    </section>
+
+    <section id="conductor">
+      <h2>The conductor — TalesSML <span class="pill new">new</span></h2>
+      <p>Tiering (above) lets <i>you</i> assemble the room with flags. <b>TalesSML</b> is the small model that does it <i>for</i> you — Tales' own orchestration brain. It's not a coding model: it's a tiny open base (Qwen2.5, <b>0.5–3B</b>), LoRA-fine-tuned on Tales-generated coordination data and served <b>locally</b> — no cloud, no per-token cost, <b>~0.18&nbsp;s/decision</b>. The same approach Sakana built Fugu's Conductor on: a coordination policy <i>on top of</i> existing models, not a frontier model trained from scratch.</p>
+      <p>Given one task, TalesSML reasons over the work and emits a full <b>orchestration plan</b>:</p>
+      <pre><button class="copy">copy</button><span class="c"># shape · difficulty · roster · coordination · verify · escalate</span>
+{
+  <span class="s">"shape"</span>: <span class="s">"debate"</span>,            <span class="c">// solo | debate | tiered</span>
+  <span class="s">"difficulty"</span>: 0.74,            <span class="c">// correctness risk, 0–1</span>
+  <span class="s">"roster"</span>: [
+    {<span class="s">"role"</span>:<span class="s">"drafter"</span>, <span class="s">"agent"</span>:<span class="s">"claude"</span>,<span class="s">"model"</span>:<span class="s">"opus"</span>,  <span class="s">"why"</span>:<span class="s">"strongest reasoning"</span>},
+    {<span class="s">"role"</span>:<span class="s">"critic"</span>,  <span class="s">"agent"</span>:<span class="s">"codex"</span>, <span class="s">"model"</span>:<span class="s">"gpt-5.x"</span>,<span class="s">"why"</span>:<span class="s">"best reviewer"</span>},
+    {<span class="s">"role"</span>:<span class="s">"executor"</span>,<span class="s">"agent"</span>:<span class="s">"claude"</span>,<span class="s">"model"</span>:<span class="s">"haiku"</span>, <span class="s">"why"</span>:<span class="s">"cheap/fast typing"</span>}
+  ],
+  <span class="s">"coordination"</span>: {<span class="s">"order"</span>:[<span class="s">"drafter"</span>,<span class="s">"critic"</span>,<span class="s">"executor"</span>], <span class="s">"parallelizable"</span>:<span class="s">true</span>},
+  <span class="s">"verify"</span>:   {<span class="s">"required"</span>:<span class="s">true</span>, <span class="s">"method"</span>:<span class="s">"tests"</span>, <span class="s">"agent"</span>:<span class="s">"codex"</span>},
+  <span class="s">"escalate"</span>: {<span class="s">"if"</span>:[<span class="s">"failed_verification"</span>], <span class="s">"to"</span>:{<span class="s">"agent"</span>:<span class="s">"claude"</span>,<span class="s">"model"</span>:<span class="s">"opus"</span>}}
+}</pre>
+      <p>Why a model and not just keywords? A keyword counter sees "migrate <b>all</b> the cron jobs" and routes mechanical-tiered at 99% confidence — it can't tell that's a <i>design decision</i>. A model that reasons over the task can. Measured on held-out corpora in <code>training/</code>:</p>
+      <table>
+        <thead><tr><th>Model</th><th>Size</th><th>Easy (18)</th><th>Mixed-signal (11)</th><th>Game-dev (13)</th><th>Speed</th></tr></thead>
+        <tbody>
+          <tr><td>keyword coordinator</td><td>—</td><td>100%</td><td>63.6%</td><td>—</td><td>instant</td></tr>
+          <tr><td>prompted qwen3.5:9b</td><td>6.6 GB</td><td>100%</td><td>90.9%</td><td>—</td><td>~5 s/task</td></tr>
+          <tr><td><b>TalesSML</b> (fine-tuned)</td><td><b>398 MB</b></td><td><b>100%</b></td><td><b>100%</b></td><td><b>92.3%</b></td><td><b>~0.18 s/task</b></td></tr>
+        </tbody>
+      </table>
+      <p>That table scores the <i>routing</i> decision. The <b>v2 plan model</b> (a 1.5B fine-tune, ~986&nbsp;MB Q4) emits the <i>whole</i> orchestration plan, graded by <code>eval_plan.py</code> against the deterministic policy (shape + roster + coordination + verify + escalate). A train→eval→refine flywheel — clean the numeric target, teach JSON discipline via the system prompt, then close the tiered/debate boundary with adversarial data — took it from 61/55/54% plan-valid (with 12/42 malformed) to:</p>
+      <table>
+        <thead><tr><th>TalesSML v2 — full plan</th><th>Easy (18)</th><th>Mixed-signal (11)</th><th>Game-dev (13)</th><th>Malformed</th></tr></thead>
+        <tbody>
+          <tr><td><b>plan well-formed</b></td><td><b>100%</b></td><td><b>100%</b></td><td><b>92%</b></td><td><b>0</b></td></tr>
+        </tbody>
+      </table>
+      <p>Point Tales at a locally served TalesSML with <code>--conductor llm</code> (opt-in <code>llm-conductor</code> build feature; HTTP stays out of the lean default):</p>
+      <pre><button class="copy">copy</button><span class="p">cargo</span> build --release --features llm-conductor
+<span class="p">tales</span> run <span class="s">"decide whether to migrate the cron jobs to the queue"</span> \
+  --conductor <span class="s">llm</span> --conductor-url <span class="s">http://localhost:8080/v1</span></pre>
+      <div class="note"><span class="ic">i</span><div><b>Caching.</b> Routing runs at temperature 0, so a decision is deterministic — the <code>LlmConductor</code> memoizes each <code>(model, prompt, task)</code> to <code>.tales/conductor-cache.json</code> (the key folds in the prompt, so it self-invalidates when either changes). A repeated task is then instant and free: the local analogue of provider prompt caching, but with zero token cost on a hit.</div></div>
+      <div class="note"><span class="ic">i</span><div><b>Honest status.</b> The engine acts on TalesSML's <code>shape</code>+<code>difficulty</code> today (the <code>LlmConductor</code> parses them; extra plan fields are forward-compatible), with a hard fallback to the pure-Rust <code>tales coordinator</code> when the server is unreachable. The full plan (roster/coordination/verify/escalate) is what v2 emits and is graded above; wiring it into adaptive turn-taking is next. Train your own from <code>tales coordinator export-dataset --plans</code>; see <a href="https://github.com/cesarfrancots/tales/tree/main/training" target="_blank" rel="noopener"><code>training/</code></a>.</div></div>
     </section>
 
     <section id="thesis">
@@ -380,6 +427,7 @@
     <a href="#commands">Commands</a>
     <a href="#preflight">Preflight</a>
     <a href="#tiered">Tiered execution</a>
+    <a href="#conductor">The conductor</a>
     <a href="#thesis">The bet &amp; benchmark</a>
     <a href="#tools">Supported tools</a>
     <a href="#architecture">Architecture</a>

@@ -26,6 +26,7 @@
     <a href="#" class="brand"><span class="brand-caret">❯</span> tales</a>
     <nav class="topnav">
       <a href="#why">why two</a>
+      <a href="#conductor">the model</a>
       <a href="#run">run it</a>
       <a href="docs.html">docs</a>
       <a href="https://github.com/cesarfrancots/tales" target="_blank" rel="noopener" class="gh">github</a>
@@ -113,7 +114,45 @@
     </div>
   </section>
 
-  <section id="tier" class="band alt">
+  <section id="conductor" class="band alt">
+    <div class="wrap">
+      <p class="kicker"><svg class="icon"><use href="#i-branch" /></svg> the conductor</p>
+      <h2>Not just a coordination tool.<br /><span class="accent">A model that orchestrates models.</span></h2>
+      <p class="lead">
+        <strong>TalesSML</strong> is Tales' own small model — a 0.5–3B open base, fine-tuned on
+        coordination data and run <b>locally</b> in ~0.18&nbsp;s, no cloud and no per-token cost.
+        It reads your task and decides <i>how to coordinate the other models</i>: the shape, who
+        plays which role at which model, the order, when to verify, when to escalate to Opus.
+      </p>
+      <div class="term code-term">
+        <div class="term-bar">
+          <span class="tdot r"></span><span class="tdot y"></span><span class="tdot g"></span>
+          <span class="term-name">talesml — orchestration plan</span>
+        </div>
+        <pre class="code"><span class="c"># one task in, a full orchestration plan out (local, ~0.18s)</span>
+{
+  <span class="s">"shape"</span>: <span class="s">"debate"</span>, <span class="s">"difficulty"</span>: <span class="s">0.74</span>,
+  <span class="s">"roster"</span>: [
+    { <span class="s">"role"</span>:<span class="s">"drafter"</span>, <span class="s">"agent"</span>:<span class="s">"claude"</span>, <span class="s">"model"</span>:<span class="s">"opus"</span> },
+    { <span class="s">"role"</span>:<span class="s">"critic"</span>,  <span class="s">"agent"</span>:<span class="s">"codex"</span>,  <span class="s">"model"</span>:<span class="s">"gpt-5.x"</span> },
+    { <span class="s">"role"</span>:<span class="s">"executor"</span>,<span class="s">"agent"</span>:<span class="s">"claude"</span>, <span class="s">"model"</span>:<span class="s">"haiku"</span> }
+  ],
+  <span class="s">"verify"</span>: { <span class="s">"required"</span>:<span class="s">true</span>, <span class="s">"method"</span>:<span class="s">"tests"</span> },
+  <span class="s">"escalate"</span>: { <span class="s">"to"</span>: { <span class="s">"agent"</span>:<span class="s">"claude"</span>, <span class="s">"model"</span>:<span class="s">"opus"</span> } }
+}</pre>
+      </div>
+      <p class="receipts">
+        Same idea Sakana built Fugu's Conductor on — a coordination policy <i>on top of</i> existing
+        models, not a frontier model from scratch — kept tiny, local, and free. A 986&nbsp;MB fine-tune
+        emits <b>well-formed plans 100% / 100% / 92%</b> of the time on general / mixed-signal /
+        game-dev tasks, with zero malformed output. A pure-Rust keyword coordinator stays the
+        zero-cost default and fallback, and each deterministic decision is cached locally so a repeat
+        is instant and free.
+      </p>
+    </div>
+  </section>
+
+  <section id="tier" class="band">
     <div class="wrap">
       <p class="kicker"><svg class="icon"><use href="#i-coins" /></svg> tier the cost</p>
       <h2>Use expensive judgment.<br /><span class="accent">Use cheap tokens for typing.</span></h2>

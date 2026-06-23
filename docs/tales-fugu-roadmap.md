@@ -1,6 +1,6 @@
 # Tales → Fugu-Class: Roadmap & Model-Build Feasibility
 
-Generated: 2026-06-22
+Generated: 2026-06-22 · Updated: 2026-06-23 (post-launch, verified against the Fugu release + the Trinity/Conductor papers)
 
 ## Status — shipped on `feat/coordinator-model` (PR #2)
 
@@ -22,6 +22,17 @@ Generated: 2026-06-22
   trained `CONDUCTOR_SYSTEM` prompt, with a hard fallback to the keyword coordinator
   on any failure. Wired as `tales run --conductor llm [--conductor-url …]`; the
   `training/` sidecar produces the model.
+- ✅ **TalesSML — our own orchestration model** (Phase D/G, SFT tier) — a LoRA
+  fine-tune of Qwen2.5 (0.5B→1.5/3B) on Tales-generated coordination data, served
+  locally (~398 MB Q4_K_M, ~0.18 s/decision). **v1** routes shape/difficulty and
+  measures 100% easy / 100% mixed-signal / 92.3% game-dev, beating a prompted 9B at
+  16× smaller; **v2** (commit `1ce4e8d`) evolves the target from a router into an
+  *orchestration brain* — `dataset::orchestration_plan` emits a full plan (shape,
+  difficulty, rationale, risks, a roster of `{role,agent,model,why}`, coordination
+  order/parallelizable/handoff, verify, escalate-to-opus), taught by
+  `CONDUCTOR_PLAN_SYSTEM`. The engine acts on `shape`+`difficulty` today (serde
+  ignores the extra fields — backward compatible); adaptive turn-taking on the full
+  plan is the next wiring step.
 - Reviewed across three adversarial passes; `fmt` + `clippy -D warnings` + the
   full workspace test suite green.
 
@@ -29,6 +40,106 @@ Remaining (scoped follow-ups): **Phase F** best-of-N parallel execution with
 verifier selection, **Phase D** adaptive turn-taking conductor (`Conductor::next_turn`
 over the blackboard — the routing `--conductor llm` half shipped above), **Phase G**
 distilled/RL conductor.
+
+---
+
+## Fugu — verified (updated 2026-06-23, after the public launch)
+
+The earlier strategic insight (§0) was written from inference. Fugu and Fugu Ultra
+launched publicly on **2026-06-22**, and the two papers behind them are now readable.
+This section replaces guesswork with sourced fact; §0–§5 below remain valid as the
+phased plan.
+
+### What Fugu actually is
+A **multi-agent orchestration system delivered as one model**, behind a single
+OpenAI-compatible API. You call one model ID; internally Fugu decides whether to
+answer directly or assemble a team of frontier models — handling model selection,
+delegation, verification, and synthesis itself, and it can **call itself recursively**
+to deepen reasoning. Reported as a **~7B coordinator** over a *swappable* pool of
+publicly-available frontier models (it trains no frontier model of its own).
+- **Fugu** — balances quality with low latency; everyday default; lets you *opt out*
+  of specific agents (compliance).
+- **Fugu Ultra** (`fugu-ultra-20260615`) — tuned for max quality on hard multi-step
+  problems, coordinating a *deeper* pool; fixed config, no opt-out. Sakana claims it
+  "stands shoulder-to-shoulder with Fable 5 and Mythos Preview" without being a
+  frontier model.
+- Sources: <https://sakana.ai/fugu-release/> · <https://github.com/SakanaAI/fugu>
+
+### The two policies behind it (this is the moat, and it confirms §0)
+| Paper | Base | **How it's trained** | What it produces |
+|---|---|---|---|
+| **TRINITY** (arXiv 2512.04695) | Qwen3-0.6B + a linear head, **<20K learnable params** | **Evolution — sep-CMA-ES** (the paper shows it *beats* RL/SFT/random under its budget-constrained, high-dim regime) | Per-turn: which of 7 LLMs to call + a role — **Thinker / Worker / Verifier**; stops on ACCEPT or a 5-turn cap |
+| **Conductor** (arXiv 2512.04388) | Qwen2.5-7B | **RL — GRPO** (200 iters × 256 batch × 64 rollouts; reward = parse-gate + correctness) | A natural-language **subtask graph**: per step, an NL instruction + the worker's integer ID + an **access list** (which prior outputs it may see) — a *communication topology* per input |
+
+Both papers orchestrate a closed+open pool (GPT-5 / Claude-4-Sonnet / Gemini-2.5-Pro
++ Gemma-3-27B / DeepSeek-R1-Distill-32B / Qwen3-32B). Predecessor **AB-MCTS /
+TreeQuest** (2025) does inference-time tree search across multiple LLMs (Thompson
+sampling over wider-vs-deeper *and* which-LLM), solving >30% of ARC-AGI-2 pass@250.
+- <https://arxiv.org/abs/2512.04695> · <https://arxiv.org/abs/2512.04388> · <https://sakana.ai/ab-mcts/>
+
+### Reported benchmarks
+Paper numbers (peer-reviewed, high confidence): TRINITY LiveCodeBench-V6 **86.2%**
+pass@1 (vs GPT-5 83.8 / Gemini-2.5-Pro 67.2 / Claude-4-Sonnet 46.5), ~21.9% mean
+relative error reduction over second-best; Conductor MATH500 99.4 / GPQA-D 87.5 /
+LiveCodeBench 83.9. Product table (moderate confidence — transcribed from Sakana's
+image table by MarkTechPost; verify before quoting): SWE-Bench **Pro** 59.0 (Fugu) /
+**73.7** (Ultra), TerminalBench-2.1 80.2/82.1, LiveCodeBench 92.9/93.2, HLE 47.2/50.0;
+Sakana's headline is "top score on 10 of 11 rows." *Not found from a primary source:*
+SWE-bench **Verified**, a product ARC-AGI score, pricing, or specific autonomy figures.
+Exact product pool model names are unverified (Sakana declines to name them).
+
+### Where Tales now stands vs Fugu (refreshed gap table)
+The throughline still holds — **Fugu is a closed loop, learned end-to-end; Tales is
+closing the loop with engineered control flow plus an SFT policy** — but several of
+the old §1 gaps are now shipped:
+
+| Capability | Fugu | Tales today | Status |
+|---|---|---|---|
+| Coordination policy | Learned (RL/evolution) | **TalesSML** SFT (shape/difficulty live; full plan trained) + keyword fallback | **closed (SFT tier)** — RL/evolution is the remaining depth |
+| Role assignment | Dynamic Thinker/Worker/Verifier | Drafter/Critic/Executor + **Verifier** (Phase B) + escalation | **mostly closed** |
+| Verification | First-class, iterate-to-green | `--verify` loop, capped (`Phase::Verifying`) | **closed** |
+| Difficulty/escalation | "Ultra" deeper pool | difficulty estimate + `--escalate` to a stronger seat | **closed (control-flow)** |
+| Multi-model execution | Coordinates many, selects | exactly **one** executor | **gap → Phase F (best-of-N)** |
+| Cross-run learning | Trained on outcomes | flywheel traces → retrain MLP; SFT on synthetic data | **partial** — needs *real* outcome rewards |
+| Evals / reward | Large auto-scored suite | **mock** forecast eval (`run_mock_eval`) | **the deepest gap → Phase A** |
+| Training signal | **RL/evolution over verifiable reward** | **SFT on ground-truth-by-construction** | **gap → Phase G** |
+| Delegation expressiveness | NL subtask graph + access-list topology | fixed shapes (solo/debate/tiered) + roster | **gap (new)** — see plan below |
+| Recursion | Self-call to deepen | none | **gap (new)** |
+| Autonomy | Runs unattended | human gate by default (by design) | **intentional non-goal** (gate is the product) |
+
+### The updated plan to close on Fugu
+Honest read: TalesSML is a real **Tier-1/3 coordination policy** in production, which
+is further than the original roadmap assumed. The remaining distance to Fugu is **not
+a bigger model** — it's the two things Sakana's papers prove are the moat: a
+**verifiable-reward eval suite** and **training the policy against it** (RL/evolution,
+not SFT). Sequenced from highest ROI:
+
+1. **Phase A is now the critical path, not B.** B/C/D shipped; without real
+   outcome scoring (replace `run_mock_eval` with a scored task suite + typed
+   `RunTrace`), every further policy improvement is blind. This is exactly Sakana's
+   bottleneck. *Do this next.*
+2. **Promote TalesSML v2 from "emitted" to "executed."** Wire `Conductor::next_turn`
+   to act on the full plan (roster → seats, coordination order, verify method,
+   escalate triggers), not just `shape`. The training target already exists; the
+   orchestrator seam (`Box<dyn Conductor>`) is already cut. Highest user-visible win.
+3. **Add a verifiable-reward trainer (Phase E→G bridge).** Once Phase A emits scored
+   traces, move TalesSML off ground-truth-by-construction SFT and onto **outcome
+   reward** — start with a contextual bandit / preference pairs from real runs
+   (cheap, CPU), then graduate to GRPO-style RL or sep-CMA-ES on the routing head
+   (Trinity's recipe — its head is <20K params, evolvable on modest hardware).
+4. **Borrow Conductor's expressiveness incrementally.** Extend the plan schema toward
+   a **natural-language subtask graph with access lists** (which prior outputs each
+   seat sees) — a superset of today's fixed shapes — and let TalesSML emit it. This
+   is the single change that most raises the orchestration ceiling.
+5. **Phase F (best-of-N) + optional recursion.** For high-difficulty tasks, run N
+   executors in parallel worktrees and let the verifier select; a bounded
+   self-call ("decompose then re-enter the conductor") mirrors Fugu's recursion
+   while keeping the human gate at the top.
+
+Non-negotiables unchanged: **local, zero-telemetry, human-on-trigger by default,
+~1.5 MB binary, MIT.** Fugu's parity is gated by eval scale + compute (the part money
+buys), not by architecture — so the realistic target stays **Tier-2/3 done
+excellently**, with Tier-4 RL as a funded stretch.
 
 ## 0. The strategic insight (read this first)
 
